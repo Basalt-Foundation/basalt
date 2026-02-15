@@ -1,0 +1,516 @@
+using System.Collections.Concurrent;
+using Basalt.Core;
+using Basalt.Crypto;
+using Basalt.Network;
+using Microsoft.Extensions.Logging;
+
+namespace Basalt.Consensus;
+
+/// <summary>
+/// Pipelined consensus that overlaps phases across consecutive blocks.
+/// While block N is in COMMIT phase, block N+1 can already be in PREPARE phase.
+/// This improves throughput by reducing the effective block finalization time.
+///
+/// Enhancements over BasaltBft:
+/// - Multiple concurrent rounds (up to MaxPipelineDepth)
+/// - Sequential finalization ordering (block N must finalize before N+1 is released)
+/// - Per-round view change with timeout
+/// - BLS signature aggregation per round
+/// </summary>
+public sealed class PipelinedConsensus
+{
+    private readonly ValidatorSet _validatorSet;
+    private readonly PeerId _localPeerId;
+    private readonly byte[] _privateKey;
+    private readonly IBlsSigner _blsSigner;
+    private readonly ILogger<PipelinedConsensus> _logger;
+
+    // Active consensus rounds (one per block height)
+    private readonly ConcurrentDictionary<ulong, ConsensusRound> _activeRounds = new();
+
+    // Maximum concurrent pipelined rounds
+    private const int MaxPipelineDepth = 3;
+
+    // View change tracking per view
+    private readonly ConcurrentDictionary<ulong, HashSet<PeerId>> _viewChangeVotes = new();
+
+    // Per-round view timeout
+    private readonly TimeSpan _roundTimeout = TimeSpan.FromSeconds(2);
+
+    // Finalization ordering
+    private ulong _lastFinalizedBlock;
+    private readonly ConcurrentDictionary<ulong, (Hash256 Hash, byte[] Data)> _pendingFinalizations = new();
+
+    // Callbacks
+    public event Action<Hash256, byte[]>? OnBlockFinalized;
+    public event Action<ulong>? OnViewChange;
+
+    public PipelinedConsensus(
+        ValidatorSet validatorSet,
+        PeerId localPeerId,
+        byte[] privateKey,
+        IBlsSigner blsSigner,
+        ILogger<PipelinedConsensus> logger,
+        ulong lastFinalizedBlock = 0)
+    {
+        _validatorSet = validatorSet;
+        _localPeerId = localPeerId;
+        _privateKey = privateKey;
+        _blsSigner = blsSigner;
+        _logger = logger;
+        _lastFinalizedBlock = lastFinalizedBlock;
+    }
+
+    /// <summary>
+    /// Number of active pipelined rounds.
+    /// </summary>
+    public int ActiveRoundCount => _activeRounds.Count;
+
+    /// <summary>
+    /// Last finalized block number.
+    /// </summary>
+    public ulong LastFinalizedBlock => _lastFinalizedBlock;
+
+    /// <summary>
+    /// Get the state of a specific block's consensus round.
+    /// </summary>
+    public ConsensusState? GetRoundState(ulong blockNumber)
+    {
+        return _activeRounds.TryGetValue(blockNumber, out var round) ? round.State : null;
+    }
+
+    /// <summary>
+    /// Start a new consensus round for a block. Can be called while previous blocks
+    /// are still in consensus, enabling pipelining.
+    /// </summary>
+    public ConsensusProposalMessage? StartRound(ulong blockNumber, byte[] blockData, Hash256 blockHash)
+    {
+        if (_activeRounds.Count >= MaxPipelineDepth)
+        {
+            _logger.LogWarning("Pipeline depth exceeded ({Count}/{Max}), deferring block {Block}",
+                _activeRounds.Count, MaxPipelineDepth, blockNumber);
+            return null;
+        }
+
+        var round = new ConsensusRound
+        {
+            BlockNumber = blockNumber,
+            View = blockNumber,
+            State = ConsensusState.Proposing,
+            BlockHash = blockHash,
+            BlockData = blockData,
+            StartTime = DateTimeOffset.UtcNow,
+        };
+
+        if (!_activeRounds.TryAdd(blockNumber, round))
+            return null; // Round already exists
+
+        var leader = _validatorSet.GetLeader(round.View);
+        if (leader.PeerId != _localPeerId)
+        {
+            round.State = ConsensusState.Preparing;
+            return null; // Not leader, wait for proposal
+        }
+
+        round.State = ConsensusState.Preparing;
+
+        // Sign and propose
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        blockHash.WriteTo(hashBytes);
+        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        var signature = new BlsSignature(signatureBytes);
+
+        // Self-vote PREPARE with signature tracking
+        RecordVote(round, VotePhase.Prepare, _localPeerId, signatureBytes,
+            _blsSigner.GetPublicKey(_privateKey));
+
+        // Cascade through phases if self-vote alone meets quorum (e.g., single validator)
+        TryCascadeFromPrepare(round);
+
+        return new ConsensusProposalMessage
+        {
+            SenderId = _localPeerId,
+            ViewNumber = round.View,
+            BlockNumber = blockNumber,
+            BlockHash = blockHash,
+            BlockData = blockData,
+            ProposerSignature = signature,
+        };
+    }
+
+    /// <summary>
+    /// Handle a proposal for a pipelined block.
+    /// </summary>
+    public ConsensusVoteMessage? HandleProposal(ConsensusProposalMessage proposal)
+    {
+        var round = _activeRounds.GetOrAdd(proposal.BlockNumber, _ => new ConsensusRound
+        {
+            BlockNumber = proposal.BlockNumber,
+            View = proposal.ViewNumber,
+            State = ConsensusState.Proposing,
+            BlockHash = proposal.BlockHash,
+            BlockData = proposal.BlockData,
+            StartTime = DateTimeOffset.UtcNow,
+        });
+
+        if (round.State == ConsensusState.Finalized)
+            return null;
+
+        // Verify leader
+        var leader = _validatorSet.GetLeader(proposal.ViewNumber);
+        if (proposal.SenderId != leader.PeerId)
+            return null;
+
+        // Verify signature
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        proposal.BlockHash.WriteTo(hashBytes);
+        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), hashBytes, proposal.ProposerSignature.ToArray()))
+            return null;
+
+        round.BlockHash = proposal.BlockHash;
+        round.BlockData = proposal.BlockData;
+        round.State = ConsensusState.Preparing;
+
+        return CreateVote(round, VotePhase.Prepare);
+    }
+
+    /// <summary>
+    /// Handle a vote for a pipelined block.
+    /// </summary>
+    public ConsensusVoteMessage? HandleVote(ConsensusVoteMessage vote)
+    {
+        if (!_activeRounds.TryGetValue(vote.BlockNumber, out var round))
+            return null;
+
+        if (round.State == ConsensusState.Finalized)
+            return null;
+
+        if (!_validatorSet.IsValidator(vote.SenderId))
+            return null;
+
+        // Verify signature
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        vote.BlockHash.WriteTo(hashBytes);
+        if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), hashBytes, vote.VoterSignature.ToArray()))
+            return null;
+
+        // Record vote with signature for aggregation
+        RecordVote(round, vote.Phase, vote.SenderId,
+            vote.VoterSignature.ToArray(), vote.VoterPublicKey.ToArray());
+
+        return vote.Phase switch
+        {
+            VotePhase.Prepare => CheckPhaseTransition(round, VotePhase.Prepare, ConsensusState.Preparing,
+                ConsensusState.PreCommitting, VotePhase.PreCommit),
+            VotePhase.PreCommit => CheckPhaseTransition(round, VotePhase.PreCommit, ConsensusState.PreCommitting,
+                ConsensusState.Committing, VotePhase.Commit),
+            VotePhase.Commit => CheckCommitQuorum(round),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Check for timed-out rounds and return a view change message if needed.
+    /// </summary>
+    public ViewChangeMessage? CheckViewTimeout()
+    {
+        foreach (var (blockNumber, round) in _activeRounds)
+        {
+            if (round.State == ConsensusState.Finalized || round.State == ConsensusState.Idle)
+                continue;
+
+            if (DateTimeOffset.UtcNow - round.StartTime > _roundTimeout)
+            {
+                _logger.LogWarning("Round for block {Block} timed out in state {State}", blockNumber, round.State);
+                return RequestViewChange(round);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Handle a view change message. On quorum, abort all in-flight rounds and restart.
+    /// </summary>
+    public void HandleViewChange(ViewChangeMessage viewChange)
+    {
+        var votes = _viewChangeVotes.GetOrAdd(viewChange.ProposedView, _ => new HashSet<PeerId>());
+
+        lock (votes)
+        {
+            votes.Add(viewChange.SenderId);
+
+            if (votes.Count >= _validatorSet.QuorumThreshold)
+            {
+                _logger.LogInformation("View change quorum reached for view {View}, aborting in-flight rounds",
+                    viewChange.ProposedView);
+
+                // Abort all non-finalized rounds
+                var toRemove = new List<ulong>();
+                foreach (var (blockNumber, round) in _activeRounds)
+                {
+                    if (round.State != ConsensusState.Finalized)
+                        toRemove.Add(blockNumber);
+                }
+
+                foreach (var bn in toRemove)
+                    _activeRounds.TryRemove(bn, out _);
+
+                // Clean up view change votes for old views
+                foreach (var key in _viewChangeVotes.Keys)
+                {
+                    if (key <= viewChange.ProposedView)
+                        _viewChangeVotes.TryRemove(key, out _);
+                }
+
+                OnViewChange?.Invoke(viewChange.ProposedView);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clean up finalized rounds.
+    /// </summary>
+    public void CleanupFinalizedRounds()
+    {
+        foreach (var (blockNumber, round) in _activeRounds)
+        {
+            if (round.State == ConsensusState.Finalized)
+                _activeRounds.TryRemove(blockNumber, out _);
+        }
+    }
+
+    /// <summary>
+    /// Get the aggregated commit signatures for a finalized round.
+    /// </summary>
+    public byte[]? GetAggregateSignature(ulong blockNumber)
+    {
+        if (!_activeRounds.TryGetValue(blockNumber, out var round))
+            return null;
+
+        if (round.State != ConsensusState.Finalized)
+            return null;
+
+        lock (round.CommitSignatures)
+        {
+            if (round.CommitSignatures.Count == 0)
+                return null;
+
+            var sigs = round.CommitSignatures.Select(s => s.Signature).ToArray();
+            return _blsSigner.AggregateSignatures(sigs);
+        }
+    }
+
+    private void RecordVote(ConsensusRound round, VotePhase phase, PeerId voter,
+        byte[]? signature = null, byte[]? publicKey = null)
+    {
+        var votes = phase switch
+        {
+            VotePhase.Prepare => round.PrepareVotes,
+            VotePhase.PreCommit => round.PreCommitVotes,
+            VotePhase.Commit => round.CommitVotes,
+            _ => throw new ArgumentException($"Unknown phase: {phase}"),
+        };
+
+        lock (votes)
+            votes.Add(voter);
+
+        // Track signatures for aggregation
+        if (signature != null && publicKey != null)
+        {
+            var sigList = phase switch
+            {
+                VotePhase.Prepare => round.PrepareSignatures,
+                VotePhase.PreCommit => round.PreCommitSignatures,
+                VotePhase.Commit => round.CommitSignatures,
+                _ => throw new ArgumentException($"Unknown phase: {phase}"),
+            };
+
+            lock (sigList)
+                sigList.Add((signature, publicKey));
+        }
+    }
+
+    private ConsensusVoteMessage? CheckPhaseTransition(
+        ConsensusRound round, VotePhase currentPhase,
+        ConsensusState requiredState, ConsensusState nextState,
+        VotePhase nextPhase)
+    {
+        var votes = currentPhase switch
+        {
+            VotePhase.Prepare => round.PrepareVotes,
+            VotePhase.PreCommit => round.PreCommitVotes,
+            _ => round.CommitVotes,
+        };
+
+        lock (votes)
+        {
+            if (votes.Count >= _validatorSet.QuorumThreshold && round.State == requiredState)
+            {
+                round.State = nextState;
+                _logger.LogDebug("Block {Block}: {Phase} quorum -> {NextState}",
+                    round.BlockNumber, currentPhase, nextState);
+                return CreateVote(round, nextPhase);
+            }
+        }
+
+        return null;
+    }
+
+    private ConsensusVoteMessage? CheckCommitQuorum(ConsensusRound round)
+    {
+        lock (round.CommitVotes)
+        {
+            if (round.CommitVotes.Count >= _validatorSet.QuorumThreshold && round.State == ConsensusState.Committing)
+            {
+                round.State = ConsensusState.Finalized;
+                _logger.LogInformation("Block {Block} reached COMMIT quorum via pipeline", round.BlockNumber);
+
+                // Enforce sequential finalization ordering
+                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? []);
+            }
+        }
+
+        return null;
+    }
+
+    private void TryFinalizeSequential(ulong blockNumber, Hash256 hash, byte[] data)
+    {
+        // If this is the next expected block, finalize immediately
+        if (blockNumber == _lastFinalizedBlock + 1)
+        {
+            _lastFinalizedBlock = blockNumber;
+            OnBlockFinalized?.Invoke(hash, data);
+
+            // Drain any buffered blocks that are now sequential
+            while (_pendingFinalizations.TryRemove(_lastFinalizedBlock + 1, out var pending))
+            {
+                _lastFinalizedBlock = _lastFinalizedBlock + 1;
+                OnBlockFinalized?.Invoke(pending.Hash, pending.Data);
+                _logger.LogInformation("Drained buffered finalization for block {Block}", _lastFinalizedBlock);
+            }
+        }
+        else if (blockNumber > _lastFinalizedBlock + 1)
+        {
+            // Buffer for later — a previous block hasn't finalized yet
+            _pendingFinalizations.TryAdd(blockNumber, (hash, data));
+            _logger.LogDebug("Buffered finalization for block {Block} (waiting for {Expected})",
+                blockNumber, _lastFinalizedBlock + 1);
+        }
+    }
+
+    /// <summary>
+    /// After a self-vote, cascade through phases if quorum is already met.
+    /// This handles the single-validator (or low-quorum) case where the self-vote
+    /// alone is enough to advance through PREPARE → PRE-COMMIT → COMMIT → FINALIZED.
+    /// </summary>
+    private void TryCascadeFromPrepare(ConsensusRound round)
+    {
+        // Check PREPARE → PRE-COMMIT
+        lock (round.PrepareVotes)
+        {
+            if (round.PrepareVotes.Count >= _validatorSet.QuorumThreshold && round.State == ConsensusState.Preparing)
+            {
+                round.State = ConsensusState.PreCommitting;
+                RecordSelfVote(round, VotePhase.PreCommit);
+            }
+            else return;
+        }
+
+        // Check PRE-COMMIT → COMMIT
+        lock (round.PreCommitVotes)
+        {
+            if (round.PreCommitVotes.Count >= _validatorSet.QuorumThreshold && round.State == ConsensusState.PreCommitting)
+            {
+                round.State = ConsensusState.Committing;
+                RecordSelfVote(round, VotePhase.Commit);
+            }
+            else return;
+        }
+
+        // Check COMMIT → FINALIZED
+        lock (round.CommitVotes)
+        {
+            if (round.CommitVotes.Count >= _validatorSet.QuorumThreshold && round.State == ConsensusState.Committing)
+            {
+                round.State = ConsensusState.Finalized;
+                _logger.LogInformation("Block {Block} reached COMMIT quorum via pipeline (cascade)", round.BlockNumber);
+                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? []);
+            }
+        }
+    }
+
+    private void RecordSelfVote(ConsensusRound round, VotePhase phase)
+    {
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        round.BlockHash.WriteTo(hashBytes);
+        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
+        RecordVote(round, phase, _localPeerId, signatureBytes, publicKeyBytes);
+    }
+
+    private ConsensusVoteMessage CreateVote(ConsensusRound round, VotePhase phase)
+    {
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        round.BlockHash.WriteTo(hashBytes);
+        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        var signature = new BlsSignature(signatureBytes);
+        var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
+        var publicKey = new BlsPublicKey(publicKeyBytes);
+
+        var vote = new ConsensusVoteMessage
+        {
+            SenderId = _localPeerId,
+            ViewNumber = round.View,
+            BlockNumber = round.BlockNumber,
+            BlockHash = round.BlockHash,
+            Phase = phase,
+            VoterSignature = signature,
+            VoterPublicKey = publicKey,
+        };
+
+        // Self-record with signature
+        RecordVote(round, phase, _localPeerId, signatureBytes, publicKeyBytes);
+
+        return vote;
+    }
+
+    private ViewChangeMessage RequestViewChange(ConsensusRound round)
+    {
+        var proposedView = round.View + 1;
+        Span<byte> viewBytes = stackalloc byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, proposedView);
+        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+        var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+
+        return new ViewChangeMessage
+        {
+            SenderId = _localPeerId,
+            CurrentView = round.View,
+            ProposedView = proposedView,
+            VoterSignature = signature,
+            VoterPublicKey = publicKey,
+        };
+    }
+
+    /// <summary>
+    /// Internal state for a single consensus round.
+    /// </summary>
+    private sealed class ConsensusRound
+    {
+        public ulong BlockNumber { get; init; }
+        public ulong View { get; init; }
+        public ConsensusState State { get; set; }
+        public Hash256 BlockHash { get; set; }
+        public byte[]? BlockData { get; set; }
+        public DateTimeOffset StartTime { get; init; }
+        public HashSet<PeerId> PrepareVotes { get; } = new();
+        public HashSet<PeerId> PreCommitVotes { get; } = new();
+        public HashSet<PeerId> CommitVotes { get; } = new();
+
+        // Signature tracking for BLS aggregation
+        public List<(byte[] Signature, byte[] PublicKey)> PrepareSignatures { get; } = new();
+        public List<(byte[] Signature, byte[] PublicKey)> PreCommitSignatures { get; } = new();
+        public List<(byte[] Signature, byte[] PublicKey)> CommitSignatures { get; } = new();
+    }
+}

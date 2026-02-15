@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Api.GraphQL</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../storage/Basalt.Storage/Basalt.Storage.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="HotChocolate.AspNetCore" />
+  </ItemGroup>
+</Project>

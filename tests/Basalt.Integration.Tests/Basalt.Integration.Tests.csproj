@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Integration.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../src/storage/Basalt.Storage/Basalt.Storage.csproj" />
+    <ProjectReference Include="../../src/network/Basalt.Network/Basalt.Network.csproj" />
+    <ProjectReference Include="../../src/consensus/Basalt.Consensus/Basalt.Consensus.csproj" />
+    <ProjectReference Include="../../src/execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../src/api/Basalt.Api.Rest/Basalt.Api.Rest.csproj" />
+    <ProjectReference Include="../../src/api/Basalt.Api.Grpc/Basalt.Api.Grpc.csproj" />
+    <ProjectReference Include="../../src/compliance/Basalt.Compliance/Basalt.Compliance.csproj" />
+    <ProjectReference Include="../../src/bridge/Basalt.Bridge/Basalt.Bridge.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+  </ItemGroup>
+</Project>

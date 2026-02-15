@@ -1,0 +1,71 @@
+@page "/tx/{Hash}"
+@inject BasaltApiClient Api
+
+<PageTitle>Basalt Explorer - Transaction</PageTitle>
+
+<h2>Transaction Details</h2>
+
+@if (_tx != null)
+{
+    <div class="card">
+        <div class="card-body">
+            <div class="detail-row">
+                <span class="detail-label">Hash</span>
+                <span class="detail-value hash">@_tx.Hash</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Type</span>
+                <span class="detail-value">@_tx.Type</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Nonce</span>
+                <span class="detail-value">@_tx.Nonce</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Sender</span>
+                <span class="detail-value hash">@_tx.Sender</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">To</span>
+                <span class="detail-value hash">@_tx.To</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Value</span>
+                <span class="detail-value">@_tx.Value</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Gas Limit</span>
+                <span class="detail-value">@_tx.GasLimit</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Gas Price</span>
+                <span class="detail-value">@_tx.GasPrice</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Priority</span>
+                <span class="detail-value">@_tx.Priority</span>
+            </div>
+        </div>
+    </div>
+}
+else if (_loading)
+{
+    <div class="loading">Loading transaction...</div>
+}
+else
+{
+    <div class="empty-state">Transaction not found.</div>
+}
+
+@code {
+    [Parameter] public string Hash { get; set; } = "";
+
+    private TransactionDto? _tx;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tx = await Api.GetTransactionAsync(Hash);
+        _loading = false;
+    }
+}

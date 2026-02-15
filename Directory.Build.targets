@@ -1,0 +1,6 @@
+<Project>
+  <!-- Mark all non-test, non-generator projects as AOT compatible -->
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests')) AND !$(MSBuildProjectName.Contains('Generators')) AND !$(MSBuildProjectName.Contains('Analyzers'))">
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+</Project>

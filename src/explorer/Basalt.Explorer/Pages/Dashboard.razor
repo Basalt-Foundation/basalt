@@ -1,0 +1,112 @@
+@page "/"
+@inject BasaltApiClient Api
+@implements IDisposable
+
+<PageTitle>Basalt Explorer - Dashboard</PageTitle>
+
+@if (_status != null)
+{
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="label">Block Height</div>
+            <div class="value">@_status.BlockHeight.ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Mempool</div>
+            <div class="value">@_status.MempoolSize</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Protocol</div>
+            <div class="value">v@(_status.ProtocolVersion)</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Latest Block</div>
+            <div class="value truncate hash" style="font-size:0.9rem">@TruncateHash(_status.LatestBlockHash)</div>
+        </div>
+    </div>
+}
+
+<div class="card">
+    <div class="card-header">Latest Block</div>
+    <div class="card-body">
+        @if (_latestBlock != null)
+        {
+            <div class="detail-row">
+                <span class="detail-label">Number</span>
+                <span class="detail-value">@_latestBlock.Number</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Hash</span>
+                <span class="detail-value hash">@_latestBlock.Hash</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Timestamp</span>
+                <span class="detail-value">@_latestBlock.FormattedTime</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Proposer</span>
+                <span class="detail-value hash">@_latestBlock.Proposer</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Transactions</span>
+                <span class="detail-value">@_latestBlock.TransactionCount</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Gas</span>
+                <span class="detail-value">
+                    @_latestBlock.GasUsed / @_latestBlock.GasLimit
+                    <span class="gas-bar">
+                        <span class="gas-bar-fill" style="width: @(_latestBlock.GasPercent.ToString("F1"))%"></span>
+                    </span>
+                </span>
+            </div>
+        }
+        else if (_error != null)
+        {
+            <div class="error-message">@_error</div>
+        }
+        else
+        {
+            <div class="loading">Connecting to node...</div>
+        }
+    </div>
+</div>
+
+@code {
+    private NodeStatusDto? _status;
+    private BlockDto? _latestBlock;
+    private string? _error;
+    private Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _timer = new Timer(async _ =>
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }, null, 2000, 2000);
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            _status = await Api.GetStatusAsync();
+            _latestBlock = await Api.GetLatestBlockAsync();
+            _error = _status == null ? "Cannot connect to Basalt node." : null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error: {ex.Message}";
+        }
+    }
+
+    private static string TruncateHash(string hash)
+    {
+        if (hash.Length <= 16) return hash;
+        return hash[..10] + "..." + hash[^6..];
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

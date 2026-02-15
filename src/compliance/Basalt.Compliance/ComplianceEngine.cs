@@ -1,0 +1,205 @@
+namespace Basalt.Compliance;
+
+/// <summary>
+/// Compliance Engine (system contract 0x0...0004).
+/// Enforces per-token compliance policies on all transfers.
+/// Executes a sequential pipeline of checks: KYC -> Sanctions -> Geo -> Holding -> Lockup -> Travel Rule.
+/// </summary>
+public sealed class ComplianceEngine
+{
+    private readonly IdentityRegistry _identityRegistry;
+    private readonly SanctionsList _sanctionsList;
+    private readonly Dictionary<string, CompliancePolicy> _policies = new();
+    private readonly List<ComplianceEvent> _auditLog = new();
+    private readonly object _lock = new();
+
+    public ComplianceEngine(IdentityRegistry identityRegistry, SanctionsList sanctionsList)
+    {
+        _identityRegistry = identityRegistry;
+        _sanctionsList = sanctionsList;
+    }
+
+    /// <summary>
+    /// Register or update a compliance policy for a token.
+    /// Only callable by the token issuer/owner.
+    /// </summary>
+    public void SetPolicy(byte[] tokenAddress, CompliancePolicy policy)
+    {
+        lock (_lock)
+        {
+            _policies[ToHex(tokenAddress)] = policy;
+            _auditLog.Add(new ComplianceEvent
+            {
+                EventType = ComplianceEventType.PolicyChanged,
+                Subject = tokenAddress,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Details = $"Policy updated: KYC={policy.RequiredSenderKycLevel}/{policy.RequiredReceiverKycLevel}",
+            });
+        }
+    }
+
+    /// <summary>
+    /// Get the compliance policy for a token.
+    /// </summary>
+    public CompliancePolicy? GetPolicy(byte[] tokenAddress)
+    {
+        lock (_lock)
+        {
+            _policies.TryGetValue(ToHex(tokenAddress), out var policy);
+            return policy;
+        }
+    }
+
+    /// <summary>
+    /// Check if a transfer complies with the token's compliance policy.
+    /// Executes the full compliance pipeline.
+    /// </summary>
+    public ComplianceCheckResult CheckTransfer(
+        byte[] tokenAddress,
+        byte[] sender,
+        byte[] receiver,
+        ulong amount,
+        long currentTimestamp,
+        ulong receiverCurrentBalance = 0,
+        bool hasTravelRuleData = false)
+    {
+        lock (_lock)
+        {
+            if (!_policies.TryGetValue(ToHex(tokenAddress), out var policy))
+                return ComplianceCheckResult.Success; // No policy = unrestricted
+
+            // Step 0: Paused check
+            if (policy.Paused)
+            {
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TOKEN_PAUSED");
+                return ComplianceCheckResult.Fail(ComplianceErrorCode.Paused, "Token transfers are paused", "PAUSED");
+            }
+
+            // Step 1: Sender KYC check
+            if (policy.RequiredSenderKycLevel > KycLevel.None)
+            {
+                if (!_identityRegistry.HasValidAttestation(sender, policy.RequiredSenderKycLevel, currentTimestamp))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SENDER_KYC");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.KycMissing,
+                        $"Sender lacks required KYC level {policy.RequiredSenderKycLevel}", "KYC_SENDER");
+                }
+            }
+
+            // Step 2: Receiver KYC check
+            if (policy.RequiredReceiverKycLevel > KycLevel.None)
+            {
+                if (!_identityRegistry.HasValidAttestation(receiver, policy.RequiredReceiverKycLevel, currentTimestamp))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "RECEIVER_KYC");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.KycMissing,
+                        $"Receiver lacks required KYC level {policy.RequiredReceiverKycLevel}", "KYC_RECEIVER");
+                }
+            }
+
+            // Step 3: Sanctions check
+            if (policy.SanctionsCheckEnabled)
+            {
+                if (_sanctionsList.IsSanctioned(sender))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_SENDER");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.Sanctioned,
+                        "Sender is on sanctions list", "SANCTIONS_SENDER");
+                }
+
+                if (_sanctionsList.IsSanctioned(receiver))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_RECEIVER");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.Sanctioned,
+                        "Receiver is on sanctions list", "SANCTIONS_RECEIVER");
+                }
+            }
+
+            // Step 4: Geographic restrictions
+            if (policy.BlockedCountries.Count > 0)
+            {
+                var senderCountry = _identityRegistry.GetCountryCode(sender);
+                if (senderCountry > 0 && policy.BlockedCountries.Contains(senderCountry))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_SENDER");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.GeoRestricted,
+                        $"Sender country {senderCountry} is geo-restricted", "GEO_SENDER");
+                }
+
+                var receiverCountry = _identityRegistry.GetCountryCode(receiver);
+                if (receiverCountry > 0 && policy.BlockedCountries.Contains(receiverCountry))
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_RECEIVER");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.GeoRestricted,
+                        $"Receiver country {receiverCountry} is geo-restricted", "GEO_RECEIVER");
+                }
+            }
+
+            // Step 5: Holding limit (concentration check)
+            if (policy.MaxHoldingAmount > 0)
+            {
+                var newBalance = receiverCurrentBalance + amount;
+                if (newBalance > policy.MaxHoldingAmount)
+                {
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "HOLDING_LIMIT");
+                    return ComplianceCheckResult.Fail(ComplianceErrorCode.HoldingLimit,
+                        $"Transfer would exceed holding limit of {policy.MaxHoldingAmount}", "HOLDING_LIMIT");
+                }
+            }
+
+            // Step 6: Lock-up check
+            if (policy.LockupEndTimestamp > 0 && currentTimestamp < policy.LockupEndTimestamp)
+            {
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "LOCKUP");
+                return ComplianceCheckResult.Fail(ComplianceErrorCode.Lockup,
+                    $"Tokens locked until {policy.LockupEndTimestamp}", "LOCKUP");
+            }
+
+            // Step 7: Travel Rule
+            if (policy.TravelRuleThreshold > 0 && amount >= policy.TravelRuleThreshold && !hasTravelRuleData)
+            {
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TRAVEL_RULE");
+                return ComplianceCheckResult.Fail(ComplianceErrorCode.TravelRuleMissing,
+                    $"Travel Rule data required for transfers >= {policy.TravelRuleThreshold}", "TRAVEL_RULE");
+            }
+
+            // All checks passed
+            LogCheckResult(tokenAddress, sender, receiver, amount, true, "PASS");
+            return ComplianceCheckResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Get the audit log for compliance checks.
+    /// </summary>
+    public IReadOnlyList<ComplianceEvent> GetAuditLog()
+    {
+        lock (_lock)
+            return _auditLog.ToList();
+    }
+
+    /// <summary>
+    /// Get audit events filtered by type.
+    /// </summary>
+    public IReadOnlyList<ComplianceEvent> GetAuditLog(ComplianceEventType eventType)
+    {
+        lock (_lock)
+            return _auditLog.Where(e => e.EventType == eventType).ToList();
+    }
+
+    private void LogCheckResult(byte[] tokenAddress, byte[] sender, byte[] receiver, ulong amount, bool passed, string ruleId)
+    {
+        _auditLog.Add(new ComplianceEvent
+        {
+            EventType = passed ? ComplianceEventType.TransferApproved : ComplianceEventType.TransferBlocked,
+            Subject = sender,
+            Receiver = receiver,
+            TokenAddress = tokenAddress,
+            Amount = amount,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            Details = $"Rule={ruleId}, Amount={amount}",
+        });
+    }
+
+    private static string ToHex(byte[] data) => Convert.ToHexString(data);
+}

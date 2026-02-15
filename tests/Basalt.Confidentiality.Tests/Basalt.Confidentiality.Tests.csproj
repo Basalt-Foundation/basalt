@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Confidentiality.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/confidentiality/Basalt.Confidentiality/Basalt.Confidentiality.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+  </ItemGroup>
+</Project>

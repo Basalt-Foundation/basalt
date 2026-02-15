@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Sdk.Testing</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../storage/Basalt.Storage/Basalt.Storage.csproj" />
+    <ProjectReference Include="../Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
+  </ItemGroup>
+</Project>

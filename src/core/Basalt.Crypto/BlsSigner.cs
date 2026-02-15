@@ -1,0 +1,162 @@
+using System.Text;
+using Basalt.Core;
+using Nethermind.Crypto;
+
+namespace Basalt.Crypto;
+
+/// <summary>
+/// Real BLS12-381 implementation using Nethermind's blst bindings.
+///
+/// Key sizes:
+/// - Private key: 32 bytes
+/// - Public key: 48 bytes (compressed G1 point)
+/// - Signature: 96 bytes (compressed G2 point)
+/// - Aggregated signature: 96 bytes (compressed G2 point)
+///
+/// Uses the Ethereum "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_" domain separation tag.
+/// </summary>
+public sealed class BlsSigner : IBlsSigner
+{
+    private static readonly byte[] Dst = Encoding.UTF8.GetBytes("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_");
+
+    /// <summary>
+    /// Sign a message with a BLS private key (32 bytes).
+    /// Returns a 96-byte compressed G2 signature.
+    /// </summary>
+    public byte[] Sign(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> message)
+    {
+        var sk = new Bls.SecretKey();
+        sk.FromBendian(privateKey);
+
+        var sig = new Bls.P2();
+        sig.HashTo(message, Dst, ReadOnlySpan<byte>.Empty);
+        sig = sig.SignWith(sk);
+
+        return sig.Compress();
+    }
+
+    /// <summary>
+    /// Verify a BLS signature using pairing check: e(pk, H(m)) == e(G1, sig).
+    /// Public key: 48-byte compressed G1 point.
+    /// Signature: 96-byte compressed G2 point.
+    /// </summary>
+    public bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
+    {
+        try
+        {
+            var pkAff = new Bls.P1Affine();
+            pkAff.Decode(publicKey);
+
+            var sigAff = new Bls.P2Affine();
+            sigAff.Decode(signature);
+
+            // Hash message to G2 point
+            var h = new Bls.P2();
+            h.HashTo(message, Dst, ReadOnlySpan<byte>.Empty);
+
+            // Compute e(pk, H(m))
+            var gt1 = new Bls.PT();
+            gt1.MillerLoop(h.ToAffine(), pkAff);
+
+            // Compute e(G1, sig)
+            var gt2 = new Bls.PT();
+            gt2.MillerLoop(sigAff, Bls.P1Affine.Generator());
+
+            // Check equality after final exponentiation
+            return gt1.FinalExp().IsEqual(gt2.FinalExp());
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Aggregate multiple BLS signatures into a single 96-byte signature.
+    /// </summary>
+    public byte[] AggregateSignatures(ReadOnlySpan<byte[]> signatures)
+    {
+        if (signatures.Length == 0)
+            return [];
+
+        if (signatures.Length == 1)
+            return (byte[])signatures[0].Clone();
+
+        var agg = new Bls.P2();
+        agg.Decode(signatures[0]);
+
+        for (int i = 1; i < signatures.Length; i++)
+        {
+            var sig = new Bls.P2Affine();
+            sig.Decode(signatures[i]);
+            agg.Aggregate(sig);
+        }
+
+        return agg.Compress();
+    }
+
+    /// <summary>
+    /// Verify an aggregated BLS signature against multiple public keys and a shared message.
+    /// Aggregates public keys, then verifies: e(aggPk, H(m)) == e(G1, aggSig).
+    /// </summary>
+    public bool VerifyAggregate(ReadOnlySpan<byte[]> publicKeys, ReadOnlySpan<byte> message, ReadOnlySpan<byte> aggregateSignature)
+    {
+        if (publicKeys.Length == 0)
+            return false;
+
+        try
+        {
+            var sigAff = new Bls.P2Affine();
+            sigAff.Decode(aggregateSignature);
+
+            // Aggregate all public keys
+            var aggPk = new Bls.P1();
+            aggPk.Decode(publicKeys[0]);
+
+            for (int i = 1; i < publicKeys.Length; i++)
+            {
+                var pk = new Bls.P1Affine();
+                pk.Decode(publicKeys[i]);
+                aggPk.Aggregate(pk);
+            }
+
+            var aggPkAff = aggPk.ToAffine();
+
+            // Hash message to G2
+            var h = new Bls.P2();
+            h.HashTo(message, Dst, ReadOnlySpan<byte>.Empty);
+
+            // e(aggPk, H(m))
+            var gt1 = new Bls.PT();
+            gt1.MillerLoop(h.ToAffine(), aggPkAff);
+
+            // e(G1, aggSig)
+            var gt2 = new Bls.PT();
+            gt2.MillerLoop(sigAff, Bls.P1Affine.Generator());
+
+            return gt1.FinalExp().IsEqual(gt2.FinalExp());
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Derive a BLS public key (48-byte compressed G1) from a 32-byte private key.
+    /// </summary>
+    public static byte[] GetPublicKeyStatic(ReadOnlySpan<byte> privateKey)
+    {
+        var sk = new Bls.SecretKey();
+        sk.FromBendian(privateKey);
+
+        var pk = new Bls.P1();
+        pk.FromSk(sk);
+
+        return pk.Compress();
+    }
+
+    /// <inheritdoc />
+    byte[] IBlsSigner.GetPublicKey(ReadOnlySpan<byte> privateKey)
+        => GetPublicKeyStatic(privateKey);
+}

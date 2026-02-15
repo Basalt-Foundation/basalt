@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Api.Rest</RootNamespace>
+    <!-- Minimal API endpoint mapping is AOT-compatible in .NET 9 with source generators,
+         but the analyzers flag the delegate-based overloads. Suppress for the library. -->
+    <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../storage/Basalt.Storage/Basalt.Storage.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="System.Text.Json" />
+  </ItemGroup>
+</Project>

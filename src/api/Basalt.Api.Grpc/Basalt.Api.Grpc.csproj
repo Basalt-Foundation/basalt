@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Api.Grpc</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+    <PackageReference Include="Google.Protobuf" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="Protos/basalt.proto" GrpcServices="Server" />
+  </ItemGroup>
+</Project>

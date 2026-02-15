@@ -1,0 +1,108 @@
+services:
+  validator-0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: basalt-validator-0
+    ports:
+      - "5100:5000"
+      - "30300:30303"
+    environment:
+      - BASALT_VALIDATOR_INDEX=0
+      - BASALT_VALIDATOR_ADDRESS=0x0000000000000000000000000000000000000100
+      - BASALT_VALIDATOR_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - BASALT_NETWORK=basalt-devnet
+      - BASALT_CHAIN_ID=31337
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-1:30303,validator-2:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-0-data:/data/basalt
+    networks:
+      - basalt-devnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/v1/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  validator-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: basalt-validator-1
+    ports:
+      - "5101:5000"
+      - "30301:30303"
+    environment:
+      - BASALT_VALIDATOR_INDEX=1
+      - BASALT_VALIDATOR_ADDRESS=0x0000000000000000000000000000000000000101
+      - BASALT_VALIDATOR_KEY=0100000000000000000000000000000000000000000000000000000000000000
+      - BASALT_NETWORK=basalt-devnet
+      - BASALT_CHAIN_ID=31337
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-2:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-1-data:/data/basalt
+    networks:
+      - basalt-devnet
+    restart: unless-stopped
+
+  validator-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: basalt-validator-2
+    ports:
+      - "5102:5000"
+      - "30302:30303"
+    environment:
+      - BASALT_VALIDATOR_INDEX=2
+      - BASALT_VALIDATOR_ADDRESS=0x0000000000000000000000000000000000000102
+      - BASALT_VALIDATOR_KEY=0200000000000000000000000000000000000000000000000000000000000000
+      - BASALT_NETWORK=basalt-devnet
+      - BASALT_CHAIN_ID=31337
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-1:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-2-data:/data/basalt
+    networks:
+      - basalt-devnet
+    restart: unless-stopped
+
+  validator-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: basalt-validator-3
+    ports:
+      - "5103:5000"
+      - "30303:30303"
+    environment:
+      - BASALT_VALIDATOR_INDEX=3
+      - BASALT_VALIDATOR_ADDRESS=0x0000000000000000000000000000000000000103
+      - BASALT_VALIDATOR_KEY=0300000000000000000000000000000000000000000000000000000000000000
+      - BASALT_NETWORK=basalt-devnet
+      - BASALT_CHAIN_ID=31337
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-1:30303,validator-2:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-3-data:/data/basalt
+    networks:
+      - basalt-devnet
+    restart: unless-stopped
+
+volumes:
+  validator-0-data:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+
+networks:
+  basalt-devnet:
+    driver: bridge

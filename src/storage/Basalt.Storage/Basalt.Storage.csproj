@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Storage</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="RocksDB" />
+  </ItemGroup>
+</Project>

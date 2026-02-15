@@ -1,0 +1,63 @@
+@page "/account/{Address}"
+@inject BasaltApiClient Api
+
+<PageTitle>Basalt Explorer - Account</PageTitle>
+
+<div class="card">
+    <div class="card-header">Account Details</div>
+    <div class="card-body">
+        @if (_account != null)
+        {
+            <div class="detail-row">
+                <span class="detail-label">Address</span>
+                <span class="detail-value hash">@_account.Address</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Balance</span>
+                <span class="detail-value">@_account.Balance BSLT</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Nonce</span>
+                <span class="detail-value">@_account.Nonce</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Account Type</span>
+                <span class="detail-value">
+                    <span class="badge badge-success">@_account.AccountType</span>
+                </span>
+            </div>
+        }
+        else if (_error != null)
+        {
+            <div class="error-message">@_error</div>
+        }
+        else
+        {
+            <div class="loading">Loading account...</div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Address { get; set; } = "";
+
+    private AccountDto? _account;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _account = null;
+        _error = null;
+
+        try
+        {
+            _account = await Api.GetAccountAsync(Address);
+            if (_account == null)
+                _error = $"Account not found: {Address}";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

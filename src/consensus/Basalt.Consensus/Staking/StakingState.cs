@@ -1,0 +1,222 @@
+using Basalt.Core;
+
+namespace Basalt.Consensus.Staking;
+
+/// <summary>
+/// In-memory staking state that tracks validator stakes, delegations, and unbonding.
+/// In production, this would be backed by a system contract at 0x0...0001.
+/// </summary>
+public sealed class StakingState
+{
+    private readonly Dictionary<Address, StakeInfo> _stakes = new();
+    private readonly List<UnbondingEntry> _unbondingQueue = new();
+    private readonly object _lock = new();
+
+    /// <summary>
+    /// Minimum stake required to register as a validator.
+    /// </summary>
+    public UInt256 MinValidatorStake { get; init; } = UInt256.Parse("100000000000000000000000");
+
+    /// <summary>
+    /// Unbonding period in blocks (~21 days at 400ms blocks).
+    /// </summary>
+    public uint UnbondingPeriod { get; init; } = 4_536_000;
+
+    /// <summary>
+    /// Register a new validator with an initial stake.
+    /// </summary>
+    public StakingResult RegisterValidator(Address validatorAddress, UInt256 initialStake)
+    {
+        lock (_lock)
+        {
+            if (_stakes.ContainsKey(validatorAddress))
+                return StakingResult.Error("Validator already registered");
+
+            if (initialStake < MinValidatorStake)
+                return StakingResult.Error($"Stake too low. Minimum: {MinValidatorStake}");
+
+            _stakes[validatorAddress] = new StakeInfo
+            {
+                Address = validatorAddress,
+                SelfStake = initialStake,
+                TotalStake = initialStake,
+                IsActive = true,
+                RegisteredAtBlock = 0,
+            };
+
+            return StakingResult.Ok();
+        }
+    }
+
+    /// <summary>
+    /// Add stake to an existing validator.
+    /// </summary>
+    public StakingResult AddStake(Address validatorAddress, UInt256 amount)
+    {
+        lock (_lock)
+        {
+            if (!_stakes.TryGetValue(validatorAddress, out var info))
+                return StakingResult.Error("Validator not registered");
+
+            info.SelfStake += amount;
+            info.TotalStake += amount;
+            return StakingResult.Ok();
+        }
+    }
+
+    /// <summary>
+    /// Initiate unstaking (starts unbonding period).
+    /// </summary>
+    public StakingResult InitiateUnstake(Address validatorAddress, UInt256 amount, ulong currentBlock)
+    {
+        lock (_lock)
+        {
+            if (!_stakes.TryGetValue(validatorAddress, out var info))
+                return StakingResult.Error("Validator not registered");
+
+            if (info.SelfStake < amount)
+                return StakingResult.Error("Insufficient stake");
+
+            var remainingStake = info.SelfStake - amount;
+            if (remainingStake > UInt256.Zero && remainingStake < MinValidatorStake)
+                return StakingResult.Error("Remaining stake below minimum. Unstake all or keep minimum.");
+
+            info.SelfStake -= amount;
+            info.TotalStake -= amount;
+
+            if (info.SelfStake == UInt256.Zero)
+                info.IsActive = false;
+
+            _unbondingQueue.Add(new UnbondingEntry
+            {
+                Validator = validatorAddress,
+                Amount = amount,
+                UnbondingCompleteBlock = currentBlock + UnbondingPeriod,
+            });
+
+            return StakingResult.Ok();
+        }
+    }
+
+    /// <summary>
+    /// Delegate stake to a validator.
+    /// </summary>
+    public StakingResult Delegate(Address delegator, Address validatorAddress, UInt256 amount)
+    {
+        lock (_lock)
+        {
+            if (!_stakes.TryGetValue(validatorAddress, out var info))
+                return StakingResult.Error("Validator not registered");
+
+            if (!info.IsActive)
+                return StakingResult.Error("Validator is not active");
+
+            info.DelegatedStake += amount;
+            info.TotalStake += amount;
+
+            if (!info.Delegators.ContainsKey(delegator))
+                info.Delegators[delegator] = UInt256.Zero;
+            info.Delegators[delegator] += amount;
+
+            return StakingResult.Ok();
+        }
+    }
+
+    /// <summary>
+    /// Process completed unbonding entries (return funds to validators).
+    /// </summary>
+    public List<UnbondingEntry> ProcessUnbonding(ulong currentBlock)
+    {
+        lock (_lock)
+        {
+            var completed = _unbondingQueue
+                .Where(e => e.UnbondingCompleteBlock <= currentBlock)
+                .ToList();
+
+            foreach (var entry in completed)
+                _unbondingQueue.Remove(entry);
+
+            return completed;
+        }
+    }
+
+    /// <summary>
+    /// Get stake info for a validator.
+    /// </summary>
+    public StakeInfo? GetStakeInfo(Address validatorAddress)
+    {
+        lock (_lock)
+            return _stakes.TryGetValue(validatorAddress, out var info) ? info : null;
+    }
+
+    /// <summary>
+    /// Get all active validators sorted by total stake (descending).
+    /// </summary>
+    public List<StakeInfo> GetActiveValidators()
+    {
+        lock (_lock)
+            return _stakes.Values
+                .Where(s => s.IsActive)
+                .OrderByDescending(s => s.TotalStake)
+                .ToList();
+    }
+
+    /// <summary>
+    /// Total staked across all validators.
+    /// </summary>
+    public UInt256 TotalStaked
+    {
+        get
+        {
+            lock (_lock)
+            {
+                var total = UInt256.Zero;
+                foreach (var info in _stakes.Values)
+                    total += info.TotalStake;
+                return total;
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Stake information for a validator.
+/// </summary>
+public sealed class StakeInfo
+{
+    public required Address Address { get; init; }
+    public UInt256 SelfStake { get; set; }
+    public UInt256 DelegatedStake { get; set; }
+    public UInt256 TotalStake { get; set; }
+    public bool IsActive { get; set; }
+    public ulong RegisteredAtBlock { get; set; }
+    public Dictionary<Address, UInt256> Delegators { get; } = new();
+}
+
+/// <summary>
+/// An entry in the unbonding queue.
+/// </summary>
+public sealed class UnbondingEntry
+{
+    public required Address Validator { get; init; }
+    public required UInt256 Amount { get; init; }
+    public required ulong UnbondingCompleteBlock { get; init; }
+}
+
+/// <summary>
+/// Result of a staking operation.
+/// </summary>
+public readonly struct StakingResult
+{
+    public bool IsSuccess { get; }
+    public string? ErrorMessage { get; }
+
+    private StakingResult(bool success, string? error)
+    {
+        IsSuccess = success;
+        ErrorMessage = error;
+    }
+
+    public static StakingResult Ok() => new(true, null);
+    public static StakingResult Error(string message) => new(false, message);
+}

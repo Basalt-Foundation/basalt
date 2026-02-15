@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+option csharp_namespace = "Basalt.Api.Grpc";
+package basalt;
+
+// Basalt Node gRPC API — mirrors the REST API with streaming support.
+service BasaltNode {
+  // Get current node status.
+  rpc GetStatus (GetStatusRequest) returns (StatusReply);
+
+  // Get a block by number or hash.
+  rpc GetBlock (GetBlockRequest) returns (BlockReply);
+
+  // Get an account by address.
+  rpc GetAccount (GetAccountRequest) returns (AccountReply);
+
+  // Submit a signed transaction.
+  rpc SubmitTransaction (SubmitTransactionRequest) returns (TransactionReply);
+
+  // Server-streaming: subscribe to new finalized blocks.
+  rpc SubscribeBlocks (SubscribeBlocksRequest) returns (stream BlockReply);
+}
+
+message GetStatusRequest {}
+
+message StatusReply {
+  uint64 block_height = 1;
+  string latest_block_hash = 2;
+  int32 mempool_size = 3;
+  uint32 protocol_version = 4;
+}
+
+message GetBlockRequest {
+  oneof identifier {
+    uint64 number = 1;
+    string hash = 2;
+  }
+}
+
+message BlockReply {
+  uint64 number = 1;
+  string hash = 2;
+  string parent_hash = 3;
+  string state_root = 4;
+  int64 timestamp = 5;
+  string proposer = 6;
+  uint64 gas_used = 7;
+  uint64 gas_limit = 8;
+  int32 transaction_count = 9;
+}
+
+message GetAccountRequest {
+  string address = 1;
+}
+
+message AccountReply {
+  string address = 1;
+  string balance = 2;
+  uint64 nonce = 3;
+  string account_type = 4;
+}
+
+message SubmitTransactionRequest {
+  uint32 type = 1;
+  uint64 nonce = 2;
+  string sender = 3;
+  string to = 4;
+  string value = 5;
+  uint64 gas_limit = 6;
+  string gas_price = 7;
+  bytes data = 8;
+  uint32 priority = 9;
+  uint32 chain_id = 10;
+  bytes signature = 11;
+  bytes sender_public_key = 12;
+}
+
+message TransactionReply {
+  string hash = 1;
+  string status = 2;
+}
+
+message SubscribeBlocksRequest {}

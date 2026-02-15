@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Sdk.Analyzers.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Analyzers/Basalt.Sdk.Analyzers.csproj" />
+    <ProjectReference Include="../../src/generators/Basalt.Generators.Codec/Basalt.Generators.Codec.csproj" />
+    <ProjectReference Include="../../src/generators/Basalt.Generators.Json/Basalt.Generators.Json.csproj" />
+    <ProjectReference Include="../../src/generators/Basalt.Generators.Contracts/Basalt.Generators.Contracts.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
+  </ItemGroup>
+</Project>

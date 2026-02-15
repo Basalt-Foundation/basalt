@@ -1,0 +1,56 @@
+@page "/validators"
+@inject BasaltApiClient Api
+
+<PageTitle>Basalt Explorer - Validators</PageTitle>
+
+<h2>Validators</h2>
+
+@if (_validators != null && _validators.Length > 0)
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Address</th>
+                <th>Stake</th>
+                <th>Public Key</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var v in _validators)
+            {
+                <tr>
+                    <td class="hash">@TruncateHash(v.Address)</td>
+                    <td>@v.Stake</td>
+                    <td class="hash">@TruncateHash(v.PublicKey)</td>
+                    <td><span class="status-badge @v.Status.ToLowerInvariant()">@v.Status</span></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (_loading)
+{
+    <div class="loading">Loading validators...</div>
+}
+else
+{
+    <div class="empty-state">No validators found.</div>
+}
+
+@code {
+    private ValidatorDto[]? _validators;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _validators = await Api.GetValidatorsAsync();
+        _loading = false;
+    }
+
+    private static string TruncateHash(string hash)
+    {
+        if (hash.Length <= 16) return hash;
+        return hash[..10] + "..." + hash[^6..];
+    }
+}

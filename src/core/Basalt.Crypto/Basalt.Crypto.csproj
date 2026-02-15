@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Crypto</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Basalt.Core/Basalt.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Blake3" />
+    <PackageReference Include="NSec.Cryptography" />
+    <PackageReference Include="Konscious.Security.Cryptography.Argon2" />
+    <PackageReference Include="Nethermind.Crypto.Bls" />
+  </ItemGroup>
+</Project>

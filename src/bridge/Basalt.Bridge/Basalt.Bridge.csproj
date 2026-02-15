@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Bridge</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../storage/Basalt.Storage/Basalt.Storage.csproj" />
+  </ItemGroup>
+</Project>

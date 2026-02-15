@@ -1,0 +1,99 @@
+@page "/blocks"
+@inject BasaltApiClient Api
+@inject NavigationManager Nav
+
+<PageTitle>Basalt Explorer - Blocks</PageTitle>
+
+<div class="card">
+    <div class="card-header">
+        Recent Blocks
+        <button class="badge badge-success" @onclick="LoadBlocks">Refresh</button>
+    </div>
+    <div class="card-body">
+        @if (_blocks.Count > 0)
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th>Block</th>
+                        <th>Hash</th>
+                        <th>Time</th>
+                        <th>Proposer</th>
+                        <th>Txs</th>
+                        <th>Gas Used</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var block in _blocks)
+                    {
+                        <tr @onclick="() => NavigateToBlock(block.Number)" style="cursor: pointer">
+                            <td>@block.Number</td>
+                            <td class="truncate hash">@TruncateHash(block.Hash)</td>
+                            <td>@block.FormattedTime</td>
+                            <td class="truncate hash">@TruncateHash(block.Proposer)</td>
+                            <td>@block.TransactionCount</td>
+                            <td>
+                                @block.GasUsed
+                                <span class="gas-bar">
+                                    <span class="gas-bar-fill" style="width: @(block.GasPercent.ToString("F1"))%"></span>
+                                </span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_error != null)
+        {
+            <div class="error-message">@_error</div>
+        }
+        else
+        {
+            <div class="loading">Loading blocks...</div>
+        }
+    </div>
+</div>
+
+@code {
+    private readonly List<BlockDto> _blocks = new();
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await LoadBlocks();
+
+    private async Task LoadBlocks()
+    {
+        _blocks.Clear();
+        _error = null;
+
+        try
+        {
+            var latest = await Api.GetLatestBlockAsync();
+            if (latest == null)
+            {
+                _error = "Cannot connect to node.";
+                return;
+            }
+
+            _blocks.Add(latest);
+
+            // Load previous blocks (up to 20)
+            for (var i = 1; i < 20 && latest.Number >= (ulong)i; i++)
+            {
+                var block = await Api.GetBlockAsync((latest.Number - (ulong)i).ToString());
+                if (block != null) _blocks.Add(block);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void NavigateToBlock(ulong number) => Nav.NavigateTo($"/block/{number}");
+
+    private static string TruncateHash(string hash)
+    {
+        if (hash.Length <= 16) return hash;
+        return hash[..10] + "..." + hash[^6..];
+    }
+}

@@ -1,0 +1,77 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# JetBrains Rider
+.idea/
+
+# Build outputs
+*.dll
+*.pdb
+*.exe
+!tools/**/*.exe
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+# .NET
+project.fragment.lock.json
+artifacts/
+publish/
+
+# Test results
+TestResults/
+*.trx
+coverage.*
+*.coverage
+*.coveragexml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+.docker/
+
+# Temp files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Secrets
+*.key
+*.pem
+*.pfx
+.env
+.env.*
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json

@@ -1,0 +1,53 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Nav
+
+<div class="layout">
+    <nav class="navbar">
+        <a class="navbar-brand" href="">Basalt Explorer</a>
+        <ul class="navbar-nav">
+            <li><NavLink href="" Match="NavLinkMatch.All">Dashboard</NavLink></li>
+            <li><NavLink href="blocks">Blocks</NavLink></li>
+            <li><NavLink href="transactions">Transactions</NavLink></li>
+            <li><NavLink href="validators">Validators</NavLink></li>
+        </ul>
+        <div class="search-bar">
+            <input type="text" placeholder="Search by block number, hash, or address..."
+                   @bind="SearchQuery" @onkeydown="HandleSearchKey" />
+            <button @onclick="DoSearch">Search</button>
+        </div>
+    </nav>
+
+    <main class="content">
+        @Body
+    </main>
+
+    <footer>
+        Basalt Explorer &mdash; Basalt Blockchain Testnet
+    </footer>
+</div>
+
+@code {
+    private string SearchQuery { get; set; } = "";
+
+    private void HandleSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") DoSearch();
+    }
+
+    private void DoSearch()
+    {
+        var q = SearchQuery.Trim();
+        if (string.IsNullOrEmpty(q)) return;
+
+        if (ulong.TryParse(q, out _))
+            Nav.NavigateTo($"/block/{q}");
+        else if (q.Length == 40 || (q.StartsWith("0x") && q.Length == 42))
+            Nav.NavigateTo($"/account/{q}");
+        else if (q.Length == 64 || (q.StartsWith("0x") && q.Length == 66))
+            Nav.NavigateTo($"/tx/{q}");
+        else
+            Nav.NavigateTo($"/block/{q}");
+
+        SearchQuery = "";
+    }
+}

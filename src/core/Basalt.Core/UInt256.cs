@@ -1,0 +1,348 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Basalt.Core;
+
+/// <summary>
+/// 256-bit unsigned integer for token balances, gas calculations, and cryptographic operations.
+/// Stored as two UInt128 values in little-endian order (lo, hi).
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
+{
+    public static readonly UInt256 Zero = default;
+    public static readonly UInt256 One = new(1, 0);
+    public static readonly UInt256 MaxValue = new(UInt128.MaxValue, UInt128.MaxValue);
+
+    public readonly UInt128 Lo;
+    public readonly UInt128 Hi;
+
+    public UInt256(UInt128 lo, UInt128 hi = default)
+    {
+        Lo = lo;
+        Hi = hi;
+    }
+
+    public UInt256(ulong value)
+    {
+        Lo = value;
+        Hi = 0;
+    }
+
+    public UInt256(ReadOnlySpan<byte> bytes, bool isBigEndian = false)
+    {
+        if (bytes.Length != 32)
+            throw new ArgumentException("UInt256 requires exactly 32 bytes.");
+
+        if (isBigEndian)
+        {
+            Hi = new UInt128(
+                BinaryPrimitives.ReadUInt64BigEndian(bytes),
+                BinaryPrimitives.ReadUInt64BigEndian(bytes[8..]));
+            Lo = new UInt128(
+                BinaryPrimitives.ReadUInt64BigEndian(bytes[16..]),
+                BinaryPrimitives.ReadUInt64BigEndian(bytes[24..]));
+        }
+        else
+        {
+            Lo = new UInt128(
+                BinaryPrimitives.ReadUInt64LittleEndian(bytes[8..]),
+                BinaryPrimitives.ReadUInt64LittleEndian(bytes));
+            Hi = new UInt128(
+                BinaryPrimitives.ReadUInt64LittleEndian(bytes[24..]),
+                BinaryPrimitives.ReadUInt64LittleEndian(bytes[16..]));
+        }
+    }
+
+    public bool IsZero => Lo == 0 && Hi == 0;
+
+    public void WriteTo(Span<byte> destination, bool isBigEndian = false)
+    {
+        if (destination.Length < 32)
+            throw new ArgumentException("Destination must be at least 32 bytes.");
+
+        if (isBigEndian)
+        {
+            BinaryPrimitives.WriteUInt64BigEndian(destination, (ulong)(Hi >> 64));
+            BinaryPrimitives.WriteUInt64BigEndian(destination[8..], (ulong)Hi);
+            BinaryPrimitives.WriteUInt64BigEndian(destination[16..], (ulong)(Lo >> 64));
+            BinaryPrimitives.WriteUInt64BigEndian(destination[24..], (ulong)Lo);
+        }
+        else
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(destination, (ulong)Lo);
+            BinaryPrimitives.WriteUInt64LittleEndian(destination[8..], (ulong)(Lo >> 64));
+            BinaryPrimitives.WriteUInt64LittleEndian(destination[16..], (ulong)Hi);
+            BinaryPrimitives.WriteUInt64LittleEndian(destination[24..], (ulong)(Hi >> 64));
+        }
+    }
+
+    public byte[] ToArray(bool isBigEndian = false)
+    {
+        var result = new byte[32];
+        WriteTo(result, isBigEndian);
+        return result;
+    }
+
+    // Arithmetic operators
+    public static UInt256 operator +(UInt256 a, UInt256 b)
+    {
+        var lo = a.Lo + b.Lo;
+        var carry = lo < a.Lo ? (UInt128)1 : (UInt128)0;
+        var hi = a.Hi + b.Hi + carry;
+        return new UInt256(lo, hi);
+    }
+
+    public static UInt256 operator -(UInt256 a, UInt256 b)
+    {
+        var lo = a.Lo - b.Lo;
+        var borrow = lo > a.Lo ? (UInt128)1 : (UInt128)0;
+        var hi = a.Hi - b.Hi - borrow;
+        return new UInt256(lo, hi);
+    }
+
+    public static UInt256 operator *(UInt256 a, UInt256 b)
+    {
+        // Schoolbook multiplication with 64-bit limbs
+        ulong a0 = (ulong)a.Lo;
+        ulong a1 = (ulong)(a.Lo >> 64);
+        ulong a2 = (ulong)a.Hi;
+        ulong a3 = (ulong)(a.Hi >> 64);
+
+        ulong b0 = (ulong)b.Lo;
+        ulong b1 = (ulong)(b.Lo >> 64);
+        ulong b2 = (ulong)b.Hi;
+        ulong b3 = (ulong)(b.Hi >> 64);
+
+        UInt128 p0 = (UInt128)a0 * b0;
+        UInt128 p1 = (UInt128)a0 * b1;
+        UInt128 p2 = (UInt128)a0 * b2;
+        UInt128 p3 = (UInt128)a0 * b3;
+
+        p1 += (UInt128)a1 * b0;
+        p2 += (UInt128)a1 * b1;
+        p3 += (UInt128)a1 * b2;
+
+        p2 += (UInt128)a2 * b0;
+        p3 += (UInt128)a2 * b1;
+
+        p3 += (UInt128)a3 * b0;
+
+        ulong r0 = (ulong)p0;
+        UInt128 carry = p0 >> 64;
+
+        carry += p1;
+        ulong r1 = (ulong)carry;
+        carry >>= 64;
+
+        carry += p2;
+        ulong r2 = (ulong)carry;
+        carry >>= 64;
+
+        carry += p3;
+        ulong r3 = (ulong)carry;
+
+        return new UInt256(new UInt128(r1, r0), new UInt128(r3, r2));
+    }
+
+    public static UInt256 operator /(UInt256 a, UInt256 b)
+    {
+        if (b.IsZero)
+            throw new DivideByZeroException();
+
+        if (a < b)
+            return Zero;
+
+        if (b == One)
+            return a;
+
+        // Simple shift-subtract division
+        DivRem(a, b, out var quotient, out _);
+        return quotient;
+    }
+
+    public static UInt256 operator %(UInt256 a, UInt256 b)
+    {
+        if (b.IsZero)
+            throw new DivideByZeroException();
+
+        DivRem(a, b, out _, out var remainder);
+        return remainder;
+    }
+
+    public static void DivRem(UInt256 dividend, UInt256 divisor, out UInt256 quotient, out UInt256 remainder)
+    {
+        if (divisor.IsZero)
+            throw new DivideByZeroException();
+
+        if (dividend < divisor)
+        {
+            quotient = Zero;
+            remainder = dividend;
+            return;
+        }
+
+        var q = Zero;
+        var r = Zero;
+
+        for (int i = 255; i >= 0; i--)
+        {
+            r = r << 1;
+            if (GetBit(dividend, i))
+                r = r + One;
+
+            if (r >= divisor)
+            {
+                r = r - divisor;
+                q = SetBit(q, i);
+            }
+        }
+
+        quotient = q;
+        remainder = r;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool GetBit(UInt256 value, int bit)
+    {
+        if (bit < 128)
+            return (value.Lo & ((UInt128)1 << bit)) != 0;
+        return (value.Hi & ((UInt128)1 << (bit - 128))) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static UInt256 SetBit(UInt256 value, int bit)
+    {
+        if (bit < 128)
+            return new UInt256(value.Lo | ((UInt128)1 << bit), value.Hi);
+        return new UInt256(value.Lo, value.Hi | ((UInt128)1 << (bit - 128)));
+    }
+
+    // Shift operators
+    public static UInt256 operator <<(UInt256 value, int shift)
+    {
+        if (shift == 0) return value;
+        if (shift >= 256) return Zero;
+        if (shift >= 128)
+            return new UInt256(0, value.Lo << (shift - 128));
+
+        var lo = value.Lo << shift;
+        var hi = (value.Hi << shift) | (value.Lo >> (128 - shift));
+        return new UInt256(lo, hi);
+    }
+
+    public static UInt256 operator >>(UInt256 value, int shift)
+    {
+        if (shift == 0) return value;
+        if (shift >= 256) return Zero;
+        if (shift >= 128)
+            return new UInt256(value.Hi >> (shift - 128), 0);
+
+        var hi = value.Hi >> shift;
+        var lo = (value.Lo >> shift) | (value.Hi << (128 - shift));
+        return new UInt256(lo, hi);
+    }
+
+    // Bitwise operators
+    public static UInt256 operator &(UInt256 a, UInt256 b) => new(a.Lo & b.Lo, a.Hi & b.Hi);
+    public static UInt256 operator |(UInt256 a, UInt256 b) => new(a.Lo | b.Lo, a.Hi | b.Hi);
+    public static UInt256 operator ^(UInt256 a, UInt256 b) => new(a.Lo ^ b.Lo, a.Hi ^ b.Hi);
+    public static UInt256 operator ~(UInt256 a) => new(~a.Lo, ~a.Hi);
+
+    // Comparison operators
+    public static bool operator <(UInt256 a, UInt256 b) => a.CompareTo(b) < 0;
+    public static bool operator >(UInt256 a, UInt256 b) => a.CompareTo(b) > 0;
+    public static bool operator <=(UInt256 a, UInt256 b) => a.CompareTo(b) <= 0;
+    public static bool operator >=(UInt256 a, UInt256 b) => a.CompareTo(b) >= 0;
+    public static bool operator ==(UInt256 a, UInt256 b) => a.Equals(b);
+    public static bool operator !=(UInt256 a, UInt256 b) => !a.Equals(b);
+
+    // Implicit conversions
+    public static implicit operator UInt256(ulong value) => new(value);
+    public static implicit operator UInt256(uint value) => new(value);
+    public static implicit operator UInt256(int value)
+    {
+        if (value < 0) throw new OverflowException("Cannot convert negative value to UInt256.");
+        return new((ulong)value);
+    }
+
+    public static explicit operator ulong(UInt256 value)
+    {
+        if (value.Hi != 0 || (ulong)(value.Lo >> 64) != 0)
+            throw new OverflowException("UInt256 value is too large for ulong.");
+        return (ulong)value.Lo;
+    }
+
+    // Equality
+    public bool Equals(UInt256 other) => Lo == other.Lo && Hi == other.Hi;
+    public override bool Equals([NotNullWhen(true)] object? obj) => obj is UInt256 other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(Lo, Hi);
+
+    public int CompareTo(UInt256 other)
+    {
+        var hiCmp = Hi.CompareTo(other.Hi);
+        return hiCmp != 0 ? hiCmp : Lo.CompareTo(other.Lo);
+    }
+
+    public override string ToString()
+    {
+        if (IsZero) return "0";
+        if (Hi == 0) return Lo.ToString();
+
+        // Convert to hex for large values
+        return "0x" + ToHexString();
+    }
+
+    public string ToHexString()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        WriteTo(bytes, isBigEndian: true);
+        return Convert.ToHexString(bytes).ToLowerInvariant().TrimStart('0');
+    }
+
+    public static UInt256 Parse(string s)
+    {
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            var hex = s[2..].PadLeft(64, '0');
+            Span<byte> bytes = stackalloc byte[32];
+            Convert.FromHexString(hex, bytes, out _, out _);
+            return new UInt256(bytes, isBigEndian: true);
+        }
+
+        // Decimal parsing via BigInteger
+        if (!BigInteger.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out var big) || big.Sign < 0)
+            throw new FormatException($"Invalid UInt256 string: {s}");
+
+        var beBytes = big.ToByteArray(isUnsigned: true, isBigEndian: true);
+        if (beBytes.Length > 32)
+            throw new OverflowException("Value exceeds UInt256 range.");
+
+        Span<byte> padded = stackalloc byte[32];
+        padded.Clear();
+        beBytes.AsSpan().CopyTo(padded[(32 - beBytes.Length)..]);
+        return new UInt256(padded, isBigEndian: true);
+    }
+}
+
+file static class BinaryPrimitives
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong ReadUInt64LittleEndian(ReadOnlySpan<byte> source) =>
+        System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(source);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong ReadUInt64BigEndian(ReadOnlySpan<byte> source) =>
+        System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(source);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteUInt64LittleEndian(Span<byte> destination, ulong value) =>
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(destination, value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteUInt64BigEndian(Span<byte> destination, ulong value) =>
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(destination, value);
+}

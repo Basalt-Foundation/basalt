@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Api.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/api/Basalt.Api.Rest/Basalt.Api.Rest.csproj" />
+    <ProjectReference Include="../../src/api/Basalt.Api.GraphQL/Basalt.Api.GraphQL.csproj" />
+    <ProjectReference Include="../../src/api/Basalt.Api.Grpc/Basalt.Api.Grpc.csproj" />
+    <ProjectReference Include="../../src/execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../src/storage/Basalt.Storage/Basalt.Storage.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+  </ItemGroup>
+</Project>

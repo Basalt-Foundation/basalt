@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Sdk.Contracts</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Basalt.Sdk.Contracts</PackageId>
+    <Description>Smart contract SDK for Basalt blockchain</Description>
+  </PropertyGroup>
+</Project>
