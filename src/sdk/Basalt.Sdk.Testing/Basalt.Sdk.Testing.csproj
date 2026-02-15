@@ -1,7 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Sdk.Testing</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Basalt.Sdk.Testing</PackageId>
+    <Description>Unit testing framework for Basalt smart contracts — in-memory test host with storage, events, and cross-contract call simulation</Description>
+    <PackageTags>basalt;blockchain;smart-contracts;testing</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Basalt-Foundation/basalt</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Basalt-Foundation/basalt</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
     <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />

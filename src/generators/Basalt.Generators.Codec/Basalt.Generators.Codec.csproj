@@ -2,6 +2,14 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <RootNamespace>Basalt.Generators.Codec</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Basalt.Generators.Codec</PackageId>
+    <Description>Source generator for Basalt binary serialization — generates WriteTo/ReadFrom/GetSerializedSize implementations</Description>
+    <PackageTags>basalt;blockchain;source-generator;serialization</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Basalt-Foundation/basalt</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Basalt-Foundation/basalt</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <IsAotCompatible>false</IsAotCompatible>
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
@@ -10,6 +18,9 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />

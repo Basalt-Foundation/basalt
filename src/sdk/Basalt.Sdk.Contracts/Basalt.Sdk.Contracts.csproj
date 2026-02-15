@@ -3,6 +3,14 @@
     <RootNamespace>Basalt.Sdk.Contracts</RootNamespace>
     <IsPackable>true</IsPackable>
     <PackageId>Basalt.Sdk.Contracts</PackageId>
-    <Description>Smart contract SDK for Basalt blockchain</Description>
+    <Description>Smart contract SDK for Basalt blockchain — attributes, storage primitives, context, and token standards (BST-20, BST-721, BST-1155, BST-DID)</Description>
+    <PackageTags>basalt;blockchain;smart-contracts;sdk</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Basalt-Foundation/basalt</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Basalt-Foundation/basalt</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>
