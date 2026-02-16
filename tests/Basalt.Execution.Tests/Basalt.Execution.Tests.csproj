@@ -9,6 +9,7 @@
     <ProjectReference Include="../../src/storage/Basalt.Storage/Basalt.Storage.csproj" />
     <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
     <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

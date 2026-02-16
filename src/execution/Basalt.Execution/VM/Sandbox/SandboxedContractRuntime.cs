@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Crypto;
+using Basalt.Sdk.Contracts;
 
 namespace Basalt.Execution.VM.Sandbox;
 
@@ -24,10 +25,18 @@ public sealed class SandboxedContractRuntime : IContractRuntime
     private static readonly string SelectorEmitEvent = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("emit_event")).ToLowerInvariant();
 
     private readonly SandboxConfiguration _config;
+    private readonly ContractRegistry _registry;
 
     public SandboxedContractRuntime(SandboxConfiguration config)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        _registry = ContractRegistry.CreateDefault();
+    }
+
+    public SandboxedContractRuntime(SandboxConfiguration config, ContractRegistry registry)
+    {
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _registry = registry;
     }
 
     // =========================================================================
@@ -132,6 +141,20 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             // Charge base call gas
             ctx.GasMeter.Consume(GasTable.Call);
 
+            // SDK contract path
+            if (ContractRegistry.IsSdkContract(code))
+            {
+                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                using var scope = ContractBridge.Setup(ctx, host);
+                var contract = _registry.CreateInstance(typeId, ctorArgs);
+
+                if (callData.Length < 4)
+                    return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
+
+                var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
+                return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
+            }
+
             // Short-circuit: if callData is too short for a selector, treat as fallback
             if (callData.Length < 4)
             {
@@ -168,6 +191,14 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             };
         }
         catch (ContractRevertException ex)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = ex.Message,
+            };
+        }
+        catch (Basalt.Sdk.Contracts.ContractRevertException ex)
         {
             return new ContractCallResult
             {

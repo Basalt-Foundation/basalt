@@ -4,7 +4,7 @@ namespace Basalt.Sdk.Contracts.Standards;
 /// Reference implementation of the BST-20 Fungible Token Standard.
 /// </summary>
 [BasaltContract]
-public class BST20Token : IBST20
+public partial class BST20Token : IBST20
 {
     // Storage fields
     private readonly StorageValue<ulong> _totalSupply;

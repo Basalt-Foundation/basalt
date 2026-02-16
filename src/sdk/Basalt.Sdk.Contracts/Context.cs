@@ -71,6 +71,23 @@ public static class Context
     /// </summary>
     public static Action<string, object>? EventEmitted { get; set; }
 
+    // ---- Native Transfer ----
+
+    /// <summary>
+    /// Delegate for sending native tokens from the contract. Set by the runtime.
+    /// Parameters: (recipient address, amount in base units).
+    /// </summary>
+    public static Action<byte[], ulong>? NativeTransferHandler { get; set; }
+
+    /// <summary>
+    /// Transfer native tokens from the current contract to a recipient.
+    /// </summary>
+    public static void TransferNative(byte[] to, ulong amount)
+    {
+        Require(NativeTransferHandler != null, "Native transfers not available");
+        NativeTransferHandler!(to, amount);
+    }
+
     // ---- Cross-Contract Call Support ----
 
     /// <summary>
@@ -153,6 +170,7 @@ public static class Context
         CallDepth = 0;
         ReentrancyGuard.Clear();
         EventEmitted = null;
+        NativeTransferHandler = null;
         CrossContractCallHandler = null;
     }
 }

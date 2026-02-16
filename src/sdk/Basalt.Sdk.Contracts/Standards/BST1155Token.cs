@@ -4,7 +4,7 @@ namespace Basalt.Sdk.Contracts.Standards;
 /// Reference implementation of the BST-1155 Multi-Token Standard.
 /// </summary>
 [BasaltContract]
-public class BST1155Token : IBST1155
+public partial class BST1155Token : IBST1155
 {
     private readonly StorageMap<string, ulong> _balances;       // "account:tokenId" -> balance
     private readonly StorageMap<string, string> _approvals;      // "owner:operator" -> "1"/"0"

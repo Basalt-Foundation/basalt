@@ -4,7 +4,7 @@ namespace Basalt.Sdk.Contracts.Standards;
 /// Reference implementation of the BST-721 Non-Fungible Token Standard.
 /// </summary>
 [BasaltContract]
-public class BST721Token : IBST721
+public partial class BST721Token : IBST721
 {
     private readonly StorageMap<string, ulong> _balances;      // owner -> count
     private readonly StorageMap<string, string> _owners;        // tokenId -> owner

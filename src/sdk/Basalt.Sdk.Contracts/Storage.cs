@@ -1,33 +1,41 @@
 namespace Basalt.Sdk.Contracts;
 
 /// <summary>
-/// Static storage backend used by StorageValue/StorageMap/StorageList.
-/// In production, this is wired to host interface calls via native function pointers.
-/// In testing, BasaltTestHost provides an in-memory implementation.
+/// Abstraction over contract storage backends.
+/// The default is an in-memory dictionary (tests / BasaltTestHost).
+/// In production, the runtime wires a HostStorageProvider that bridges to on-chain state.
 /// </summary>
-public static class ContractStorage
+public interface IStorageProvider
 {
-    private static Dictionary<string, object> _store = new();
+    void Set(string key, object? value);
+    T Get<T>(string key);
+    bool ContainsKey(string key);
+    void Delete(string key);
+}
 
-    public static void Set(string key, object? value) => _store[key] = value!;
+/// <summary>
+/// Default in-memory storage provider used by tests and BasaltTestHost.
+/// </summary>
+public sealed class InMemoryStorageProvider : IStorageProvider
+{
+    private Dictionary<string, object> _store = new();
 
-    public static T Get<T>(string key)
+    public void Set(string key, object? value) => _store[key] = value!;
+
+    public T Get<T>(string key)
     {
         if (_store.TryGetValue(key, out var value))
             return (T)value;
         return default!;
     }
 
-    public static bool ContainsKey(string key) => _store.ContainsKey(key);
+    public bool ContainsKey(string key) => _store.ContainsKey(key);
 
-    public static void Delete(string key) => _store.Remove(key);
+    public void Delete(string key) => _store.Remove(key);
 
-    public static void Clear() => _store.Clear();
+    public void Clear() => _store.Clear();
 
-    /// <summary>
-    /// Take a snapshot of all storage for rollback support.
-    /// </summary>
-    public static Dictionary<string, object> Snapshot()
+    public Dictionary<string, object> Snapshot()
     {
         var snap = new Dictionary<string, object>(_store.Count);
         foreach (var kvp in _store)
@@ -35,14 +43,82 @@ public static class ContractStorage
         return snap;
     }
 
-    /// <summary>
-    /// Restore storage from a snapshot.
-    /// </summary>
-    public static void Restore(Dictionary<string, object> snapshot)
+    public void Restore(Dictionary<string, object> snapshot)
     {
         _store = new Dictionary<string, object>(snapshot.Count);
         foreach (var kvp in snapshot)
             _store[kvp.Key] = kvp.Value;
+    }
+}
+
+/// <summary>
+/// Static storage backend used by StorageValue/StorageMap/StorageList.
+/// Delegates to an IStorageProvider. Default: InMemoryStorageProvider.
+/// Call SetProvider() to wire production (on-chain) or custom storage.
+/// </summary>
+public static class ContractStorage
+{
+    private static readonly InMemoryStorageProvider DefaultProvider = new();
+    private static IStorageProvider _provider = DefaultProvider;
+
+    /// <summary>
+    /// Replace the storage backend. Returns the previous provider.
+    /// </summary>
+    public static IStorageProvider SetProvider(IStorageProvider provider)
+    {
+        var prev = _provider;
+        _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        return prev;
+    }
+
+    /// <summary>
+    /// Reset to the default in-memory provider.
+    /// </summary>
+    public static void ResetProvider()
+    {
+        _provider = DefaultProvider;
+    }
+
+    /// <summary>
+    /// Current storage provider (for test assertions).
+    /// </summary>
+    public static IStorageProvider Provider => _provider;
+
+    public static void Set(string key, object? value) => _provider.Set(key, value);
+
+    public static T Get<T>(string key) => _provider.Get<T>(key);
+
+    public static bool ContainsKey(string key) => _provider.ContainsKey(key);
+
+    public static void Delete(string key) => _provider.Delete(key);
+
+    public static void Clear()
+    {
+        if (_provider is InMemoryStorageProvider mem)
+            mem.Clear();
+        else
+            ResetProvider();
+    }
+
+    /// <summary>
+    /// Take a snapshot of all storage for rollback support.
+    /// Only works with InMemoryStorageProvider.
+    /// </summary>
+    public static Dictionary<string, object> Snapshot()
+    {
+        if (_provider is InMemoryStorageProvider mem)
+            return mem.Snapshot();
+        return new Dictionary<string, object>();
+    }
+
+    /// <summary>
+    /// Restore storage from a snapshot.
+    /// Only works with InMemoryStorageProvider.
+    /// </summary>
+    public static void Restore(Dictionary<string, object> snapshot)
+    {
+        if (_provider is InMemoryStorageProvider mem)
+            mem.Restore(snapshot);
     }
 }
 

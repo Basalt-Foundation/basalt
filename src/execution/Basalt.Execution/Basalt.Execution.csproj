@@ -7,6 +7,7 @@
     <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
     <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
     <ProjectReference Include="../../storage/Basalt.Storage/Basalt.Storage.csproj" />
+    <ProjectReference Include="../../sdk/Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
     <!-- Basalt.Consensus reference removed: it was unused and caused a circular dependency
          (Execution -> Consensus -> Network -> Execution). If needed, use interfaces in Basalt.Core. -->
     <!-- <ProjectReference Include="../../consensus/Basalt.Consensus/Basalt.Consensus.csproj" /> -->

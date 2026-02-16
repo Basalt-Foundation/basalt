@@ -1,28 +1,36 @@
 using Basalt.Core;
 using Basalt.Crypto;
+using Basalt.Sdk.Contracts;
 
 namespace Basalt.Execution.VM;
 
 /// <summary>
 /// Phase 1 contract runtime using in-process managed execution.
-/// Contracts are stored as bytecode with a simple ABI dispatch table.
-/// This provides a functional contract system while the AOT sandbox is developed.
 ///
-/// Contract bytecode format:
-/// - First 4 bytes: method selector (BLAKE3 hash of method signature, first 4 bytes)
-/// - Remaining bytes: ABI-encoded parameters
+/// Supports two code formats:
+/// 1. Built-in methods: BLAKE3-based selectors (storage_set/get/del, emit_event)
+/// 2. SDK contracts: Magic bytes [0xBA, 0x5A] + FNV-1a dispatch via IDispatchable
 ///
-/// Contract code stored on-chain:
-/// - The contract "code" is simply stored and its code hash recorded.
-/// - The dispatch is handled by a lookup table keyed by method selector.
+/// SDK contracts are instantiated via ContractRegistry factory delegates (AOT-safe).
 /// </summary>
 public sealed class ManagedContractRuntime : IContractRuntime
 {
+    private readonly ContractRegistry _registry;
     // Pre-computed BLAKE3-based method selectors (first 4 bytes of BLAKE3(method_name))
     private static readonly string SelectorStorageSet = Convert.ToHexString(ComputeSelector("storage_set")).ToLowerInvariant();
     private static readonly string SelectorStorageGet = Convert.ToHexString(ComputeSelector("storage_get")).ToLowerInvariant();
     private static readonly string SelectorStorageDel = Convert.ToHexString(ComputeSelector("storage_del")).ToLowerInvariant();
     private static readonly string SelectorEmitEvent = Convert.ToHexString(ComputeSelector("emit_event")).ToLowerInvariant();
+
+    public ManagedContractRuntime()
+    {
+        _registry = ContractRegistry.CreateDefault();
+    }
+
+    public ManagedContractRuntime(ContractRegistry registry)
+    {
+        _registry = registry;
+    }
 
     public ContractDeployResult Deploy(byte[] code, byte[] constructorArgs, VmExecutionContext ctx)
     {
@@ -34,12 +42,18 @@ public sealed class ManagedContractRuntime : IContractRuntime
             ctx.GasMeter.Consume(GasTable.ContractCreation);
             ctx.GasMeter.Consume((ulong)code.Length * GasTable.TxDataNonZeroByte);
 
-            // Store the code hash
-            var codeHash = Blake3Hasher.Hash(code);
-
             // Store the code in contract storage under a well-known key
             var codeStorageKey = GetCodeStorageKey();
             host.StorageWrite(codeStorageKey, code);
+
+            // For SDK contracts, run the constructor (wires storage + context)
+            if (ContractRegistry.IsSdkContract(code))
+            {
+                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                using var scope = ContractBridge.Setup(ctx, host);
+                // Instantiate the contract — constructor runs and initializes storage
+                _registry.CreateInstance(typeId, ctorArgs);
+            }
 
             return new ContractDeployResult
             {
@@ -58,6 +72,15 @@ public sealed class ManagedContractRuntime : IContractRuntime
             };
         }
         catch (ContractRevertException ex)
+        {
+            return new ContractDeployResult
+            {
+                Success = false,
+                Code = [],
+                ErrorMessage = ex.Message,
+            };
+        }
+        catch (Basalt.Sdk.Contracts.ContractRevertException ex)
         {
             return new ContractDeployResult
             {
@@ -86,10 +109,11 @@ public sealed class ManagedContractRuntime : IContractRuntime
                 };
             }
 
-            // For Phase 1, contracts use a simple dispatch mechanism:
-            // The first 4 bytes of callData are the method selector.
-            // The contract code is a serialized dispatch table that maps
-            // selectors to predefined operations.
+            // SDK contracts: use ContractBridge + IDispatchable
+            if (ContractRegistry.IsSdkContract(code))
+                return ExecuteSdkContract(code, callData, ctx, host);
+
+            // Built-in contracts: BLAKE3 selector dispatch
             if (callData.Length < 4)
             {
                 // Fallback/receive function — just accept value
@@ -103,8 +127,6 @@ public sealed class ManagedContractRuntime : IContractRuntime
             var selector = callData[..4];
             var args = callData.Length > 4 ? callData[4..] : Array.Empty<byte>();
 
-            // Dispatch to built-in contract operations
-            // Phase 1 provides a simple key-value store contract interface
             return DispatchCall(host, ctx, selector, args);
         }
         catch (OutOfGasException)
@@ -123,6 +145,45 @@ public sealed class ManagedContractRuntime : IContractRuntime
                 ErrorMessage = ex.Message,
             };
         }
+        catch (Basalt.Sdk.Contracts.ContractRevertException ex)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = ex.Message,
+            };
+        }
+    }
+
+    private ContractCallResult ExecuteSdkContract(byte[] code, byte[] callData, VmExecutionContext ctx, HostInterface host)
+    {
+        var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+
+        using var scope = ContractBridge.Setup(ctx, host);
+
+        // Instantiate the contract (constructor populates in-memory fields + reads storage)
+        var contract = _registry.CreateInstance(typeId, ctorArgs);
+
+        if (callData.Length < 4)
+        {
+            return new ContractCallResult
+            {
+                Success = true,
+                Logs = [.. ctx.EmittedLogs],
+            };
+        }
+
+        var selector = callData[..4];
+        var args = callData.Length > 4 ? callData[4..] : [];
+
+        var result = contract.Dispatch(selector, args);
+
+        return new ContractCallResult
+        {
+            Success = true,
+            ReturnData = result,
+            Logs = [.. ctx.EmittedLogs],
+        };
     }
 
     private static ContractCallResult DispatchCall(HostInterface host, VmExecutionContext ctx, byte[] selector, byte[] args)

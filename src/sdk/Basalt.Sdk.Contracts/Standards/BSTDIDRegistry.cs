@@ -4,7 +4,7 @@ namespace Basalt.Sdk.Contracts.Standards;
 /// Reference implementation of the BST-DID Decentralized Identity Standard.
 /// </summary>
 [BasaltContract]
-public class BSTDIDRegistry : IBSTDID
+public partial class BSTDIDRegistry : IBSTDID
 {
     private readonly StorageMap<string, string> _controllers;       // did -> controller (hex)
     private readonly StorageMap<string, string> _documents;          // did -> serialized document

@@ -75,7 +75,20 @@ public sealed class ContractGenerator : IIncrementalGenerator
         var events = new List<EventInfo>();
         CollectEvents(typeSymbol, events);
 
-        return new ContractInfo(namespaceName, typeName, methods, events);
+        // Check if base class also has [BasaltContract] — need `new` modifier on generated members
+        var hasContractBase = false;
+        var baseType = typeSymbol.BaseType;
+        while (baseType is not null && baseType.SpecialType != SpecialType.System_Object)
+        {
+            if (HasAttribute(baseType, BasaltContractAttribute))
+            {
+                hasContractBase = true;
+                break;
+            }
+            baseType = baseType.BaseType;
+        }
+
+        return new ContractInfo(namespaceName, typeName, methods, events, hasContractBase);
     }
 
     private static void CollectEvents(INamedTypeSymbol contractType, List<EventInfo> events)
@@ -266,7 +279,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
             sb.AppendLine();
         }
 
-        sb.AppendLine($"partial class {info.TypeName}");
+        sb.AppendLine($"partial class {info.TypeName} : Basalt.Sdk.Contracts.IDispatchable");
         sb.AppendLine("{");
 
         // Generate ABI metadata
@@ -287,7 +300,8 @@ public sealed class ContractGenerator : IIncrementalGenerator
 
     private static void GenerateAbiMetadata(StringBuilder sb, ContractInfo info)
     {
-        sb.Append("    public const string ContractAbi = @\"{\"\"methods\"\":[");
+        var modifier = info.HasContractBase ? "new " : "";
+        sb.Append($"    public {modifier}const string ContractAbi = @\"{{\"\"methods\"\":[");
 
         for (int i = 0; i < info.Methods.Count; i++)
         {
@@ -357,7 +371,8 @@ public sealed class ContractGenerator : IIncrementalGenerator
 
     private static void GenerateDispatchMethod(StringBuilder sb, ContractInfo info)
     {
-        sb.AppendLine("    public byte[] Dispatch(byte[] selector, byte[] calldata)");
+        var modifier = info.HasContractBase ? "new " : "";
+        sb.AppendLine($"    public {modifier}byte[] Dispatch(byte[] selector, byte[] calldata)");
         sb.AppendLine("    {");
         sb.AppendLine("        if (selector is null || selector.Length < 4)");
         sb.AppendLine("            throw new System.InvalidOperationException(\"Invalid selector: must be at least 4 bytes.\");");
@@ -365,7 +380,9 @@ public sealed class ContractGenerator : IIncrementalGenerator
         sb.AppendLine("        uint sel = (uint)(selector[0] | (selector[1] << 8) | (selector[2] << 16) | (selector[3] << 24));");
         sb.AppendLine();
 
-        if (info.Methods.Count == 0)
+        var dispatchable = info.Methods.Where(IsMethodDispatchable).ToList();
+
+        if (dispatchable.Count == 0)
         {
             sb.AppendLine("        throw new System.InvalidOperationException($\"Unknown selector: 0x{sel:X8}\");");
         }
@@ -374,7 +391,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
             sb.AppendLine("        switch (sel)");
             sb.AppendLine("        {");
 
-            foreach (var method in info.Methods)
+            foreach (var method in dispatchable)
             {
                 var selector = ComputeSelector(method.Name);
                 sb.AppendLine($"            case 0x{selector:X8}u: // {method.Name}");
@@ -403,10 +420,10 @@ public sealed class ContractGenerator : IIncrementalGenerator
                 else
                 {
                     sb.AppendLine($"                var _result = {call};");
-                    var (bufferSize, writeCall) = GetWriteInfo(method.ReturnTypeFullName);
-                    if (bufferSize is not null)
+                    var writeInfo = GetWriteInfo(method.ReturnTypeFullName)!.Value;
+                    if (writeInfo.BufferSize is not null)
                     {
-                        sb.AppendLine($"                var _buf = new byte[{bufferSize}];");
+                        sb.AppendLine($"                var _buf = new byte[{writeInfo.BufferSize}];");
                     }
                     else
                     {
@@ -414,7 +431,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
                         sb.AppendLine("                var _buf = new byte[4096];");
                     }
                     sb.AppendLine("                var writer = new Basalt.Codec.BasaltWriter(_buf);");
-                    sb.AppendLine($"                {writeCall};");
+                    sb.AppendLine($"                {writeInfo.WriteCall};");
                     sb.AppendLine("                return _buf[..writer.Position];");
                 }
 
@@ -429,7 +446,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
         sb.AppendLine("    }");
     }
 
-    private static string GetReadExpression(string fullTypeName)
+    private static string? GetReadExpression(string fullTypeName)
     {
         return fullTypeName switch
         {
@@ -445,15 +462,15 @@ public sealed class ContractGenerator : IIncrementalGenerator
             "Basalt.Core.Hash256" => "reader.ReadHash256()",
             "Basalt.Core.Address" => "reader.ReadAddress()",
             "Basalt.Core.UInt256" => "reader.ReadUInt256()",
-            _ => $"throw new System.NotSupportedException(\"Unsupported parameter type: {fullTypeName}\")"
+            _ => null // Unsupported type — method will be skipped in dispatch
         };
     }
 
     /// <summary>
     /// Returns (bufferSize, writeStatement) for the given return type.
-    /// bufferSize is null for variable-length types.
+    /// bufferSize is null for variable-length types. Returns null if unsupported.
     /// </summary>
-    private static (string? BufferSize, string WriteCall) GetWriteInfo(string fullTypeName)
+    private static (string? BufferSize, string WriteCall)? GetWriteInfo(string fullTypeName)
     {
         return fullTypeName switch
         {
@@ -469,8 +486,23 @@ public sealed class ContractGenerator : IIncrementalGenerator
             "Basalt.Core.Hash256" => ("32", "writer.WriteHash256(_result)"),
             "Basalt.Core.Address" => ("20", "writer.WriteAddress(_result)"),
             "Basalt.Core.UInt256" => ("32", "writer.WriteUInt256(_result)"),
-            _ => (null, $"throw new System.NotSupportedException(\"Unsupported return type: {fullTypeName}\")")
+            _ => null // Unsupported return type — method will be skipped
         };
+    }
+
+    /// <summary>
+    /// Check if a method can be dispatched (all parameter types and return type supported).
+    /// </summary>
+    private static bool IsMethodDispatchable(MethodInfo method)
+    {
+        foreach (var param in method.Parameters)
+        {
+            if (GetReadExpression(param.FullTypeName) is null)
+                return false;
+        }
+        if (!method.ReturnsVoid && GetWriteInfo(method.ReturnTypeFullName) is null)
+            return false;
+        return true;
     }
 
     /// <summary>
@@ -495,13 +527,15 @@ public sealed class ContractGenerator : IIncrementalGenerator
         public string TypeName { get; }
         public List<MethodInfo> Methods { get; }
         public List<EventInfo> Events { get; }
+        public bool HasContractBase { get; }
 
-        public ContractInfo(string? ns, string typeName, List<MethodInfo> methods, List<EventInfo> events)
+        public ContractInfo(string? ns, string typeName, List<MethodInfo> methods, List<EventInfo> events, bool hasContractBase = false)
         {
             Namespace = ns;
             TypeName = typeName;
             Methods = methods;
             Events = events;
+            HasContractBase = hasContractBase;
         }
     }
 
