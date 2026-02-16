@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>Basalt.Node</RootNamespace>
     <PublishAot>true</PublishAot>
+    <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
