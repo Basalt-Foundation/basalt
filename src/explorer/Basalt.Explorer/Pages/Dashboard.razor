@@ -1,5 +1,6 @@
 @page "/"
 @inject BasaltApiClient Api
+@inject NavigationManager Nav
 @implements IDisposable
 
 <PageTitle>Basalt Explorer - Dashboard</PageTitle>
@@ -9,7 +10,7 @@
     <div class="stats-grid">
         <div class="stat-card">
             <div class="label">Block Height</div>
-            <div class="value">@_status.BlockHeight.ToString("N0")</div>
+            <div class="value link" @onclick="NavigateToBlocks">@_status.BlockHeight.ToString("N0")</div>
         </div>
         <div class="stat-card">
             <div class="label">Mempool</div>
@@ -21,7 +22,8 @@
         </div>
         <div class="stat-card">
             <div class="label">Latest Block</div>
-            <div class="value truncate hash" style="font-size:0.9rem">@TruncateHash(_status.LatestBlockHash)</div>
+            <div class="value truncate hash link" style="font-size:0.9rem"
+                 @onclick="() => NavigateToLatestBlock()">@TruncateHash(_status.LatestBlockHash)</div>
         </div>
     </div>
 }
@@ -33,11 +35,11 @@
         {
             <div class="detail-row">
                 <span class="detail-label">Number</span>
-                <span class="detail-value">@_latestBlock.Number</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_latestBlock.Number))">@_latestBlock.Number</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Hash</span>
-                <span class="detail-value hash">@_latestBlock.Hash</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_latestBlock.Number))">@_latestBlock.Hash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Timestamp</span>
@@ -45,7 +47,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Proposer</span>
-                <span class="detail-value hash">@_latestBlock.Proposer</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_latestBlock.Proposer))">@_latestBlock.Proposer</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Transactions</span>
@@ -101,6 +103,17 @@
             _error = $"Error: {ex.Message}";
         }
     }
+
+    private void NavigateToBlocks() => Nav.NavigateTo("/blocks");
+
+    private void NavigateToLatestBlock()
+    {
+        if (_latestBlock != null)
+            Nav.NavigateTo(BlockPath(_latestBlock.Number));
+    }
+
+    private static string BlockPath(ulong number) => $"/block/{number}";
+    private static string AccountPath(string address) => $"/account/{address}";
 
     private static string TruncateHash(string hash)
     {

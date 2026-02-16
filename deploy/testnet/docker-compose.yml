@@ -15,6 +15,16 @@ services:
       caddy:
         condition: service_started
 
+  # ─── Block Explorer (Blazor WASM — static files via nginx) ────────
+  explorer:
+    build:
+      context: ../..
+      dockerfile: deploy/testnet/Dockerfile.explorer
+    container_name: basalt-explorer
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+
   # ─── Reverse Proxy (routing, CORS, security headers) ───────────────
   caddy:
     image: caddy:2-alpine
@@ -27,6 +37,8 @@ services:
     depends_on:
       validator-0:
         condition: service_healthy
+      explorer:
+        condition: service_started
 
   # ─── Validator 0 (Primary RPC endpoint) ────────────────────────────
   validator-0:

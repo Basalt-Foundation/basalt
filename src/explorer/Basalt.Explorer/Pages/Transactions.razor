@@ -1,48 +1,57 @@
 @page "/transactions"
 @inject BasaltApiClient Api
+@inject NavigationManager Nav
 
 <PageTitle>Basalt Explorer - Transactions</PageTitle>
 
-<h2>Recent Transactions</h2>
-
-@if (_transactions != null && _transactions.Length > 0)
-{
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Hash</th>
-                <th>Type</th>
-                <th>Sender</th>
-                <th>To</th>
-                <th>Value</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var tx in _transactions)
-            {
-                <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
-                    <td class="hash">@TruncateHash(tx.Hash)</td>
-                    <td>@tx.Type</td>
-                    <td class="hash">@TruncateHash(tx.Sender)</td>
-                    <td class="hash">@TruncateHash(tx.To)</td>
-                    <td>@tx.Value</td>
-                </tr>
-            }
-        </tbody>
-    </table>
-}
-else if (_loading)
-{
-    <div class="loading">Loading transactions...</div>
-}
-else
-{
-    <div class="empty-state">No transactions found.</div>
-}
+<div class="card">
+    <div class="card-header">Recent Transactions</div>
+    <div class="card-body">
+        @if (_transactions != null && _transactions.Length > 0)
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Hash</th>
+                        <th>Block</th>
+                        <th>Type</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var tx in _transactions)
+                    {
+                        <tr @onclick="() => Nav.NavigateTo(TxPath(tx.Hash))" style="cursor:pointer">
+                            <td class="hash truncate">@TruncateHash(tx.Hash)</td>
+                            <td>
+                                @if (tx.BlockNumber.HasValue)
+                                {
+                                    <span class="hash" @onclick="() => Nav.NavigateTo(BlockPath(tx.BlockNumber.Value))" @onclick:stopPropagation="true">@tx.BlockNumber</span>
+                                }
+                            </td>
+                            <td>@tx.Type</td>
+                            <td class="hash truncate">@TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate">@TruncateHash(tx.To)</td>
+                            <td>@tx.Value</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_loading)
+        {
+            <div class="loading">Loading transactions...</div>
+        }
+        else
+        {
+            <div class="empty-state">No transactions found.</div>
+        }
+    </div>
+</div>
 
 @code {
-    [Inject] private NavigationManager Nav { get; set; } = default!;
-
     private TransactionDto[]? _transactions;
     private bool _loading = true;
 
@@ -52,7 +61,8 @@ else
         _loading = false;
     }
 
-    private void NavigateToTx(string hash) => Nav.NavigateTo($"/tx/{hash}");
+    private static string TxPath(string hash) => $"/tx/{hash}";
+    private static string BlockPath(ulong number) => $"/block/{number}";
 
     private static string TruncateHash(string hash)
     {

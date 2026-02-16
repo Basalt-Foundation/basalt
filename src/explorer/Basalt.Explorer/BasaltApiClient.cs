@@ -28,6 +28,12 @@ public sealed class BasaltApiClient
         catch { return null; }
     }
 
+    public async Task<PaginatedBlocksDto?> GetBlocksPageAsync(int page = 1, int pageSize = 20)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/blocks?page={page}&pageSize={pageSize}", ExplorerJsonContext.Default.PaginatedBlocksDto); }
+        catch { return null; }
+    }
+
     public async Task<AccountDto?> GetAccountAsync(string address)
     {
         try { return await _http.GetFromJsonAsync($"v1/accounts/{address}", ExplorerJsonContext.Default.AccountDto); }
@@ -36,13 +42,13 @@ public sealed class BasaltApiClient
 
     public async Task<TransactionDto[]?> GetRecentTransactionsAsync()
     {
-        try
-        {
-            // Fetch transactions from latest blocks
-            var latest = await GetLatestBlockAsync();
-            if (latest == null || latest.TransactionCount == 0) return [];
-            return await _http.GetFromJsonAsync($"v1/blocks/{latest.Number}/transactions", ExplorerJsonContext.Default.TransactionDtoArray);
-        }
+        try { return await _http.GetFromJsonAsync("v1/transactions/recent?count=50", ExplorerJsonContext.Default.TransactionDtoArray); }
+        catch { return []; }
+    }
+
+    public async Task<TransactionDto[]?> GetBlockTransactionsAsync(string blockNumber)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/blocks/{blockNumber}/transactions", ExplorerJsonContext.Default.TransactionDtoArray); }
         catch { return []; }
     }
 
@@ -79,8 +85,16 @@ public sealed class BlockDto
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
     [JsonPropertyName("transactionCount")] public int TransactionCount { get; set; }
 
-    public string FormattedTime => DateTimeOffset.FromUnixTimeSeconds(Timestamp).ToString("u");
+    public string FormattedTime => DateTimeOffset.FromUnixTimeMilliseconds(Timestamp).ToString("u");
     public double GasPercent => GasLimit > 0 ? (double)GasUsed / GasLimit * 100 : 0;
+}
+
+public sealed class PaginatedBlocksDto
+{
+    [JsonPropertyName("items")] public BlockDto[] Items { get; set; } = [];
+    [JsonPropertyName("page")] public int Page { get; set; }
+    [JsonPropertyName("pageSize")] public int PageSize { get; set; }
+    [JsonPropertyName("totalItems")] public long TotalItems { get; set; }
 }
 
 public sealed class AccountDto
@@ -102,18 +116,25 @@ public sealed class TransactionDto
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
     [JsonPropertyName("gasPrice")] public string GasPrice { get; set; } = "0";
     [JsonPropertyName("priority")] public byte Priority { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong? BlockNumber { get; set; }
+    [JsonPropertyName("blockHash")] public string? BlockHash { get; set; }
+    [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
 }
 
 public sealed class ValidatorDto
 {
     [JsonPropertyName("address")] public string Address { get; set; } = "";
     [JsonPropertyName("stake")] public string Stake { get; set; } = "0";
+    [JsonPropertyName("selfStake")] public string SelfStake { get; set; } = "0";
+    [JsonPropertyName("delegatedStake")] public string DelegatedStake { get; set; } = "0";
     [JsonPropertyName("publicKey")] public string PublicKey { get; set; } = "";
     [JsonPropertyName("status")] public string Status { get; set; } = "active";
 }
 
 [JsonSerializable(typeof(NodeStatusDto))]
 [JsonSerializable(typeof(BlockDto))]
+[JsonSerializable(typeof(BlockDto[]))]
+[JsonSerializable(typeof(PaginatedBlocksDto))]
 [JsonSerializable(typeof(AccountDto))]
 [JsonSerializable(typeof(TransactionDto))]
 [JsonSerializable(typeof(TransactionDto[]))]

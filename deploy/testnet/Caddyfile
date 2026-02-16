@@ -24,9 +24,9 @@
 		}
 	}
 
-	# Default
+	# Block Explorer (Blazor WASM served by nginx)
 	handle {
-		respond "Basalt Testnet RPC — https://basalt-foundation.github.io/basalt-docs/" 200
+		reverse_proxy explorer:80
 	}
 
 	# Security headers

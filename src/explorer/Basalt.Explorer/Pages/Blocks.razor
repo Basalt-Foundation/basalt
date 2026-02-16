@@ -6,11 +6,11 @@
 
 <div class="card">
     <div class="card-header">
-        Recent Blocks
+        Blocks
         <button class="badge badge-success" @onclick="LoadBlocks">Refresh</button>
     </div>
     <div class="card-body">
-        @if (_blocks.Count > 0)
+        @if (_blocks.Length > 0)
         {
             <table>
                 <thead>
@@ -42,6 +42,12 @@
                     }
                 </tbody>
             </table>
+
+            <div class="pagination">
+                <button @onclick="PreviousPage" disabled="@(_page <= 1)">Previous</button>
+                <span class="page-info">Page @_page of @TotalPages</span>
+                <button @onclick="NextPage" disabled="@(_page >= TotalPages)">Next</button>
+            </div>
         }
         else if (_error != null)
         {
@@ -55,39 +61,33 @@
 </div>
 
 @code {
-    private readonly List<BlockDto> _blocks = new();
+    private BlockDto[] _blocks = [];
+    private int _page = 1;
+    private const int PageSize = 20;
+    private long _totalItems;
     private string? _error;
+
+    private long TotalPages => Math.Max(1, (_totalItems + PageSize - 1) / PageSize);
 
     protected override async Task OnInitializedAsync() => await LoadBlocks();
 
     private async Task LoadBlocks()
     {
-        _blocks.Clear();
         _error = null;
 
-        try
+        var result = await Api.GetBlocksPageAsync(_page, PageSize);
+        if (result == null)
         {
-            var latest = await Api.GetLatestBlockAsync();
-            if (latest == null)
-            {
-                _error = "Cannot connect to node.";
-                return;
-            }
-
-            _blocks.Add(latest);
-
-            // Load previous blocks (up to 20)
-            for (var i = 1; i < 20 && latest.Number >= (ulong)i; i++)
-            {
-                var block = await Api.GetBlockAsync((latest.Number - (ulong)i).ToString());
-                if (block != null) _blocks.Add(block);
-            }
+            _error = "Cannot connect to node.";
+            return;
         }
-        catch (Exception ex)
-        {
-            _error = ex.Message;
-        }
+
+        _blocks = result.Items;
+        _totalItems = result.TotalItems;
     }
+
+    private async Task PreviousPage() { if (_page > 1) { _page--; await LoadBlocks(); } }
+    private async Task NextPage() { if (_page < TotalPages) { _page++; await LoadBlocks(); } }
 
     private void NavigateToBlock(ulong number) => Nav.NavigateTo($"/block/{number}");
 

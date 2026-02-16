@@ -1,5 +1,6 @@
 @page "/block/{Id}"
 @inject BasaltApiClient Api
+@inject NavigationManager Nav
 
 <PageTitle>Basalt Explorer - Block @Id</PageTitle>
 
@@ -18,7 +19,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Parent Hash</span>
-                <span class="detail-value hash">@_block.ParentHash</span>
+                <span class="detail-value hash" @onclick="() => NavigateToParent()" style="cursor:pointer">@_block.ParentHash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">State Root</span>
@@ -30,7 +31,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Proposer</span>
-                <span class="detail-value hash">@_block.Proposer</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(NavigateToAccount(_block.Proposer))" style="cursor:pointer">@_block.Proposer</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Transactions</span>
@@ -57,26 +58,83 @@
     </div>
 </div>
 
+@if (_transactions != null && _transactions.Length > 0)
+{
+    <div class="card" style="margin-top: 1.5rem">
+        <div class="card-header">Transactions (@_transactions.Length)</div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Hash</th>
+                        <th>Type</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var tx in _transactions)
+                    {
+                        <tr @onclick="() => Nav.NavigateTo(NavigateToTx(tx.Hash))" style="cursor:pointer">
+                            <td>@tx.TransactionIndex</td>
+                            <td class="hash truncate">@TruncateHash(tx.Hash)</td>
+                            <td>@tx.Type</td>
+                            <td class="hash truncate">@TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate">@TruncateHash(tx.To)</td>
+                            <td>@tx.Value</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public string Id { get; set; } = "";
 
     private BlockDto? _block;
+    private TransactionDto[]? _transactions;
     private string? _error;
 
     protected override async Task OnParametersSetAsync()
     {
         _block = null;
+        _transactions = null;
         _error = null;
 
         try
         {
             _block = await Api.GetBlockAsync(Id);
             if (_block == null)
+            {
                 _error = $"Block not found: {Id}";
+                return;
+            }
+
+            if (_block.TransactionCount > 0)
+                _transactions = await Api.GetBlockTransactionsAsync(_block.Number.ToString());
         }
         catch (Exception ex)
         {
             _error = ex.Message;
         }
+    }
+
+    private void NavigateToParent()
+    {
+        if (_block != null && _block.Number > 0)
+            Nav.NavigateTo($"/block/{_block.Number - 1}");
+    }
+
+    private static string NavigateToTx(string hash) => $"/tx/{hash}";
+    private static string NavigateToAccount(string address) => $"/account/{address}";
+
+    private static string TruncateHash(string hash)
+    {
+        if (hash.Length <= 16) return hash;
+        return hash[..10] + "..." + hash[^6..];
     }
 }

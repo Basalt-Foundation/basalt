@@ -1,33 +1,40 @@
 @page "/tx/{Hash}"
 @inject BasaltApiClient Api
+@inject NavigationManager Nav
 
 <PageTitle>Basalt Explorer - Transaction</PageTitle>
 
-<h2>Transaction Details</h2>
-
-@if (_tx != null)
-{
-    <div class="card">
-        <div class="card-body">
+<div class="card">
+    <div class="card-header">Transaction Details</div>
+    <div class="card-body">
+        @if (_tx != null)
+        {
             <div class="detail-row">
                 <span class="detail-label">Hash</span>
-                <span class="detail-value hash">@_tx.Hash</span>
+                <span class="detail-value hash-static">@_tx.Hash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Type</span>
-                <span class="detail-value">@_tx.Type</span>
+                <span class="detail-value"><span class="badge badge-success">@_tx.Type</span></span>
             </div>
+            @if (_tx.BlockNumber.HasValue)
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Block</span>
+                    <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_tx.BlockNumber.Value))">@_tx.BlockNumber</span>
+                </div>
+            }
             <div class="detail-row">
                 <span class="detail-label">Nonce</span>
                 <span class="detail-value">@_tx.Nonce</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Sender</span>
-                <span class="detail-value hash">@_tx.Sender</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_tx.Sender))">@_tx.Sender</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">To</span>
-                <span class="detail-value hash">@_tx.To</span>
+                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_tx.To))">@_tx.To</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Value</span>
@@ -45,17 +52,17 @@
                 <span class="detail-label">Priority</span>
                 <span class="detail-value">@_tx.Priority</span>
             </div>
-        </div>
+        }
+        else if (_loading)
+        {
+            <div class="loading">Loading transaction...</div>
+        }
+        else
+        {
+            <div class="error-message">Transaction not found.</div>
+        }
     </div>
-}
-else if (_loading)
-{
-    <div class="loading">Loading transaction...</div>
-}
-else
-{
-    <div class="empty-state">Transaction not found.</div>
-}
+</div>
 
 @code {
     [Parameter] public string Hash { get; set; } = "";
@@ -63,9 +70,13 @@ else
     private TransactionDto? _tx;
     private bool _loading = true;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnParametersSetAsync()
     {
+        _loading = true;
         _tx = await Api.GetTransactionAsync(Hash);
         _loading = false;
     }
+
+    private static string BlockPath(ulong number) => $"/block/{number}";
+    private static string AccountPath(string address) => $"/account/{address}";
 }

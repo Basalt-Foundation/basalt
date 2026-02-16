@@ -188,6 +188,16 @@ tr:hover {
     text-decoration: underline;
 }
 
+.hash-static {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+.link {
+    cursor: pointer;
+}
+
 .truncate {
     max-width: 200px;
     overflow: hidden;
@@ -245,6 +255,106 @@ tr:hover {
     height: 100%;
     border-radius: 4px;
     transition: width 0.3s;
+}
+
+/* Data table — used by Transactions, Validators pages */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table th {
+    text-align: left;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.875rem;
+}
+
+.data-table tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table tr:hover {
+    background: rgba(88, 166, 255, 0.04);
+}
+
+/* Empty state */
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+/* Status badges — Validators page */
+.status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.status-badge.active {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--success);
+}
+
+.status-badge.inactive {
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--danger);
+}
+
+.status-badge.jailed {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--warning);
+}
+
+/* Pagination */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    padding: 1rem 0;
+}
+
+.pagination button {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.pagination button:hover:not(:disabled) {
+    background: var(--bg-card);
+    border-color: var(--accent);
+}
+
+.pagination button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.pagination .page-info {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    padding: 0 0.75rem;
 }
 
 .loading {
