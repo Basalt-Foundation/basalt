@@ -200,7 +200,7 @@ if (nodeUrl is null)
 else
 {
     manager.SetActive(wallet.GetAccount(0).Address);
-    using var provider = new BasaltProvider(nodeUrl, chainId: 31337);
+    using var provider = new BasaltProvider(nodeUrl, chainId: 4242);
     await InteractiveLoop(provider, wallet, manager, nodeUrl);
 }
 
@@ -600,17 +600,21 @@ async Task CmdTokenMetadata(BasaltProvider provider, Address? contractAddress)
     else
         Console.WriteLine($"  Symbol:       (error: {symbolResult.Error})");
 
-    // TotalSupply
+    // TotalSupply (BST-20 only)
     var supplyResult = await contract.ReadSdkAsync("TotalSupply", gasLimit: 100_000);
     if (supplyResult.Success && supplyResult.ReturnData is { Length: > 0 })
         Console.WriteLine($"  TotalSupply:  {SdkContractEncoder.DecodeUInt64(Convert.FromHexString(supplyResult.ReturnData))}");
+    else if (supplyResult.Error?.Contains("Unknown selector") == true)
+        Console.WriteLine("  TotalSupply:  n/a (BST-721)");
     else
         Console.WriteLine($"  TotalSupply:  (error: {supplyResult.Error})");
 
-    // Decimals
+    // Decimals (BST-20 only)
     var decResult = await contract.ReadSdkAsync("Decimals", gasLimit: 100_000);
     if (decResult.Success && decResult.ReturnData is { Length: > 0 })
         Console.WriteLine($"  Decimals:     {SdkContractEncoder.DecodeByte(Convert.FromHexString(decResult.ReturnData))}");
+    else if (decResult.Error?.Contains("Unknown selector") == true)
+        Console.WriteLine("  Decimals:     n/a (BST-721)");
     else
         Console.WriteLine($"  Decimals:     (error: {decResult.Error})");
 }
