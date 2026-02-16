@@ -432,35 +432,74 @@ public class ViewChangeTests
 
     // --- Fast-forward (proposal from future view) ---
 
+    /// <summary>
+    /// Advance a BFT instance's view via view change quorum (without changing block number).
+    /// </summary>
+    private void AdvanceViewViaViewChange(BasaltBft bft, ulong targetView)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            bft.HandleViewChange(new ViewChangeMessage
+            {
+                SenderId = _validators[i].PeerId,
+                CurrentView = bft.CurrentView,
+                ProposedView = targetView,
+                VoterSignature = new BlsSignature(new byte[96]),
+                VoterPublicKey = new BlsPublicKey(new byte[48]),
+            });
+        }
+    }
+
     [Fact]
     public void HandleProposal_NextView_FastForwards()
     {
-        // Leader for view 2 proposes; other node is at view 1.
-        // The proposal should be accepted via fast-forward.
-        var leader2 = _validatorSet.GetLeader(2);
-        var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader2.PeerId);
+        // Both nodes are working on block 1. Leader's view advanced to 2 via view change.
+        // Other node is still at view 1. The proposal should be accepted via fast-forward.
+        var leaderIndex = 0;
+        for (int v = 2; v < 100; v++)
+        {
+            var leader = _validatorSet.GetLeader((ulong)v);
+            var idx = _validators.ToList().FindIndex(x => x.PeerId == leader.PeerId);
+            if (idx >= 0) { leaderIndex = idx; break; }
+        }
+
+        // Find the view where this validator is leader (starting from view 2)
+        ulong leaderView = 2;
+        for (ulong v = 2; v < 100; v++)
+        {
+            if (_validatorSet.GetLeader(v).PeerId == _validators[leaderIndex].PeerId)
+            {
+                leaderView = v;
+                break;
+            }
+        }
 
         var leaderBft = CreateBft(leaderIndex);
-        leaderBft.StartRound(2); // Leader starts at view 2
+        leaderBft.StartRound(1); // Block 1
+        AdvanceViewViaViewChange(leaderBft, leaderView); // Advance view without changing block number
+        leaderBft.CurrentView.Should().Be(leaderView);
+        leaderBft.CurrentBlockNumber.Should().Be(1);
+
         var proposal = leaderBft.ProposeBlock([0xAA, 0xBB], Blake3Hasher.Hash([0xAA, 0xBB]));
         proposal.Should().NotBeNull();
+        proposal!.BlockNumber.Should().Be(1);
 
         var otherIndex = (leaderIndex + 1) % 4;
         var otherBft = CreateBft(otherIndex);
-        otherBft.StartRound(1); // Other node is at view 1 (one behind)
+        otherBft.StartRound(1); // Same block, view 1
         otherBft.CurrentView.Should().Be(1);
 
-        var vote = otherBft.HandleProposal(proposal!);
-        vote.Should().NotBeNull("fast-forward should accept proposal from next view");
+        var vote = otherBft.HandleProposal(proposal);
+        vote.Should().NotBeNull("fast-forward should accept proposal for same block from future view");
         vote!.Phase.Should().Be(VotePhase.Prepare);
-        otherBft.CurrentView.Should().Be(2, "node should have fast-forwarded to view 2");
+        otherBft.CurrentView.Should().Be(leaderView, "node should have fast-forwarded");
         otherBft.State.Should().Be(ConsensusState.Preparing);
     }
 
     [Fact]
     public void HandleProposal_PastView_ReturnsNull()
     {
-        // Node at view 5 receives proposal for view 3 → reject.
+        // Node at view 5 receives proposal for view 3 → reject (past view).
         var leader3 = _validatorSet.GetLeader(3);
         var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader3.PeerId);
 
@@ -476,36 +515,65 @@ public class ViewChangeTests
     }
 
     [Fact]
-    public void HandleProposal_FutureView_NonLeader_Rejected()
+    public void HandleProposal_FutureView_DifferentBlockNumber_Rejected()
     {
-        // Non-leader tries to propose for a future view → reject.
+        // Leader already finalized block 1 and proposes block 2.
+        // Lagging validator still at block 1 should NOT fast-forward.
         var leader2 = _validatorSet.GetLeader(2);
         var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader2.PeerId);
 
-        // Use the leader's BFT to generate a valid proposal
         var leaderBft = CreateBft(leaderIndex);
-        leaderBft.StartRound(2);
+        leaderBft.StartRound(2); // Block 2, view 2
         var proposal = leaderBft.ProposeBlock([0xDD], Blake3Hasher.Hash([0xDD]));
         proposal.Should().NotBeNull();
+        proposal!.BlockNumber.Should().Be(2);
 
-        // Tamper: change the sender to a non-leader
-        var fakeIndex = (leaderIndex + 1) % 4;
-        var tamperedProposal = new ConsensusProposalMessage
-        {
-            SenderId = _validators[fakeIndex].PeerId,
-            ViewNumber = proposal!.ViewNumber,
-            BlockNumber = proposal.BlockNumber,
-            BlockHash = proposal.BlockHash,
-            BlockData = proposal.BlockData,
-            ProposerSignature = proposal.ProposerSignature,
-        };
+        var otherBft = CreateBft((leaderIndex + 1) % 4);
+        otherBft.StartRound(1); // Block 1, view 1
 
-        var otherIndex = (leaderIndex + 2) % 4;
+        var vote = otherBft.HandleProposal(proposal);
+        vote.Should().BeNull("proposals for different block numbers should be rejected");
+        otherBft.CurrentView.Should().Be(1, "view should not have changed");
+    }
+
+    [Fact]
+    public void HandleProposal_FutureView_ActiveConsensus_NotInterrupted()
+    {
+        // Node is in Preparing state (active consensus). Future view proposal should NOT
+        // interrupt the in-progress consensus — it might be about to finalize.
+        var leader1 = _validatorSet.GetLeader(1);
+        var leader1Index = _validators.ToList().FindIndex(v => v.PeerId == leader1.PeerId);
+
+        // Set up: leader proposes for view 1, other node receives and enters Preparing
+        var leaderBft = CreateBft(leader1Index);
+        leaderBft.StartRound(1);
+        var proposal1 = leaderBft.ProposeBlock([0x01], Blake3Hasher.Hash([0x01]));
+
+        var otherIndex = (leader1Index + 1) % 4;
         var otherBft = CreateBft(otherIndex);
-        otherBft.StartRound(1); // One view behind
+        otherBft.StartRound(1);
+        var vote = otherBft.HandleProposal(proposal1!);
+        vote.Should().NotBeNull();
+        otherBft.State.Should().Be(ConsensusState.Preparing);
 
-        var vote = otherBft.HandleProposal(tamperedProposal);
-        vote.Should().BeNull("fast-forward should reject proposals from non-leaders");
+        // Now find the leader for a higher view of block 1
+        ulong futureView = 2;
+        for (ulong v = 2; v < 100; v++)
+        {
+            var l = _validatorSet.GetLeader(v);
+            if (l.PeerId != _validators[otherIndex].PeerId) { futureView = v; break; }
+        }
+
+        var futureLeaderIndex = _validators.ToList().FindIndex(v =>
+            v.PeerId == _validatorSet.GetLeader(futureView).PeerId);
+        var futureBft = CreateBft(futureLeaderIndex);
+        futureBft.StartRound(1);
+        AdvanceViewViaViewChange(futureBft, futureView);
+        var proposal2 = futureBft.ProposeBlock([0x02], Blake3Hasher.Hash([0x02]));
+
+        // Other node receives future view proposal while in Preparing → should be rejected
+        var vote2 = otherBft.HandleProposal(proposal2!);
+        vote2.Should().BeNull("should not interrupt active consensus");
         otherBft.CurrentView.Should().Be(1, "view should not have changed");
     }
 
@@ -514,54 +582,73 @@ public class ViewChangeTests
     {
         // A PREPARE vote for _currentView + 1 should be stored (not dropped).
         // After fast-forward via proposal, the pre-counted vote helps reach quorum.
-        var leader2 = _validatorSet.GetLeader(2);
-        var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader2.PeerId);
 
-        // Create leader BFT at view 2, propose a block
+        // Find the leader for view 2 of block 1
+        ulong leaderView = 2;
+        int leaderIndex = 0;
+        for (ulong v = 2; v < 100; v++)
+        {
+            var leader = _validatorSet.GetLeader(v);
+            var idx = _validators.ToList().FindIndex(x => x.PeerId == leader.PeerId);
+            if (idx >= 0) { leaderIndex = idx; leaderView = v; break; }
+        }
+
+        // Leader at view leaderView (block 1), proposes
         var leaderBft = CreateBft(leaderIndex);
-        leaderBft.StartRound(2);
+        leaderBft.StartRound(1);
+        AdvanceViewViaViewChange(leaderBft, leaderView);
         var blockData = new byte[] { 0xEE };
         var blockHash = Blake3Hasher.Hash(blockData);
         var proposal = leaderBft.ProposeBlock(blockData, blockHash);
         proposal.Should().NotBeNull();
 
-        // Create another validator at view 2 to generate a valid PREPARE vote
+        // Another validator at the same view generates a valid PREPARE vote
         var voterIndex = (leaderIndex + 1) % 4;
         var voterBft = CreateBft(voterIndex);
-        voterBft.StartRound(2);
+        voterBft.StartRound(1);
+        AdvanceViewViaViewChange(voterBft, leaderView);
         var voterPrepare = voterBft.HandleProposal(proposal!);
         voterPrepare.Should().NotBeNull();
 
-        // Target node is at view 1 — receives the vote BEFORE the proposal
+        // Target node at view 1 receives the vote BEFORE the proposal
         var targetIndex = (leaderIndex + 2) % 4;
         var targetBft = CreateBft(targetIndex);
         targetBft.StartRound(1);
 
-        // Vote for view 2 arrives while target is at view 1
-        var preResult = targetBft.HandleVote(voterPrepare!);
-        // Pre-counted (won't trigger phase transition, returns null)
-        // But the vote should not be outright rejected
+        // Vote arrives while target is at view 1 — pre-counted for view leaderView
+        targetBft.HandleVote(voterPrepare!);
 
-        // Now the proposal arrives — target fast-forwards to view 2
+        // Now the proposal arrives — target fast-forwards
         var targetVote = targetBft.HandleProposal(proposal!);
         targetVote.Should().NotBeNull("fast-forward should accept proposal");
-        targetBft.CurrentView.Should().Be(2);
+        targetBft.CurrentView.Should().Be(leaderView);
     }
 
     [Fact]
     public void FastForward_FullConsensus_4Validators()
     {
         // Simulates the Docker devnet scenario:
-        // Leader is at view 2 (processed view change first), other 3 still at view 1.
-        // Leader proposes. Others fast-forward. Full PREPARE→PRE-COMMIT→COMMIT→finalized.
+        // All 4 validators on block 1. Leader for view 2 processed view change first.
+        // Others still at view 1. Leader proposes. Others fast-forward.
+        // Full PREPARE→PRE-COMMIT→COMMIT→finalized.
 
-        var leader2 = _validatorSet.GetLeader(2);
-        var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader2.PeerId);
+        // Find the leader for some view > 1 (for block 1)
+        ulong leaderView = 2;
+        int leaderIndex = 0;
+        for (ulong v = 2; v < 100; v++)
+        {
+            var leader = _validatorSet.GetLeader(v);
+            var idx = _validators.ToList().FindIndex(x => x.PeerId == leader.PeerId);
+            if (idx >= 0) { leaderIndex = idx; leaderView = v; break; }
+        }
 
-        // Create all 4 BFT instances
+        // Create all 4 BFT instances, all at block 1
         var bfts = new BasaltBft[4];
         for (int i = 0; i < 4; i++)
+        {
             bfts[i] = CreateBft(i);
+            bfts[i].StartRound(1);
+        }
 
         // Track finalization
         var finalizedOn = new HashSet<int>();
@@ -571,13 +658,10 @@ public class ViewChangeTests
             bfts[i].OnBlockFinalized += (_, _) => finalizedOn.Add(idx);
         }
 
-        // Leader at view 2, others at view 1
-        bfts[leaderIndex].StartRound(2);
-        for (int i = 0; i < 4; i++)
-        {
-            if (i != leaderIndex)
-                bfts[i].StartRound(1); // One view behind
-        }
+        // Leader advances view via view change (simulates processing view change first)
+        AdvanceViewViaViewChange(bfts[leaderIndex], leaderView);
+        bfts[leaderIndex].CurrentView.Should().Be(leaderView);
+        bfts[leaderIndex].CurrentBlockNumber.Should().Be(1);
 
         // Leader proposes
         var blockData = new byte[] { 0x01, 0x02, 0x03 };
@@ -585,14 +669,14 @@ public class ViewChangeTests
         var proposal = bfts[leaderIndex].ProposeBlock(blockData, blockHash);
         proposal.Should().NotBeNull();
 
-        // Non-leaders handle proposal (fast-forward from view 1 → 2)
+        // Non-leaders handle proposal (fast-forward from view 1 → leaderView)
         var prepareVotes = new List<ConsensusVoteMessage>();
         for (int i = 0; i < 4; i++)
         {
             if (i == leaderIndex) continue;
             var vote = bfts[i].HandleProposal(proposal!);
             vote.Should().NotBeNull($"validator {i} should fast-forward and vote PREPARE");
-            bfts[i].CurrentView.Should().Be(2);
+            bfts[i].CurrentView.Should().Be(leaderView);
             prepareVotes.Add(vote!);
         }
 
@@ -602,7 +686,7 @@ public class ViewChangeTests
         {
             for (int i = 0; i < 4; i++)
             {
-                if (pv.SenderId == _validators[i].PeerId) continue; // Skip self
+                if (pv.SenderId == _validators[i].PeerId) continue;
                 var resp = bfts[i].HandleVote(pv);
                 if (resp != null)
                     preCommitVotes.Add(resp);

@@ -149,7 +149,19 @@ public sealed class BasaltBft
     {
         if (proposal.ViewNumber != _currentView)
         {
-            if (proposal.ViewNumber > _currentView)
+            // Only fast-forward when ALL of these hold:
+            // 1) The proposal is for a future view (not a past one)
+            // 2) We're in Proposing state — no active consensus in progress.
+            //    If we're in Preparing/PreCommitting/Committing, an active round
+            //    may be about to finalize; abandoning it would cause us to miss
+            //    the block and desync from the chain.
+            // 3) The proposal is for the SAME block number we're deciding.
+            //    If the leader already finalized our block and moved on to block N+1,
+            //    fast-forwarding would make us finalize N+1 without having N, breaking
+            //    the chain.
+            if (proposal.ViewNumber > _currentView
+                && _state == ConsensusState.Proposing
+                && proposal.BlockNumber == _currentBlockNumber)
             {
                 // Verify the sender is the legitimate leader for the proposed view
                 var futureLeader = _validatorSet.GetLeader(proposal.ViewNumber);
@@ -193,8 +205,8 @@ public sealed class BasaltBft
             }
             else
             {
-                _logger.LogDebug("Ignoring proposal for past view {View}, current {Current}",
-                    proposal.ViewNumber, _currentView);
+                _logger.LogDebug("Ignoring proposal for view {View} (current view {Current}, state {State}, block {Block}/{Expected})",
+                    proposal.ViewNumber, _currentView, _state, proposal.BlockNumber, _currentBlockNumber);
                 return null;
             }
         }
