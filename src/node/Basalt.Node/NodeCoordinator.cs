@@ -417,7 +417,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
             }
             else
             {
-                _logger.LogError("Failed to add consensus-finalized block: {Error}", result.Message);
+                _logger.LogError("Failed to add consensus-finalized block #{Number}: {Error}",
+                    block.Number, result.Message);
+
+                // If we're behind (block number > our tip + 1), trigger a sync
+                // to catch up on missed blocks before the next round.
+                if (block.Number > _chainManager.LatestBlockNumber + 1)
+                {
+                    _logger.LogWarning(
+                        "We are behind (at #{Local}, need #{Need}). Triggering sync.",
+                        _chainManager.LatestBlockNumber, block.Number);
+                    _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+                }
             }
         }
         catch (Exception ex)

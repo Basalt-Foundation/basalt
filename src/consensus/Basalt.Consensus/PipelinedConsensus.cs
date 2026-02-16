@@ -246,6 +246,10 @@ public sealed class PipelinedConsensus
         {
             votes.Add(viewChange.SenderId);
 
+            // Auto-join: if the proposed view is higher than any of our active rounds,
+            // add our own vote to prevent view change deadlocks.
+            votes.Add(_localPeerId);
+
             if (votes.Count >= _validatorSet.QuorumThreshold)
             {
                 _logger.LogInformation("View change quorum reached for view {View}, aborting in-flight rounds",

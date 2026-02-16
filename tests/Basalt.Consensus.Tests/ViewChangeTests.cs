@@ -60,7 +60,8 @@ public class ViewChangeTests
         bft.StartRound(1);
 
         // With 4 validators, quorum = 3
-        // Send only 2 view change messages
+        // Send 1 view change message. Auto-join adds local validator's vote
+        // (proposedView 2 > currentView 1), so total = 2, still below quorum of 3.
         bft.HandleViewChange(new ViewChangeMessage
         {
             SenderId = _validators[1].PeerId,
@@ -70,16 +71,7 @@ public class ViewChangeTests
             VoterPublicKey = new BlsPublicKey(new byte[48]),
         });
 
-        bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[2].PeerId,
-            CurrentView = 1,
-            ProposedView = 2,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
-
-        // View should NOT have changed (only 2 of 3 required)
+        // View should NOT have changed (1 external + 1 auto-join = 2, below quorum of 3)
         bft.CurrentView.Should().Be(1);
     }
 

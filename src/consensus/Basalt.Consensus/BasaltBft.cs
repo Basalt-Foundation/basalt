@@ -251,6 +251,13 @@ public sealed class BasaltBft
         {
             votes.Add(viewChange.SenderId);
 
+            // Auto-join: if the proposed view is higher than ours, add our own vote.
+            // This prevents deadlocks where validators at different views each propose
+            // currentView+1 but never converge (e.g. V2 at view 750 proposes 751,
+            // while V1/V3 at view 751 propose 752 — neither reaches quorum).
+            if (viewChange.ProposedView > _currentView)
+                votes.Add(_localPeerId);
+
             if (votes.Count >= _validatorSet.QuorumThreshold && _currentView < viewChange.ProposedView)
             {
                 _currentView = viewChange.ProposedView;
