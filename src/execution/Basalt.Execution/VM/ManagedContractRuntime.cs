@@ -18,6 +18,12 @@ namespace Basalt.Execution.VM;
 /// </summary>
 public sealed class ManagedContractRuntime : IContractRuntime
 {
+    // Pre-computed BLAKE3-based method selectors (first 4 bytes of BLAKE3(method_name))
+    private static readonly string SelectorStorageSet = Convert.ToHexString(ComputeSelector("storage_set")).ToLowerInvariant();
+    private static readonly string SelectorStorageGet = Convert.ToHexString(ComputeSelector("storage_get")).ToLowerInvariant();
+    private static readonly string SelectorStorageDel = Convert.ToHexString(ComputeSelector("storage_del")).ToLowerInvariant();
+    private static readonly string SelectorEmitEvent = Convert.ToHexString(ComputeSelector("emit_event")).ToLowerInvariant();
+
     public ContractDeployResult Deploy(byte[] code, byte[] constructorArgs, VmExecutionContext ctx)
     {
         var host = new HostInterface(ctx);
@@ -121,26 +127,22 @@ public sealed class ManagedContractRuntime : IContractRuntime
 
     private static ContractCallResult DispatchCall(HostInterface host, VmExecutionContext ctx, byte[] selector, byte[] args)
     {
-        // Standard method selectors for Phase 1 built-in operations
-        // These correspond to common contract interface methods
+        // Method selectors are BLAKE3(method_name)[0:4], matching AbiEncoder.ComputeSelector
         var selectorHex = Convert.ToHexString(selector).ToLowerInvariant();
 
-        return selectorHex switch
+        if (selectorHex == SelectorStorageSet)
+            return ExecuteStorageSet(host, ctx, args);
+        if (selectorHex == SelectorStorageGet)
+            return ExecuteStorageGet(host, ctx, args);
+        if (selectorHex == SelectorStorageDel)
+            return ExecuteStorageDelete(host, ctx, args);
+        if (selectorHex == SelectorEmitEvent)
+            return ExecuteEmitEvent(host, ctx, args);
+
+        return new ContractCallResult
         {
-            // storage_set(key, value): Write to contract storage
-            "53746f72" => ExecuteStorageSet(host, ctx, args),
-            // storage_get(key): Read from contract storage
-            "53746f67" => ExecuteStorageGet(host, ctx, args),
-            // storage_del(key): Delete from contract storage
-            "53746f64" => ExecuteStorageDelete(host, ctx, args),
-            // emit_event(signature, topics, data)
-            "456d6974" => ExecuteEmitEvent(host, ctx, args),
-            // Any other selector: try generic dispatch
-            _ => new ContractCallResult
-            {
-                Success = false,
-                ErrorMessage = $"Unknown method selector: 0x{selectorHex}",
-            },
+            Success = false,
+            ErrorMessage = $"Unknown method selector: 0x{selectorHex}",
         };
     }
 

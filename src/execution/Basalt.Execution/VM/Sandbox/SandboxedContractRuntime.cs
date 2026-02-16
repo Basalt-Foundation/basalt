@@ -17,6 +17,12 @@ namespace Basalt.Execution.VM.Sandbox;
 /// </summary>
 public sealed class SandboxedContractRuntime : IContractRuntime
 {
+    // Pre-computed BLAKE3-based method selectors (must match ManagedContractRuntime)
+    private static readonly string SelectorStorageSet = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("storage_set")).ToLowerInvariant();
+    private static readonly string SelectorStorageGet = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("storage_get")).ToLowerInvariant();
+    private static readonly string SelectorStorageDel = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("storage_del")).ToLowerInvariant();
+    private static readonly string SelectorEmitEvent = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("emit_event")).ToLowerInvariant();
+
     private readonly SandboxConfiguration _config;
 
     public SandboxedContractRuntime(SandboxConfiguration config)
@@ -205,21 +211,19 @@ public sealed class SandboxedContractRuntime : IContractRuntime
     {
         var selectorHex = Convert.ToHexString(selector).ToLowerInvariant();
 
-        return selectorHex switch
+        if (selectorHex == SelectorStorageSet)
+            return ExecuteStorageSet(bridge, ctx, args, ct);
+        if (selectorHex == SelectorStorageGet)
+            return ExecuteStorageGet(bridge, ctx, args, ct);
+        if (selectorHex == SelectorStorageDel)
+            return ExecuteStorageDelete(bridge, ctx, args, ct);
+        if (selectorHex == SelectorEmitEvent)
+            return ExecuteEmitEvent(bridge, ctx, args, ct);
+
+        return new ContractCallResult
         {
-            // storage_set(key, value)
-            "53746f72" => ExecuteStorageSet(bridge, ctx, args, ct),
-            // storage_get(key)
-            "53746f67" => ExecuteStorageGet(bridge, ctx, args, ct),
-            // storage_del(key)
-            "53746f64" => ExecuteStorageDelete(bridge, ctx, args, ct),
-            // emit_event(signature, topics, data)
-            "456d6974" => ExecuteEmitEvent(bridge, ctx, args, ct),
-            _ => new ContractCallResult
-            {
-                Success = false,
-                ErrorMessage = $"Unknown method selector: 0x{selectorHex}",
-            },
+            Success = false,
+            ErrorMessage = $"Unknown method selector: 0x{selectorHex}",
         };
     }
 

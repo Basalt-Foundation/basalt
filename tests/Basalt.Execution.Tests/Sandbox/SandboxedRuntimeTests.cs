@@ -87,9 +87,9 @@ public class SandboxedRuntimeTests
         }
     }
 
-    // Selectors used by both ManagedContractRuntime and SandboxedContractRuntime.
-    private const string StorageSetSelector = "53746f72";
-    private const string StorageGetSelector = "53746f67";
+    // Selectors: BLAKE3(method_name)[0:4] — must match ManagedContractRuntime dispatch table
+    private static readonly string StorageSetSelector = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("storage_set")).ToLowerInvariant();
+    private static readonly string StorageGetSelector = Convert.ToHexString(ManagedContractRuntime.ComputeSelector("storage_get")).ToLowerInvariant();
 
     // =========================================================================
     // ResourceLimiter tests
