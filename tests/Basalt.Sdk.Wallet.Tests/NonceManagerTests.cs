@@ -47,7 +47,7 @@ public sealed class NonceManagerTests
         _nonceManager.IncrementNonce("0xABC");
         var nonce = await _nonceManager.GetNextNonceAsync("0xABC", _clientMock.Object);
 
-        nonce.Should().Be(7UL);
+        nonce.Should().Be(6UL);
     }
 
     [Fact]

@@ -25,10 +25,10 @@ public sealed class NonceManager
         if (_nonces.TryGetValue(address, out var localNonce))
             return localNonce;
 
-        // Fetch from chain
+        // Fetch from chain — store the value we return; IncrementNonce will advance it after submission
         var account = await client.GetAccountAsync(address, ct).ConfigureAwait(false);
         var chainNonce = account?.Nonce ?? 0;
-        _nonces[address] = chainNonce + 1;
+        _nonces[address] = chainNonce;
         return chainNonce;
     }
 
