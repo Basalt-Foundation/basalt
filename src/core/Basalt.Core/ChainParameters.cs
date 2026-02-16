@@ -83,4 +83,21 @@ public sealed class ChainParameters
         MinValidatorStake = new UInt256(1000),
         EpochLength = 100,
     };
+
+    /// <summary>
+    /// Creates chain parameters from node configuration, using Devnet defaults
+    /// for any unspecified parameters but honoring the configured chain ID and network name.
+    /// </summary>
+    public static ChainParameters FromConfiguration(uint chainId, string networkName)
+    {
+        return new ChainParameters
+        {
+            ChainId = chainId,
+            NetworkName = networkName,
+            BlockTimeMs = 400,
+            ValidatorSetSize = 4,
+            MinValidatorStake = new UInt256(1000),
+            EpochLength = 100,
+        };
+    }
 }

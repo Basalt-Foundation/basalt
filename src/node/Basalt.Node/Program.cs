@@ -26,7 +26,7 @@ try
     Log.Information("Starting Basalt Node v0.1 ({Mode} mode)",
         config.IsConsensusMode ? "consensus" : "standalone");
 
-    var chainParams = ChainParameters.Devnet;
+    var chainParams = ChainParameters.FromConfiguration(config.ChainId, config.NetworkName);
     var chainManager = new ChainManager();
     var mempool = new Mempool();
     var validator = new TransactionValidator(chainParams);
@@ -155,6 +155,21 @@ try
     // Map Prometheus metrics endpoint
     MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
 
+    // Map validators endpoint (uses stakingState from consensus layer)
+    app.MapGet("/v1/validators", () =>
+    {
+        var validators = stakingState.GetActiveValidators();
+        var response = validators.Select(v => new ValidatorInfoResponse
+        {
+            Address = v.Address.ToHexString(),
+            Stake = v.TotalStake.ToString(),
+            SelfStake = v.SelfStake.ToString(),
+            DelegatedStake = v.DelegatedStake.ToString(),
+            Status = v.IsActive ? "active" : "inactive",
+        }).ToArray();
+        return Microsoft.AspNetCore.Http.Results.Ok(response);
+    });
+
     if (config.IsConsensusMode)
     {
         // === CONSENSUS MODE ===
@@ -177,7 +192,17 @@ try
 
         app.Lifetime.ApplicationStarted.Register(() =>
         {
-            _ = coordinator.StartAsync(app.Lifetime.ApplicationStopping);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await coordinator.StartAsync(app.Lifetime.ApplicationStopping);
+                }
+                catch (Exception ex)
+                {
+                    Log.Fatal(ex, "Consensus coordinator failed to start");
+                }
+            });
         });
 
         app.Lifetime.ApplicationStopping.Register(() =>

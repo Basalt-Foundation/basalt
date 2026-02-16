@@ -78,7 +78,7 @@ if (Test-Path ".env") {
 
     function New-ValidatorAddress {
         param([int]$Index)
-        return "0x" + ("0" * 38) + "01" + $Index.ToString("00")
+        return "0x" + ("0" * 36) + "01" + $Index.ToString("00")
     }
 
     # Prompt for Cloudflare Tunnel token
