@@ -171,6 +171,10 @@ public sealed class PipelinedConsensus
         round.BlockData = proposal.BlockData;
         round.State = ConsensusState.Preparing;
 
+        // Count leader's implicit PREPARE vote (the leader self-voted locally)
+        RecordVote(round, VotePhase.Prepare, proposal.SenderId,
+            proposal.ProposerSignature.ToArray(), leader.BlsPublicKey.ToArray());
+
         return CreateVote(round, VotePhase.Prepare);
     }
 
@@ -246,9 +250,16 @@ public sealed class PipelinedConsensus
         {
             votes.Add(viewChange.SenderId);
 
-            // Auto-join: if the proposed view is higher than any of our active rounds,
+            // Auto-join: if the proposed view is higher than our highest active round,
             // add our own vote to prevent view change deadlocks.
-            votes.Add(_localPeerId);
+            ulong maxActiveView = 0;
+            foreach (var round in _activeRounds.Values)
+            {
+                if (round.State != ConsensusState.Finalized && round.View > maxActiveView)
+                    maxActiveView = round.View;
+            }
+            if (viewChange.ProposedView > maxActiveView)
+                votes.Add(_localPeerId);
 
             if (votes.Count >= _validatorSet.QuorumThreshold)
             {

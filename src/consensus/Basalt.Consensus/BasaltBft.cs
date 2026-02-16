@@ -139,14 +139,64 @@ public sealed class BasaltBft
 
     /// <summary>
     /// Handle a received proposal from the leader.
+    /// Accepts proposals for the current view or any future view (fast-forward).
+    /// Fast-forward prevents the liveness deadlock where a leader proposes for a
+    /// new view but some validators haven't completed the view change yet — without
+    /// fast-forward they reject the proposal, time out, and trigger another view change
+    /// in an infinite loop.
     /// </summary>
     public ConsensusVoteMessage? HandleProposal(ConsensusProposalMessage proposal)
     {
         if (proposal.ViewNumber != _currentView)
         {
-            _logger.LogWarning("Received proposal for wrong view {View}, expected {Expected}",
-                proposal.ViewNumber, _currentView);
-            return null;
+            if (proposal.ViewNumber > _currentView)
+            {
+                // Verify the sender is the legitimate leader for the proposed view
+                var futureLeader = _validatorSet.GetLeader(proposal.ViewNumber);
+                if (proposal.SenderId != futureLeader.PeerId)
+                {
+                    _logger.LogWarning("Proposal for future view {View} from non-leader {Sender}",
+                        proposal.ViewNumber, proposal.SenderId);
+                    return null;
+                }
+
+                // Verify signature before fast-forwarding
+                Span<byte> ffHash = stackalloc byte[Hash256.Size];
+                proposal.BlockHash.WriteTo(ffHash);
+                if (!_blsSigner.Verify(futureLeader.BlsPublicKey.ToArray(), ffHash, proposal.ProposerSignature.ToArray()))
+                {
+                    _logger.LogWarning("Invalid proposal signature for future view {View}", proposal.ViewNumber);
+                    return null;
+                }
+
+                // Fast-forward: the leader already processed the view change before us.
+                // Preserve any pre-counted votes for the target view (from votes that
+                // arrived before this proposal) — only clear stale votes from old views.
+                _logger.LogInformation("Fast-forwarding from view {Old} to {New} (valid leader proposal)",
+                    _currentView, proposal.ViewNumber);
+                var targetView = proposal.ViewNumber;
+                foreach (var key in _votes.Keys)
+                {
+                    if (key.View != targetView)
+                        _votes.TryRemove(key, out _);
+                }
+                foreach (var key in _voteSignatures.Keys)
+                {
+                    if (key.View != targetView)
+                        _voteSignatures.TryRemove(key, out _);
+                }
+                _currentView = targetView;
+                _state = ConsensusState.Proposing;
+                _viewStartTime = DateTimeOffset.UtcNow;
+                _viewChangeRequestedForView = null;
+                OnViewChange?.Invoke(_currentView);
+            }
+            else
+            {
+                _logger.LogDebug("Ignoring proposal for past view {View}, current {Current}",
+                    proposal.ViewNumber, _currentView);
+                return null;
+            }
         }
 
         var leader = _validatorSet.GetLeader(_currentView);
@@ -156,7 +206,8 @@ public sealed class BasaltBft
             return null;
         }
 
-        // Verify leader's signature
+        // Verify leader's signature (may already be verified for fast-forwarded proposals,
+        // but the cost is negligible and keeps the code straightforward)
         Span<byte> hashBytes = stackalloc byte[Hash256.Size];
         proposal.BlockHash.WriteTo(hashBytes);
         if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), hashBytes, proposal.ProposerSignature.ToArray()))
@@ -169,6 +220,12 @@ public sealed class BasaltBft
         _currentProposalData = proposal.BlockData;
         _state = ConsensusState.Preparing;
 
+        // Count leader's implicit PREPARE vote — the leader self-voted locally in
+        // ProposeBlock but doesn't broadcast a separate PREPARE message. Without this,
+        // non-leaders can only count (self + other non-leaders) = 3 of 4 votes max,
+        // and losing a single vote to network timing prevents quorum.
+        HandlePrepareVote(proposal.SenderId, _currentView, proposal.BlockHash);
+
         // Self-count PREPARE vote before returning it for broadcast
         var vote = CreateVote(VotePhase.Prepare, proposal.BlockHash);
         HandlePrepareVote(_localPeerId, _currentView, proposal.BlockHash);
@@ -177,10 +234,15 @@ public sealed class BasaltBft
 
     /// <summary>
     /// Handle a vote message.
+    /// Accepts votes for the current view AND the next view (pre-counting).
+    /// Votes for _currentView + 1 are stored but don't trigger phase transitions
+    /// (because _state doesn't match). When HandleProposal fast-forwards to that view,
+    /// the pre-counted votes are already available, preventing quorum failure when
+    /// votes arrive before the proposal due to network timing.
     /// </summary>
     public ConsensusVoteMessage? HandleVote(ConsensusVoteMessage vote)
     {
-        if (vote.ViewNumber != _currentView)
+        if (vote.ViewNumber != _currentView && vote.ViewNumber != _currentView + 1)
             return null;
 
         if (!_validatorSet.IsValidator(vote.SenderId))
