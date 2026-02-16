@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Basalt.Execution;
 using Basalt.Sdk.Wallet.Rpc.Models;
 
@@ -146,7 +147,7 @@ public sealed class BasaltClient : IBasaltClient
 
         var response = await _http.PostAsJsonAsync("/v1/transactions", request, WalletJsonContext.Default.TransactionRequest, ct)
             .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        await ThrowOnErrorAsync(response, ct).ConfigureAwait(false);
         var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         return await JsonSerializer.DeserializeAsync(stream, WalletJsonContext.Default.TransactionSubmitResult, ct).ConfigureAwait(false)
                ?? throw new InvalidOperationException("Failed to deserialize transaction submit response.");
@@ -158,7 +159,7 @@ public sealed class BasaltClient : IBasaltClient
         var request = new FaucetRequest { Address = address };
         var response = await _http.PostAsJsonAsync("/v1/faucet", request, WalletJsonContext.Default.FaucetRequest, ct)
             .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        await ThrowOnErrorAsync(response, ct).ConfigureAwait(false);
         var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         return await JsonSerializer.DeserializeAsync(stream, WalletJsonContext.Default.FaucetResult, ct).ConfigureAwait(false)
                ?? throw new InvalidOperationException("Failed to deserialize faucet response.");
@@ -186,7 +187,7 @@ public sealed class BasaltClient : IBasaltClient
 
         var response = await _http.PostAsJsonAsync("/v1/call", request, WalletJsonContext.Default.CallReadOnlyRequest, ct)
             .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        await ThrowOnErrorAsync(response, ct).ConfigureAwait(false);
         var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         return await JsonSerializer.DeserializeAsync(stream, WalletJsonContext.Default.CallResult, ct).ConfigureAwait(false)
                ?? throw new InvalidOperationException("Failed to deserialize call response.");
@@ -198,4 +199,72 @@ public sealed class BasaltClient : IBasaltClient
         if (_ownsHttpClient)
             _http.Dispose();
     }
+
+    /// <summary>
+    /// Reads the response body on non-success status codes and throws a
+    /// <see cref="BasaltRpcException"/> containing the server's error message.
+    /// </summary>
+    private static async Task ThrowOnErrorAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        string? serverMessage = null;
+        int? errorCode = null;
+
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(body))
+            {
+                var errorObj = JsonSerializer.Deserialize(body, RpcErrorJsonContext.Default.RpcErrorResponse);
+                if (errorObj is not null)
+                {
+                    serverMessage = errorObj.Message;
+                    errorCode = errorObj.Code;
+                }
+            }
+        }
+        catch
+        {
+            // If we can't parse the error body, fall through to the generic message
+        }
+
+        throw new BasaltRpcException(
+            (int)response.StatusCode,
+            errorCode,
+            serverMessage ?? $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+    }
 }
+
+/// <summary>
+/// Exception thrown when the Basalt node returns an error response.
+/// Contains the HTTP status code and the server's error message.
+/// </summary>
+public sealed class BasaltRpcException : Exception
+{
+    /// <summary>The HTTP status code.</summary>
+    public int HttpStatusCode { get; }
+
+    /// <summary>The Basalt error code from the response, if present.</summary>
+    public int? ErrorCode { get; }
+
+    public BasaltRpcException(int httpStatusCode, int? errorCode, string message)
+        : base(message)
+    {
+        HttpStatusCode = httpStatusCode;
+        ErrorCode = errorCode;
+    }
+}
+
+/// <summary>
+/// Minimal error response DTO for parsing server error bodies.
+/// </summary>
+internal sealed class RpcErrorResponse
+{
+    [JsonPropertyName("code")] public int Code { get; set; }
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+}
+
+[JsonSerializable(typeof(RpcErrorResponse))]
+internal partial class RpcErrorJsonContext : JsonSerializerContext;
