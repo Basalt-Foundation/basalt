@@ -78,9 +78,17 @@ public sealed class ContractClient
             .Build();
 
         var signedTx = account.SignTransaction(tx);
-        var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
-        _nonceManager.IncrementNonce(addressHex);
-        return result;
+        try
+        {
+            var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
+            _nonceManager.IncrementNonce(addressHex);
+            return result;
+        }
+        catch
+        {
+            _nonceManager.Reset(addressHex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -145,9 +153,17 @@ public sealed class ContractClient
             .Build();
 
         var signedTx = account.SignTransaction(tx);
-        var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
-        _nonceManager.IncrementNonce(addressHex);
-        return result;
+        try
+        {
+            var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
+            _nonceManager.IncrementNonce(addressHex);
+            return result;
+        }
+        catch
+        {
+            _nonceManager.Reset(addressHex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -211,8 +227,16 @@ public sealed class ContractClient
             .Build();
 
         var signedTx = account.SignTransaction(tx);
-        var result = await client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
-        nonceManager.IncrementNonce(addressHex);
-        return result;
+        try
+        {
+            var result = await client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
+            nonceManager.IncrementNonce(addressHex);
+            return result;
+        }
+        catch
+        {
+            nonceManager.Reset(addressHex);
+            throw;
+        }
     }
 }

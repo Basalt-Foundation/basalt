@@ -107,6 +107,10 @@ public sealed class ChainManager
             }
         }
 
+        // Deploy system contracts (WBSLT, BNS, Governance, Escrow, StakingPool)
+        if (stateDb != null)
+            GenesisContractDeployer.DeployAll(stateDb, chainParams.ChainId);
+
         var stateRoot = stateDb?.ComputeStateRoot() ?? Hash256.Zero;
 
         var genesisHeader = new BlockHeader

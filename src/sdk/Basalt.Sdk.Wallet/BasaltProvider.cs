@@ -210,9 +210,19 @@ public sealed class BasaltProvider : IDisposable
         };
 
         var signedTx = account.SignTransaction(tx);
-        var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
-        _nonceManager.IncrementNonce(addressHex);
-        return result;
+        try
+        {
+            var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
+            _nonceManager.IncrementNonce(addressHex);
+            return result;
+        }
+        catch
+        {
+            // Reset nonce cache on any submission error so the next attempt
+            // re-fetches the on-chain nonce instead of staying out of sync.
+            _nonceManager.Reset(addressHex);
+            throw;
+        }
     }
 
     /// <summary>

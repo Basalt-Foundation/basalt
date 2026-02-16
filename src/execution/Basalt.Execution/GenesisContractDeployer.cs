@@ -34,24 +34,24 @@ public static class GenesisContractDeployer
     /// <summary>
     /// Deploy all system contracts into the state database.
     /// </summary>
-    public static void DeployAll(IStateDatabase stateDb, ILogger? logger = null)
+    public static void DeployAll(IStateDatabase stateDb, uint chainId = 31337, ILogger? logger = null)
     {
         var registry = ContractRegistry.CreateDefault();
 
         // WBSLT (0x0100) — no constructor args
-        DeploySystemContract(stateDb, registry, Addresses.WBSLT, 0x0100, [], logger);
+        DeploySystemContract(stateDb, registry, Addresses.WBSLT, 0x0100, [], chainId, logger);
 
         // Basalt Name Service (0x0101) — default fee
-        DeploySystemContract(stateDb, registry, Addresses.NameService, 0x0101, [], logger);
+        DeploySystemContract(stateDb, registry, Addresses.NameService, 0x0101, [], chainId, logger);
 
         // Simple Governance (0x0102) — default quorum
-        DeploySystemContract(stateDb, registry, Addresses.Governance, 0x0102, [], logger);
+        DeploySystemContract(stateDb, registry, Addresses.Governance, 0x0102, [], chainId, logger);
 
         // Escrow (0x0103) — no constructor args
-        DeploySystemContract(stateDb, registry, Addresses.Escrow, 0x0103, [], logger);
+        DeploySystemContract(stateDb, registry, Addresses.Escrow, 0x0103, [], chainId, logger);
 
         // Staking Pool (0x0104) — no constructor args
-        DeploySystemContract(stateDb, registry, Addresses.StakingPool, 0x0104, [], logger);
+        DeploySystemContract(stateDb, registry, Addresses.StakingPool, 0x0104, [], chainId, logger);
 
         logger?.LogInformation("Deployed {Count} system contracts at genesis", 5);
     }
@@ -62,6 +62,7 @@ public static class GenesisContractDeployer
         Address address,
         ushort typeId,
         byte[] constructorArgs,
+        uint chainId,
         ILogger? logger)
     {
         // Build manifest
@@ -97,7 +98,7 @@ public static class GenesisContractDeployer
             BlockTimestamp = 0,
             BlockNumber = 0,
             BlockProposer = address,
-            ChainId = 4242,
+            ChainId = chainId,
             GasMeter = gasMeter,
             StateDb = stateDb,
             CallDepth = 0,
