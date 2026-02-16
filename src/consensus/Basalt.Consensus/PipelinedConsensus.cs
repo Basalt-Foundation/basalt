@@ -219,9 +219,15 @@ public sealed class PipelinedConsensus
             if (round.State == ConsensusState.Finalized || round.State == ConsensusState.Idle)
                 continue;
 
+            // Don't send duplicate view change for a round that already requested one
+            if (round.ViewChangeRequested)
+                continue;
+
             if (DateTimeOffset.UtcNow - round.StartTime > _roundTimeout)
             {
                 _logger.LogWarning("Round for block {Block} timed out in state {State}", blockNumber, round.State);
+                round.ViewChangeRequested = true;
+                round.StartTime = DateTimeOffset.UtcNow; // Reset timer
                 return RequestViewChange(round);
             }
         }
@@ -503,7 +509,8 @@ public sealed class PipelinedConsensus
         public ConsensusState State { get; set; }
         public Hash256 BlockHash { get; set; }
         public byte[]? BlockData { get; set; }
-        public DateTimeOffset StartTime { get; init; }
+        public DateTimeOffset StartTime { get; set; }
+        public bool ViewChangeRequested { get; set; }
         public HashSet<PeerId> PrepareVotes { get; } = new();
         public HashSet<PeerId> PreCommitVotes { get; } = new();
         public HashSet<PeerId> CommitVotes { get; } = new();

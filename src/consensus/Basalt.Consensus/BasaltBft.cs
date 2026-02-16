@@ -39,6 +39,7 @@ public sealed class BasaltBft
     // Timing
     private DateTimeOffset _viewStartTime;
     private readonly TimeSpan _viewTimeout = TimeSpan.FromSeconds(2);
+    private ulong? _viewChangeRequestedForView;
 
     // Callbacks
     // Events raised during consensus - consumed by the node integration layer
@@ -92,6 +93,7 @@ public sealed class BasaltBft
         _currentView = blockNumber; // View tracks block number in Phase 1
         _state = ConsensusState.Proposing;
         _viewStartTime = DateTimeOffset.UtcNow;
+        _viewChangeRequestedForView = null;
         _votes.Clear();
         _voteSignatures.Clear();
 
@@ -221,9 +223,15 @@ public sealed class BasaltBft
         if (_state == ConsensusState.Idle || _state == ConsensusState.Finalized)
             return null;
 
+        // Don't send duplicate view change for the same view
+        if (_viewChangeRequestedForView == _currentView)
+            return null;
+
         if (DateTimeOffset.UtcNow - _viewStartTime > _viewTimeout)
         {
             _logger.LogWarning("View {View} timed out, requesting view change", _currentView);
+            _viewChangeRequestedForView = _currentView;
+            _viewStartTime = DateTimeOffset.UtcNow; // Reset timer for next potential timeout
             return RequestViewChange();
         }
 
@@ -248,6 +256,7 @@ public sealed class BasaltBft
                 _currentView = viewChange.ProposedView;
                 _state = ConsensusState.Proposing;
                 _viewStartTime = DateTimeOffset.UtcNow;
+                _viewChangeRequestedForView = null;
                 _votes.Clear();
                 _voteSignatures.Clear();
                 _logger.LogInformation("View changed to {View}", _currentView);
