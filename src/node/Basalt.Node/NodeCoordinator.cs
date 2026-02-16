@@ -73,8 +73,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private readonly Dictionary<Address, ulong> _lastActiveBlock = new();
     private const ulong InactivityThresholdBlocks = 100; // ~40 seconds at 400ms
 
-    // Double-sign detection
-    private readonly Dictionary<ulong, Hash256> _proposalsByView = new();
+    // Double-sign detection: keyed by (view, proposer) to avoid false positives
+    // when different proposers propose for the same view after a view change.
+    private readonly Dictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
 
     // Identity
     private byte[] _privateKey = [];
@@ -332,6 +333,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _consensus.OnViewChange += (view) =>
         {
             _logger.LogInformation("Consensus view changed to {View}", view);
+            // Clear stale proposals to prevent false double-sign detection
+            // after view changes (a new leader may propose a different block
+            // for a view that was previously abandoned).
+            PruneProposalsByView(view);
         };
 
         _logger.LogInformation("Consensus: sequential mode (BasaltBft)");
@@ -354,6 +359,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _pipelinedConsensus.OnViewChange += (view) =>
         {
             _logger.LogInformation("Pipelined consensus view changed to {View}", view);
+            PruneProposalsByView(view);
         };
 
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
@@ -910,14 +916,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}", applied, _chainManager.LatestBlockNumber);
         }
 
-        // Signal the sync loop that this batch is complete
-        _syncBatchTcs?.TrySetResult(true);
+        // Signal the sync loop: true = progress made, false = stalled (no blocks applied)
+        _syncBatchTcs?.TrySetResult(applied > 0);
     }
 
     private void HandleConsensusProposal(PeerId sender, ConsensusProposalMessage proposal)
     {
-        // Double-sign detection: check if we already have a different proposal for this view
-        if (_slashingEngine != null && _proposalsByView.TryGetValue(proposal.ViewNumber, out var existingHash))
+        // Double-sign detection: check if the SAME proposer already sent a DIFFERENT
+        // block hash for this view. Keying by (view, proposer) ensures that different
+        // proposers at the same view (e.g. after a view change) don't trigger false positives.
+        var proposalKey = (proposal.ViewNumber, proposal.SenderId);
+        if (_slashingEngine != null && _proposalsByView.TryGetValue(proposalKey, out var existingHash))
         {
             if (existingHash != proposal.BlockHash)
             {
@@ -930,7 +939,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 }
             }
         }
-        _proposalsByView[proposal.ViewNumber] = proposal.BlockHash;
+        _proposalsByView[proposalKey] = proposal.BlockHash;
 
         ConsensusVoteMessage? vote;
         if (_config.UsePipelining)
@@ -1214,6 +1223,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     break;
                 }
 
+                // Check if the batch made progress (applied at least 1 block)
+                var madeProgress = await _syncBatchTcs.Task;
+                if (!madeProgress)
+                {
+                    _logger.LogWarning(
+                        "Sync stalled at block #{Block} — possible chain fork or invalid blocks from peer {Peer}",
+                        currentBlock, bestPeer.Id);
+                    break;
+                }
+
                 // Update current position after successful batch
                 currentBlock = _chainManager.LatestBlockNumber + 1;
 
@@ -1239,6 +1258,23 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _isSyncing = false;
             _syncBatchTcs = null;
         }
+    }
+
+    /// <summary>
+    /// Remove proposal entries for views older than <paramref name="currentView"/>
+    /// to prevent unbounded growth and avoid false double-sign detection when
+    /// a view number is reused after a view change.
+    /// </summary>
+    private void PruneProposalsByView(ulong currentView)
+    {
+        var staleKeys = new List<(ulong, PeerId)>();
+        foreach (var key in _proposalsByView.Keys)
+        {
+            if (key.View < currentView)
+                staleKeys.Add(key);
+        }
+        foreach (var key in staleKeys)
+            _proposalsByView.Remove(key);
     }
 
     private PeerInfo? GetBestPeer()
