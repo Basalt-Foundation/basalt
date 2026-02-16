@@ -19,7 +19,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Parent Hash</span>
-                <span class="detail-value hash" @onclick="() => NavigateToParent()" style="cursor:pointer">@_block.ParentHash</span>
+                <span class="detail-value hash" @onclick="NavigateToParent" style="cursor:pointer">@_block.ParentHash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">State Root</span>
@@ -31,7 +31,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Proposer</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(NavigateToAccount(_block.Proposer))" style="cursor:pointer">@_block.Proposer</span>
+                <span class="detail-value hash" @onclick="NavigateToProposer" style="cursor:pointer">@_block.Proposer</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Transactions</span>
@@ -77,13 +77,13 @@
                 <tbody>
                     @foreach (var tx in _transactions)
                     {
-                        <tr @onclick="() => Nav.NavigateTo(NavigateToTx(tx.Hash))" style="cursor:pointer">
+                        <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
                             <td>@tx.TransactionIndex</td>
-                            <td class="hash truncate">@TruncateHash(tx.Hash)</td>
-                            <td>@tx.Type</td>
-                            <td class="hash truncate">@TruncateHash(tx.Sender)</td>
-                            <td class="hash truncate">@TruncateHash(tx.To)</td>
-                            <td>@tx.Value</td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
                         </tr>
                     }
                 </tbody>
@@ -110,7 +110,7 @@
             _block = await Api.GetBlockAsync(Id);
             if (_block == null)
             {
-                _error = $"Block not found: {Id}";
+                _error = "Block not found: " + Id;
                 return;
             }
 
@@ -126,15 +126,17 @@
     private void NavigateToParent()
     {
         if (_block != null && _block.Number > 0)
-            Nav.NavigateTo($"/block/{_block.Number - 1}");
+            Nav.NavigateTo("/block/" + (_block.Number - 1));
     }
 
-    private static string NavigateToTx(string hash) => $"/tx/{hash}";
-    private static string NavigateToAccount(string address) => $"/account/{address}";
-
-    private static string TruncateHash(string hash)
+    private void NavigateToTx(string hash)
     {
-        if (hash.Length <= 16) return hash;
-        return hash[..10] + "..." + hash[^6..];
+        Nav.NavigateTo("/tx/" + hash);
+    }
+
+    private void NavigateToProposer()
+    {
+        if (_block != null)
+            Nav.NavigateTo("/account/" + _block.Proposer);
     }
 }

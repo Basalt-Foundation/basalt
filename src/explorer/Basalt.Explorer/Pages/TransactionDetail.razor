@@ -4,79 +4,214 @@
 
 <PageTitle>Basalt Explorer - Transaction</PageTitle>
 
-<div class="card">
-    <div class="card-header">Transaction Details</div>
-    <div class="card-body">
-        @if (_tx != null)
-        {
+@if (_loading)
+{
+    <div class="loading">Loading transaction...</div>
+}
+else if (_tx == null)
+{
+    <div class="error-message">Transaction not found.</div>
+}
+else
+{
+    @* Card 1: Transaction Overview *@
+    <div class="card">
+        <div class="card-header">Transaction Overview</div>
+        <div class="card-body">
             <div class="detail-row">
                 <span class="detail-label">Hash</span>
                 <span class="detail-value hash-static">@_tx.Hash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Type</span>
-                <span class="detail-value"><span class="badge badge-success">@_tx.Type</span></span>
+                <span class="detail-value">
+                    <span class="badge @FormatHelper.GetTxTypeBadgeClass(_tx.Type)">@FormatHelper.GetTxTypeLabel(_tx.Type)</span>
+                </span>
             </div>
-            @if (_tx.BlockNumber.HasValue)
-            {
-                <div class="detail-row">
-                    <span class="detail-label">Block</span>
-                    <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_tx.BlockNumber.Value))">@_tx.BlockNumber</span>
-                </div>
-            }
+            <div class="detail-row">
+                <span class="detail-label">Block</span>
+                <span class="detail-value">
+                    @if (_tx.BlockNumber.HasValue)
+                    {
+                        <span class="hash" @onclick="() => NavigateToBlock(_tx.BlockNumber.Value)">@_tx.BlockNumber</span>
+                    }
+                    else
+                    {
+                        <span class="badge badge-default">Pending</span>
+                    }
+                </span>
+            </div>
             <div class="detail-row">
                 <span class="detail-label">Nonce</span>
                 <span class="detail-value">@_tx.Nonce</span>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Sender</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_tx.Sender))">@_tx.Sender</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">To</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_tx.To))">@_tx.To</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Value</span>
-                <span class="detail-value">@_tx.Value</span>
-            </div>
+        </div>
+    </div>
+
+    @* Card 2: Type-Specific Details *@
+    <div class="card">
+        <div class="card-header">
+            @FormatHelper.GetTxTypeLabel(_tx.Type) Details
+        </div>
+        <div class="card-body">
+            @if (_tx.Type == "Transfer")
+            {
+                <div class="transfer-flow">
+                    <div class="address-box">
+                        <span class="address-label">From</span>
+                        <span class="address-value hash" @onclick="() => NavigateToAccount(_tx.Sender)">@FormatHelper.TruncateHash(_tx.Sender)</span>
+                    </div>
+                    <span class="arrow"></span>
+                    <div class="address-box">
+                        <span class="address-label">To</span>
+                        <span class="address-value hash" @onclick="() => NavigateToAccount(_tx.To)">@FormatHelper.TruncateHash(_tx.To)</span>
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Value</span>
+                    <span class="detail-value amount">@FormatHelper.FormatBslt(_tx.Value)</span>
+                </div>
+            }
+            else if (_tx.Type == "ContractDeploy")
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Deployer</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToAccount(_tx.Sender)">@FormatHelper.TruncateHash(_tx.Sender)</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Contract Address</span>
+                    <span class="detail-value">
+                        <span class="hash" @onclick="() => NavigateToAccount(_tx.To)">@FormatHelper.TruncateHash(_tx.To)</span>
+                        <span class="badge badge-deploy">Contract</span>
+                    </span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Bytecode Size</span>
+                    <span class="detail-value">@FormatHelper.FormatBytes(_tx.DataSize)</span>
+                </div>
+                @if (!string.IsNullOrEmpty(_tx.Data))
+                {
+                    <div class="detail-row">
+                        <span class="detail-label">Bytecode</span>
+                        <span class="detail-value">
+                            @if (_showFullData)
+                            {
+                                <span class="data-hex">@_tx.Data</span>
+                            }
+                            else
+                            {
+                                <span class="data-hex">@FormatHelper.TruncateData(_tx.Data, 64)</span>
+                            }
+                            <span class="data-size">(@FormatHelper.FormatBytes(_tx.DataSize))</span>
+                            <button class="btn-expand" @onclick="ToggleData">@(_showFullData ? "Collapse" : "Expand")</button>
+                        </span>
+                    </div>
+                }
+            }
+            else if (_tx.Type == "ContractCall")
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Caller</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToAccount(_tx.Sender)">@FormatHelper.TruncateHash(_tx.Sender)</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Contract</span>
+                    <span class="detail-value">
+                        <span class="hash" @onclick="() => NavigateToAccount(_tx.To)">@FormatHelper.TruncateHash(_tx.To)</span>
+                        <span class="badge badge-call">Contract</span>
+                    </span>
+                </div>
+                @if (_tx.Value != "0")
+                {
+                    <div class="detail-row">
+                        <span class="detail-label">Value</span>
+                        <span class="detail-value amount">@FormatHelper.FormatBslt(_tx.Value)</span>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(_tx.Data))
+                {
+                    <div class="detail-row">
+                        <span class="detail-label">Call Data</span>
+                        <span class="detail-value">
+                            @if (_showFullData)
+                            {
+                                <span class="data-hex">@_tx.Data</span>
+                            }
+                            else
+                            {
+                                <span class="data-hex">@FormatHelper.TruncateData(_tx.Data, 64)</span>
+                            }
+                            <span class="data-size">(@FormatHelper.FormatBytes(_tx.DataSize))</span>
+                            <button class="btn-expand" @onclick="ToggleData">@(_showFullData ? "Collapse" : "Expand")</button>
+                        </span>
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Sender</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToAccount(_tx.Sender)">@FormatHelper.TruncateHash(_tx.Sender)</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">To</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToAccount(_tx.To)">@FormatHelper.TruncateHash(_tx.To)</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Value</span>
+                    <span class="detail-value amount">@FormatHelper.FormatBslt(_tx.Value)</span>
+                </div>
+            }
+        </div>
+    </div>
+
+    @* Card 3: Gas & Technical *@
+    <div class="card">
+        <div class="card-header">Gas &amp; Technical</div>
+        <div class="card-body">
             <div class="detail-row">
                 <span class="detail-label">Gas Limit</span>
                 <span class="detail-value">@_tx.GasLimit</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Gas Price</span>
-                <span class="detail-value">@_tx.GasPrice</span>
+                <span class="detail-value">@FormatHelper.FormatBslt(_tx.GasPrice)</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Priority</span>
                 <span class="detail-value">@_tx.Priority</span>
             </div>
-        }
-        else if (_loading)
-        {
-            <div class="loading">Loading transaction...</div>
-        }
-        else
-        {
-            <div class="error-message">Transaction not found.</div>
-        }
+        </div>
     </div>
-</div>
+}
 
 @code {
     [Parameter] public string Hash { get; set; } = "";
 
     private TransactionDto? _tx;
     private bool _loading = true;
+    private bool _showFullData;
 
     protected override async Task OnParametersSetAsync()
     {
         _loading = true;
+        _showFullData = false;
         _tx = await Api.GetTransactionAsync(Hash);
         _loading = false;
     }
 
-    private static string BlockPath(ulong number) => $"/block/{number}";
-    private static string AccountPath(string address) => $"/account/{address}";
+    private void ToggleData()
+    {
+        _showFullData = !_showFullData;
+    }
+
+    private void NavigateToBlock(ulong number)
+    {
+        Nav.NavigateTo("/block/" + number);
+    }
+
+    private void NavigateToAccount(string address)
+    {
+        Nav.NavigateTo("/account/" + address);
+    }
 }

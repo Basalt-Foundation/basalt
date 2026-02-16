@@ -23,10 +23,10 @@
                     @foreach (var v in _validators)
                     {
                         <tr>
-                            <td class="hash" style="cursor:pointer" @onclick="() => Nav.NavigateTo(AccountPath(v.Address))">@TruncateHash(v.Address)</td>
-                            <td>@v.Stake</td>
-                            <td>@v.SelfStake</td>
-                            <td>@v.DelegatedStake</td>
+                            <td class="hash" style="cursor:pointer" @onclick="() => NavigateToAccount(v.Address)">@FormatHelper.TruncateHash(v.Address)</td>
+                            <td>@FormatHelper.FormatBslt(v.Stake)</td>
+                            <td>@FormatHelper.FormatBslt(v.SelfStake)</td>
+                            <td>@FormatHelper.FormatBslt(v.DelegatedStake)</td>
                             <td><span class="status-badge @v.Status.ToLowerInvariant()">@v.Status</span></td>
                         </tr>
                     }
@@ -54,11 +54,8 @@
         _loading = false;
     }
 
-    private static string AccountPath(string address) => $"/account/{address}";
-
-    private static string TruncateHash(string hash)
+    private void NavigateToAccount(string address)
     {
-        if (hash.Length <= 16) return hash;
-        return hash[..10] + "..." + hash[^6..];
+        Nav.NavigateTo("/account/" + address);
     }
 }

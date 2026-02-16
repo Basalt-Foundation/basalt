@@ -113,6 +113,36 @@ public static class RestApiEndpoints
             });
         });
 
+        // GET /v1/accounts/{address}/transactions
+        app.MapGet("/v1/accounts/{address}/transactions", (string address, int? count) =>
+        {
+            if (!Address.TryFromHexString(address, out var addr))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                {
+                    Code = 400,
+                    Message = "Invalid address format.",
+                });
+
+            var maxTxs = Math.Clamp(count ?? 25, 1, 100);
+            var latestNum = chainManager.LatestBlockNumber;
+            var scanDepth = Math.Min(latestNum + 1, 1000UL);
+            var transactions = new List<TransactionDetailResponse>();
+
+            for (ulong i = 0; i < scanDepth && transactions.Count < maxTxs; i++)
+            {
+                var block = chainManager.GetBlockByNumber(latestNum - i);
+                if (block == null) continue;
+                for (int j = 0; j < block.Transactions.Count && transactions.Count < maxTxs; j++)
+                {
+                    var tx = block.Transactions[j];
+                    if (tx.Sender == addr || tx.To == addr)
+                        transactions.Add(TransactionDetailResponse.FromTransaction(tx, block, j));
+                }
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(transactions.ToArray());
+        });
+
         // GET /v1/status
         app.MapGet("/v1/status", () =>
         {
@@ -362,6 +392,8 @@ public sealed class TransactionDetailResponse
     [JsonPropertyName("blockNumber")] public ulong? BlockNumber { get; set; }
     [JsonPropertyName("blockHash")] public string? BlockHash { get; set; }
     [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
+    [JsonPropertyName("data")] public string? Data { get; set; }
+    [JsonPropertyName("dataSize")] public int DataSize { get; set; }
 
     public static TransactionDetailResponse FromTransaction(Transaction tx, Block? block = null, int? index = null)
     {
@@ -379,6 +411,8 @@ public sealed class TransactionDetailResponse
             BlockNumber = block?.Number,
             BlockHash = block?.Hash.ToHexString(),
             TransactionIndex = index,
+            Data = tx.Data.Length > 0 ? Convert.ToHexString(tx.Data) : null,
+            DataSize = tx.Data.Length,
         };
     }
 }

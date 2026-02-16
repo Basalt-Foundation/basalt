@@ -5,8 +5,23 @@
 <PageTitle>Basalt Explorer - Transactions</PageTitle>
 
 <div class="card">
-    <div class="card-header">Recent Transactions</div>
+    <div class="card-header">
+        Recent Transactions
+        <button class="badge badge-success" style="cursor:pointer; border:none" @onclick="LoadTransactions">Refresh</button>
+    </div>
     <div class="card-body">
+        <div class="filter-bar">
+            <select class="filter-select" value="@_typeFilter" @onchange="OnFilterChanged">
+                <option value="">All Types</option>
+                <option value="Transfer">Transfer</option>
+                <option value="ContractDeploy">Contract Deploy</option>
+                <option value="ContractCall">Contract Call</option>
+                <option value="StakeDelegate">Stake Delegate</option>
+                <option value="StakeUnbond">Stake Unbond</option>
+                <option value="ValidatorRegister">Validator Register</option>
+            </select>
+        </div>
+
         @if (_transactions != null && _transactions.Length > 0)
         {
             <table class="data-table">
@@ -23,18 +38,18 @@
                 <tbody>
                     @foreach (var tx in _transactions)
                     {
-                        <tr @onclick="() => Nav.NavigateTo(TxPath(tx.Hash))" style="cursor:pointer">
-                            <td class="hash truncate">@TruncateHash(tx.Hash)</td>
+                        <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
                             <td>
                                 @if (tx.BlockNumber.HasValue)
                                 {
-                                    <span class="hash" @onclick="() => Nav.NavigateTo(BlockPath(tx.BlockNumber.Value))" @onclick:stopPropagation="true">@tx.BlockNumber</span>
+                                    <span class="hash link" @onclick="() => NavigateToBlock(tx.BlockNumber.Value)" @onclick:stopPropagation="true">@tx.BlockNumber</span>
                                 }
                             </td>
-                            <td>@tx.Type</td>
-                            <td class="hash truncate">@TruncateHash(tx.Sender)</td>
-                            <td class="hash truncate">@TruncateHash(tx.To)</td>
-                            <td>@tx.Value</td>
+                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
                         </tr>
                     }
                 </tbody>
@@ -52,21 +67,47 @@
 </div>
 
 @code {
+    private TransactionDto[]? _allTransactions;
     private TransactionDto[]? _transactions;
+    private string _typeFilter = "";
     private bool _loading = true;
 
     protected override async Task OnInitializedAsync()
     {
-        _transactions = await Api.GetRecentTransactionsAsync();
+        _allTransactions = await Api.GetRecentTransactionsAsync();
+        _transactions = _allTransactions;
         _loading = false;
     }
 
-    private static string TxPath(string hash) => $"/tx/{hash}";
-    private static string BlockPath(ulong number) => $"/block/{number}";
-
-    private static string TruncateHash(string hash)
+    private async Task LoadTransactions()
     {
-        if (hash.Length <= 16) return hash;
-        return hash[..10] + "..." + hash[^6..];
+        _loading = true;
+        _allTransactions = await Api.GetRecentTransactionsAsync();
+        ApplyFilter();
+        _loading = false;
     }
+
+    private void OnFilterChanged(ChangeEventArgs e)
+    {
+        _typeFilter = e.Value?.ToString() ?? "";
+        ApplyFilter();
+    }
+
+    private void ApplyFilter()
+    {
+        if (string.IsNullOrEmpty(_typeFilter))
+        {
+            _transactions = _allTransactions;
+        }
+        else
+        {
+            _transactions = _allTransactions?.Where(tx => tx.Type == _typeFilter).ToArray();
+        }
+    }
+
+    private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
+
+    private void NavigateToBlock(ulong number) => Nav.NavigateTo("/block/" + number);
+
+    private void NavigateToAccount(string address) => Nav.NavigateTo("/account/" + address);
 }

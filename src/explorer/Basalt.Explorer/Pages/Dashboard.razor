@@ -23,7 +23,7 @@
         <div class="stat-card">
             <div class="label">Latest Block</div>
             <div class="value truncate hash link" style="font-size:0.9rem"
-                 @onclick="() => NavigateToLatestBlock()">@TruncateHash(_status.LatestBlockHash)</div>
+                 @onclick="NavigateToLatestBlock">@FormatHelper.TruncateHash(_status.LatestBlockHash)</div>
         </div>
     </div>
 }
@@ -35,11 +35,11 @@
         {
             <div class="detail-row">
                 <span class="detail-label">Number</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_latestBlock.Number))">@_latestBlock.Number</span>
+                <span class="detail-value hash link" @onclick="() => NavigateToBlock(_latestBlock.Number)">@_latestBlock.Number</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Hash</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(BlockPath(_latestBlock.Number))">@_latestBlock.Hash</span>
+                <span class="detail-value hash link" @onclick="() => NavigateToBlock(_latestBlock.Number)">@_latestBlock.Hash</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Timestamp</span>
@@ -47,7 +47,7 @@
             </div>
             <div class="detail-row">
                 <span class="detail-label">Proposer</span>
-                <span class="detail-value hash" @onclick="() => Nav.NavigateTo(AccountPath(_latestBlock.Proposer))">@_latestBlock.Proposer</span>
+                <span class="detail-value hash link" @onclick="() => NavigateToAccount(_latestBlock.Proposer)">@_latestBlock.Proposer</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Transactions</span>
@@ -74,9 +74,45 @@
     </div>
 </div>
 
+@if (_recentTxs != null && _recentTxs.Length > 0)
+{
+    <div class="card">
+        <div class="card-header">
+            Recent Transactions
+            <a href="/transactions" class="badge badge-success" style="text-decoration:none">View All</a>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Hash</th>
+                        <th>Type</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var tx in _recentTxs)
+                    {
+                        <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
 @code {
     private NodeStatusDto? _status;
     private BlockDto? _latestBlock;
+    private TransactionDto[]? _recentTxs;
     private string? _error;
     private Timer? _timer;
 
@@ -96,11 +132,13 @@
         {
             _status = await Api.GetStatusAsync();
             _latestBlock = await Api.GetLatestBlockAsync();
+            var allTxs = await Api.GetRecentTransactionsAsync();
+            _recentTxs = allTxs?.Take(10).ToArray();
             _error = _status == null ? "Cannot connect to Basalt node." : null;
         }
         catch (Exception ex)
         {
-            _error = $"Error: {ex.Message}";
+            _error = "Error: " + ex.Message;
         }
     }
 
@@ -109,17 +147,14 @@
     private void NavigateToLatestBlock()
     {
         if (_latestBlock != null)
-            Nav.NavigateTo(BlockPath(_latestBlock.Number));
+            NavigateToBlock(_latestBlock.Number);
     }
 
-    private static string BlockPath(ulong number) => $"/block/{number}";
-    private static string AccountPath(string address) => $"/account/{address}";
+    private void NavigateToBlock(ulong number) => Nav.NavigateTo("/block/" + number);
 
-    private static string TruncateHash(string hash)
-    {
-        if (hash.Length <= 16) return hash;
-        return hash[..10] + "..." + hash[^6..];
-    }
+    private void NavigateToAccount(string address) => Nav.NavigateTo("/account/" + address);
+
+    private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
 
     public void Dispose() => _timer?.Dispose();
 }

@@ -1,0 +1,108 @@
+@page "/mempool"
+@inject BasaltApiClient Api
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Basalt Explorer - Mempool</PageTitle>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">Pending Transactions</div>
+        <div class="value">@(_mempool?.Count ?? 0)</div>
+    </div>
+</div>
+
+<div class="card" style="margin-top: 1.5rem">
+    <div class="card-header">
+        Pending Transactions
+        <button @onclick="LoadMempool" style="float:right">Refresh</button>
+    </div>
+    <div class="card-body">
+        @if (_mempool != null && _mempool.Transactions.Length > 0)
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Hash</th>
+                        <th>Type</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Value</th>
+                        <th>Nonce</th>
+                        <th>Valid</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var tx in _mempool.Transactions)
+                    {
+                        <tr>
+                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.Sender)">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.To)">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td>
+                                @tx.Nonce
+                                @if (tx.SenderNonce != tx.Nonce)
+                                {
+                                    <span class="badge badge-warning" title="Nonce gap detected">gap</span>
+                                }
+                            </td>
+                            <td>
+                                @if (tx.ValidationOk)
+                                {
+                                    <span class="status-badge active">Valid</span>
+                                }
+                                else
+                                {
+                                    <span class="status-badge jailed" title="@tx.ValidationError">Invalid</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_loading)
+        {
+            <div class="loading">Loading mempool...</div>
+        }
+        else
+        {
+            <div class="empty-state">Mempool is empty.</div>
+        }
+    </div>
+</div>
+
+@code {
+    private MempoolResponseDto? _mempool;
+    private bool _loading = true;
+    private Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMempool();
+        _timer = new Timer(async _ =>
+        {
+            await LoadMempool();
+            await InvokeAsync(StateHasChanged);
+        }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+    }
+
+    private async Task LoadMempool()
+    {
+        _loading = true;
+        _mempool = await Api.GetMempoolAsync();
+        _loading = false;
+    }
+
+    private void NavigateToAccount(string address)
+    {
+        Nav.NavigateTo("/account/" + address);
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+    }
+}

@@ -63,6 +63,24 @@ public sealed class BasaltApiClient
         try { return await _http.GetFromJsonAsync("v1/validators", ExplorerJsonContext.Default.ValidatorDtoArray); }
         catch { return []; }
     }
+
+    public async Task<TransactionDto[]?> GetAccountTransactionsAsync(string address, int count = 25)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/accounts/{address}/transactions?count={count}", ExplorerJsonContext.Default.TransactionDtoArray); }
+        catch { return []; }
+    }
+
+    public async Task<MempoolResponseDto?> GetMempoolAsync()
+    {
+        try { return await _http.GetFromJsonAsync("v1/debug/mempool", ExplorerJsonContext.Default.MempoolResponseDto); }
+        catch { return null; }
+    }
+
+    public async Task<FaucetStatusDto?> GetFaucetStatusAsync()
+    {
+        try { return await _http.GetFromJsonAsync("v1/faucet/status", ExplorerJsonContext.Default.FaucetStatusDto); }
+        catch { return null; }
+    }
 }
 
 public sealed class NodeStatusDto
@@ -119,6 +137,8 @@ public sealed class TransactionDto
     [JsonPropertyName("blockNumber")] public ulong? BlockNumber { get; set; }
     [JsonPropertyName("blockHash")] public string? BlockHash { get; set; }
     [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
+    [JsonPropertyName("data")] public string? Data { get; set; }
+    [JsonPropertyName("dataSize")] public int DataSize { get; set; }
 }
 
 public sealed class ValidatorDto
@@ -131,6 +151,39 @@ public sealed class ValidatorDto
     [JsonPropertyName("status")] public string Status { get; set; } = "active";
 }
 
+public sealed class MempoolResponseDto
+{
+    [JsonPropertyName("count")] public int Count { get; set; }
+    [JsonPropertyName("transactions")] public MempoolTransactionDto[] Transactions { get; set; } = [];
+}
+
+public sealed class MempoolTransactionDto
+{
+    [JsonPropertyName("hash")] public string Hash { get; set; } = "";
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("nonce")] public ulong Nonce { get; set; }
+    [JsonPropertyName("sender")] public string Sender { get; set; } = "";
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("value")] public string Value { get; set; } = "0";
+    [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
+    [JsonPropertyName("gasPrice")] public string GasPrice { get; set; } = "0";
+    [JsonPropertyName("signatureValid")] public bool SignatureValid { get; set; }
+    [JsonPropertyName("validationOk")] public bool ValidationOk { get; set; }
+    [JsonPropertyName("validationError")] public string? ValidationError { get; set; }
+    [JsonPropertyName("senderExists")] public bool SenderExists { get; set; }
+    [JsonPropertyName("senderNonce")] public ulong SenderNonce { get; set; }
+    [JsonPropertyName("senderBalance")] public string SenderBalance { get; set; } = "0";
+}
+
+public sealed class FaucetStatusDto
+{
+    [JsonPropertyName("faucetAddress")] public string FaucetAddress { get; set; } = "";
+    [JsonPropertyName("balance")] public string Balance { get; set; } = "0";
+    [JsonPropertyName("nonce")] public ulong Nonce { get; set; }
+    [JsonPropertyName("pendingNonce")] public ulong PendingNonce { get; set; }
+    [JsonPropertyName("mempoolSize")] public int MempoolSize { get; set; }
+}
+
 [JsonSerializable(typeof(NodeStatusDto))]
 [JsonSerializable(typeof(BlockDto))]
 [JsonSerializable(typeof(BlockDto[]))]
@@ -140,4 +193,8 @@ public sealed class ValidatorDto
 [JsonSerializable(typeof(TransactionDto[]))]
 [JsonSerializable(typeof(ValidatorDto))]
 [JsonSerializable(typeof(ValidatorDto[]))]
+[JsonSerializable(typeof(MempoolResponseDto))]
+[JsonSerializable(typeof(MempoolTransactionDto))]
+[JsonSerializable(typeof(MempoolTransactionDto[]))]
+[JsonSerializable(typeof(FaucetStatusDto))]
 internal partial class ExplorerJsonContext : JsonSerializerContext;
