@@ -224,8 +224,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // Placeholder — real PeerId will be set after handshake
             // Use deterministic placeholder based on index
+            // Byte 31 = 1 ensures the key is never all-zeros (invalid for BLS12-381)
             var placeholderKey = new byte[32];
             placeholderKey[0] = (byte)i;
+            placeholderKey[31] = 1;
             var pk = Ed25519Signer.GetPublicKey(placeholderKey);
             var addr = $"0x{i + 0x0100:X40}";
             var peerAddress = Address.FromHexString(addr);
