@@ -25,8 +25,13 @@ public sealed class BlsSigner : IBlsSigner
     /// </summary>
     public byte[] Sign(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> message)
     {
+        // BLS12-381 requires the scalar to be less than the field modulus.
+        Span<byte> masked = stackalloc byte[32];
+        privateKey[..32].CopyTo(masked);
+        masked[0] &= 0x3F;
+
         var sk = new Bls.SecretKey();
-        sk.FromBendian(privateKey);
+        sk.FromBendian(masked);
 
         var sig = new Bls.P2();
         sig.HashTo(message, Dst, ReadOnlySpan<byte>.Empty);
@@ -147,8 +152,14 @@ public sealed class BlsSigner : IBlsSigner
     /// </summary>
     public static byte[] GetPublicKeyStatic(ReadOnlySpan<byte> privateKey)
     {
+        // BLS12-381 requires the scalar to be less than the field modulus.
+        // Mask the first byte to ensure the key is in range.
+        Span<byte> masked = stackalloc byte[32];
+        privateKey[..32].CopyTo(masked);
+        masked[0] &= 0x3F;
+
         var sk = new Bls.SecretKey();
-        sk.FromBendian(privateKey);
+        sk.FromBendian(masked);
 
         var pk = new Bls.P1();
         pk.FromSk(sk);
