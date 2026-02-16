@@ -10,7 +10,7 @@ public sealed class ValidatorInfo
 {
     public required PeerId PeerId { get; set; }
     public required PublicKey PublicKey { get; set; }
-    public required BlsPublicKey BlsPublicKey { get; init; }
+    public required BlsPublicKey BlsPublicKey { get; set; }
     public required Address Address { get; init; }
     public UInt256 Stake { get; set; } = UInt256.Zero;
     public int Index { get; init; }
@@ -71,7 +71,7 @@ public sealed class ValidatorSet
     /// Update a validator's identity after handshake reveals their real PeerId.
     /// Replaces placeholder PeerId/PublicKey with the actual values.
     /// </summary>
-    public bool UpdateValidatorIdentity(int validatorIndex, PeerId newPeerId, PublicKey newPublicKey)
+    public bool UpdateValidatorIdentity(int validatorIndex, PeerId newPeerId, PublicKey newPublicKey, BlsPublicKey? newBlsPublicKey = null)
     {
         var validator = _validators.FirstOrDefault(v => v.Index == validatorIndex);
         if (validator == null)
@@ -83,6 +83,8 @@ public sealed class ValidatorSet
         // Update identity
         validator.PeerId = newPeerId;
         validator.PublicKey = newPublicKey;
+        if (newBlsPublicKey.HasValue)
+            validator.BlsPublicKey = newBlsPublicKey.Value;
 
         // Add new PeerId mapping
         _byPeerId[newPeerId] = validator;

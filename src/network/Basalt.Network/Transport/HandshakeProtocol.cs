@@ -11,6 +11,7 @@ public sealed class HandshakeProtocol
 {
     private readonly uint _chainId;
     private readonly PublicKey _localPublicKey;
+    private readonly BlsPublicKey _localBlsPublicKey;
     private readonly PeerId _localPeerId;
     private readonly Func<ulong> _getBestBlockNumber;
     private readonly Func<Hash256> _getBestBlockHash;
@@ -24,6 +25,7 @@ public sealed class HandshakeProtocol
     public HandshakeProtocol(
         uint chainId,
         PublicKey localPublicKey,
+        BlsPublicKey localBlsPublicKey,
         PeerId localPeerId,
         int listenPort,
         Func<ulong> getBestBlockNumber,
@@ -34,6 +36,7 @@ public sealed class HandshakeProtocol
     {
         _chainId = chainId;
         _localPublicKey = localPublicKey;
+        _localBlsPublicKey = localBlsPublicKey;
         _localPeerId = localPeerId;
         _listenPort = listenPort;
         _listenAddress = listenAddress ?? "";
@@ -76,6 +79,7 @@ public sealed class HandshakeProtocol
                 return HandshakeResult.Success(
                     remotePeerId,
                     ack.NodePublicKey,
+                    ack.BlsPublicKey,
                     "",
                     ack.ListenPort,
                     ack.BestBlockNumber,
@@ -99,6 +103,7 @@ public sealed class HandshakeProtocol
                 return HandshakeResult.Success(
                     PeerId.FromPublicKey(peerHello.NodePublicKey),
                     peerHello.NodePublicKey,
+                    peerHello.BlsPublicKey,
                     peerHello.ListenAddress,
                     peerHello.ListenPort,
                     peerHello.BestBlockNumber,
@@ -152,6 +157,7 @@ public sealed class HandshakeProtocol
             return HandshakeResult.Success(
                 peerId,
                 hello.NodePublicKey,
+                hello.BlsPublicKey,
                 hello.ListenAddress,
                 hello.ListenPort,
                 hello.BestBlockNumber,
@@ -174,6 +180,7 @@ public sealed class HandshakeProtocol
             BestBlockHash = _getBestBlockHash(),
             GenesisHash = _getGenesisHash(),
             NodePublicKey = _localPublicKey,
+            BlsPublicKey = _localBlsPublicKey,
             ListenAddress = _listenAddress,
             ListenPort = _listenPort,
         };
@@ -187,6 +194,7 @@ public sealed class HandshakeProtocol
             Accepted = accepted,
             RejectReason = reason,
             NodePublicKey = _localPublicKey,
+            BlsPublicKey = _localBlsPublicKey,
             ListenPort = _listenPort,
             BestBlockNumber = _getBestBlockNumber(),
             BestBlockHash = _getBestBlockHash(),
@@ -216,6 +224,7 @@ public sealed class HandshakeResult
     public string? Error { get; init; }
     public PeerId PeerId { get; init; }
     public PublicKey PeerPublicKey { get; init; }
+    public BlsPublicKey PeerBlsPublicKey { get; init; }
     public string PeerHost { get; init; } = "";
     public int PeerPort { get; init; }
     public ulong PeerBestBlock { get; init; }
@@ -226,6 +235,7 @@ public sealed class HandshakeResult
     public static HandshakeResult Success(
         PeerId peerId,
         PublicKey publicKey,
+        BlsPublicKey blsPublicKey,
         string host,
         int port,
         ulong bestBlock,
@@ -235,6 +245,7 @@ public sealed class HandshakeResult
             IsSuccess = true,
             PeerId = peerId,
             PeerPublicKey = publicKey,
+            PeerBlsPublicKey = blsPublicKey,
             PeerHost = host,
             PeerPort = port,
             PeerBestBlock = bestBlock,

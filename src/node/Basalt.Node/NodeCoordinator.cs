@@ -79,6 +79,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Identity
     private byte[] _privateKey = [];
     private PublicKey _publicKey;
+    private BlsPublicKey _localBlsPublicKey;
     private PeerId _localPeerId;
 
     public NodeCoordinator(
@@ -187,6 +188,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
 
         _publicKey = Ed25519Signer.GetPublicKey(_privateKey);
+        _localBlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
         _localPeerId = PeerId.FromPublicKey(_publicKey);
     }
 
@@ -207,7 +209,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             PeerId = _localPeerId,
             PublicKey = _publicKey,
-            BlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey)),
+            BlsPublicKey = _localBlsPublicKey,
             Address = selfAddress,
             Index = _config.ValidatorIndex,
             Stake = selfStake,
@@ -265,6 +267,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _handshake = new HandshakeProtocol(
             _config.ChainId,
             _publicKey,
+            _localBlsPublicKey,
             _localPeerId,
             _config.P2PPort,
             () => _chainManager.LatestBlockNumber,
@@ -547,7 +550,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             // PeerHost comes from the peer's Hello.ListenAddress (Docker hostname, e.g. "validator-1")
             if (TryParseValidatorIndex(result.PeerHost, out var peerValidatorIndex))
             {
-                _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey);
+                _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
                 _logger.LogInformation("Updated validator {Index} identity (inbound): {PeerId}", peerValidatorIndex, result.PeerId);
             }
 
@@ -1012,7 +1015,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // Update validator set with real PeerId (replaces placeholder)
                 if (TryParseValidatorIndex(host, out var peerValidatorIndex))
                 {
-                    _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey);
+                    _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
                     _logger.LogInformation("Updated validator {Index} identity: {PeerId}", peerValidatorIndex, result.PeerId);
                 }
 

@@ -243,6 +243,7 @@ public static class MessageCodec
         writer.WriteHash256(msg.BestBlockHash);
         writer.WriteHash256(msg.GenesisHash);
         writer.WritePublicKey(msg.NodePublicKey);
+        writer.WriteBlsPublicKey(msg.BlsPublicKey);
         writer.WriteString(msg.ListenAddress);
         writer.WriteInt32(msg.ListenPort);
     }
@@ -252,6 +253,7 @@ public static class MessageCodec
         writer.WriteBool(msg.Accepted);
         writer.WriteString(msg.RejectReason);
         writer.WritePublicKey(msg.NodePublicKey);
+        writer.WriteBlsPublicKey(msg.BlsPublicKey);
         writer.WriteInt32(msg.ListenPort);
         writer.WriteUInt64(msg.BestBlockNumber);
         writer.WriteHash256(msg.BestBlockHash);
@@ -347,6 +349,7 @@ public static class MessageCodec
             BestBlockHash = reader.ReadHash256(),
             GenesisHash = reader.ReadHash256(),
             NodePublicKey = reader.ReadPublicKey(),
+            BlsPublicKey = reader.ReadBlsPublicKey(),
             ListenAddress = reader.ReadString(),
             ListenPort = reader.ReadInt32(),
         };
@@ -361,6 +364,7 @@ public static class MessageCodec
             Accepted = reader.ReadBool(),
             RejectReason = reader.ReadString(),
             NodePublicKey = reader.ReadPublicKey(),
+            BlsPublicKey = reader.ReadBlsPublicKey(),
             ListenPort = reader.ReadInt32(),
             BestBlockNumber = reader.ReadUInt64(),
             BestBlockHash = reader.ReadHash256(),
@@ -502,8 +506,8 @@ public static class MessageCodec
 
         int payloadEstimate = message switch
         {
-            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + 256 + 4, // generous for string
-            HelloAckMessage => 1 + 256 + PublicKey.Size + 4 + 8 + Hash256.Size, // bool + string + identity
+            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + BlsPublicKey.Size + 256 + 4, // generous for string
+            HelloAckMessage => 1 + 256 + PublicKey.Size + BlsPublicKey.Size + 4 + 8 + Hash256.Size, // bool + string + identity
             PingMessage => 0,
             PongMessage => 0,
             TxAnnounceMessage m => 10 + (m.TransactionHashes.Length * Hash256.Size),

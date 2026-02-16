@@ -64,6 +64,7 @@ public sealed class HelloMessage : NetworkMessage
     public Hash256 BestBlockHash { get; init; }
     public Hash256 GenesisHash { get; init; }
     public PublicKey NodePublicKey { get; init; }
+    public BlsPublicKey BlsPublicKey { get; init; }
     public string ListenAddress { get; init; } = "";
     public int ListenPort { get; init; }
 }
@@ -78,6 +79,7 @@ public sealed class HelloAckMessage : NetworkMessage
     public bool Accepted { get; init; }
     public string RejectReason { get; init; } = "";
     public PublicKey NodePublicKey { get; init; }
+    public BlsPublicKey BlsPublicKey { get; init; }
     public int ListenPort { get; init; }
     public ulong BestBlockNumber { get; init; }
     public Hash256 BestBlockHash { get; init; }
