@@ -121,7 +121,7 @@ VALIDATOR_3_KEY=$(New-ValidatorKey)
 VALIDATOR_3_ADDRESS=$(New-ValidatorAddress 3)
 "@
 
-    $envContent | Out-File -FilePath ".env" -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText("$DEPLOY_DIR\.env", $envContent)
     Write-Host "  Keys generated and saved to .env"
 }
 
