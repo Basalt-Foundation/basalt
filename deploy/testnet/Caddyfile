@@ -1,0 +1,44 @@
+# Basalt Testnet — Caddy reverse proxy
+# Cloudflare Tunnel terminates HTTPS. Caddy handles routing, CORS, and headers.
+
+:80 {
+	# REST API
+	handle /v1/* {
+		reverse_proxy validator-0:5000
+	}
+
+	# GraphQL
+	handle /graphql {
+		reverse_proxy validator-0:5000
+	}
+
+	# WebSocket
+	handle /ws/* {
+		reverse_proxy validator-0:5000
+	}
+
+	# Health check
+	handle /health {
+		reverse_proxy validator-0:5000 {
+			rewrite /v1/status
+		}
+	}
+
+	# Default
+	handle {
+		respond "Basalt Testnet RPC — https://basalt-foundation.github.io/basalt-docs/" 200
+	}
+
+	# Security headers
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# CORS
+	header Access-Control-Allow-Origin *
+	header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	header Access-Control-Allow-Headers "Content-Type"
+}

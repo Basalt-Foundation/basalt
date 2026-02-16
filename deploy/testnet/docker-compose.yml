@@ -1,0 +1,129 @@
+services:
+  # ─── Cloudflare Tunnel ─────────────────────────────────────────────
+  # Exposes the testnet RPC via Cloudflare Tunnel — no open ports needed.
+  # Set CLOUDFLARE_TUNNEL_TOKEN in .env (get it from Cloudflare Zero Trust dashboard).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: basalt-cloudflared
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+    depends_on:
+      caddy:
+        condition: service_started
+
+  # ─── Reverse Proxy (routing, CORS, security headers) ───────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: basalt-caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+    depends_on:
+      validator-0:
+        condition: service_healthy
+
+  # ─── Validator 0 (Primary RPC endpoint) ────────────────────────────
+  validator-0:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: basalt-validator-0
+    environment:
+      - BASALT_VALIDATOR_INDEX=0
+      - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_0_ADDRESS}
+      - BASALT_VALIDATOR_KEY=${VALIDATOR_0_KEY}
+      - BASALT_NETWORK=basalt-testnet
+      - BASALT_CHAIN_ID=4242
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-1:30303,validator-2:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-0-data:/data/basalt
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/v1/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ─── Validator 1 ───────────────────────────────────────────────────
+  validator-1:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: basalt-validator-1
+    environment:
+      - BASALT_VALIDATOR_INDEX=1
+      - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_1_ADDRESS}
+      - BASALT_VALIDATOR_KEY=${VALIDATOR_1_KEY}
+      - BASALT_NETWORK=basalt-testnet
+      - BASALT_CHAIN_ID=4242
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-2:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-1-data:/data/basalt
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+
+  # ─── Validator 2 ───────────────────────────────────────────────────
+  validator-2:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: basalt-validator-2
+    environment:
+      - BASALT_VALIDATOR_INDEX=2
+      - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_2_ADDRESS}
+      - BASALT_VALIDATOR_KEY=${VALIDATOR_2_KEY}
+      - BASALT_NETWORK=basalt-testnet
+      - BASALT_CHAIN_ID=4242
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-1:30303,validator-3:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-2-data:/data/basalt
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+
+  # ─── Validator 3 ───────────────────────────────────────────────────
+  validator-3:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: basalt-validator-3
+    environment:
+      - BASALT_VALIDATOR_INDEX=3
+      - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_3_ADDRESS}
+      - BASALT_VALIDATOR_KEY=${VALIDATOR_3_KEY}
+      - BASALT_NETWORK=basalt-testnet
+      - BASALT_CHAIN_ID=4242
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_PEERS=validator-0:30303,validator-1:30303,validator-2:30303
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - validator-3-data:/data/basalt
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+
+volumes:
+  validator-0-data:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+
+networks:
+  basalt-testnet:
+    driver: bridge
