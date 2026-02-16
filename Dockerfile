@@ -39,7 +39,7 @@ RUN dotnet publish src/node/Basalt.Node/Basalt.Node.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 
 # Install RocksDB native library (NuGet package has ARM64 stub only)
-RUN apt-get update && apt-get install -y --no-install-recommends librocksdb-dev && \
+RUN apt-get update && apt-get install -y --no-install-recommends librocksdb-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
