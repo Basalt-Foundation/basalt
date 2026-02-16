@@ -15,9 +15,9 @@ using Basalt.Sdk.Wallet.Transactions;
 //  This example demonstrates the main features of Basalt.Sdk.Wallet:
 //    1. HD Wallet creation and account derivation
 //    2. Account import/export and keystore encryption
-//    3. Transaction building (transfers, staking, contracts)
+//    3. Transaction building (transfers, staking, SDK contracts)
 //    4. ABI encoding round-trips
-//    5. Interactive wallet (transfers, contract deploy/call, subscriptions)
+//    5. Interactive wallet (deploy tokens, WBSLT, BNS, subscriptions)
 //
 //  Usage:
 //    dotnet run                     — run offline examples only
@@ -125,24 +125,25 @@ var quickTx = new TransferBuilder(recipient, new UInt256(500))
     .Build();
 Console.WriteLine($"Quick transfer:  {quickTx.Value} to {FormatAddress(quickTx.To)}");
 
-// Contract call
-var contractAddr = new Address(new byte[20] { 0xCA, 0xFE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 });
-var callTx = new ContractCallBuilder(contractAddr, "storage_set")
-    .WithArgs(new byte[32], new byte[] { 1, 2, 3 }) // key + value
-    .WithGasLimit(100_000)
+// SDK contract deploy — BST-20 token
+var bst20Manifest = SdkContractEncoder.BuildBST20Manifest("ExampleToken", "EXT", 18);
+var deployTx = new ContractDeployBuilder(bst20Manifest)
+    .WithGasLimit(500_000)
     .WithChainId(4242)
     .WithNonce(2)
     .Build();
-Console.WriteLine($"Contract call:   {callTx.Type} | selector: {Convert.ToHexString(callTx.Data[..4]).ToLowerInvariant()} | data: {callTx.Data.Length} bytes");
+Console.WriteLine($"BST-20 deploy:   {deployTx.Type} | manifest: {deployTx.Data.Length} bytes (0xBA5A magic)");
 
-// Contract deploy
-var bytecode = new byte[] { 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00 }; // minimal wasm header
-var deployTx = new ContractDeployBuilder(bytecode)
-    .WithGasLimit(500_000)
+// SDK contract call — FNV-1a selector
+var contractAddr = new Address(new byte[20] { 0xCA, 0xFE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 });
+var fnvSelector = SdkContractEncoder.ComputeFnvSelector("Transfer");
+var sdkCallTx = new ContractCallBuilder(contractAddr, fnvSelector)
+    .WithArgs(SdkContractEncoder.EncodeBytes(recipient.ToArray()), SdkContractEncoder.EncodeUInt64(1000))
+    .WithGasLimit(100_000)
     .WithChainId(4242)
     .WithNonce(3)
     .Build();
-Console.WriteLine($"Contract deploy: {deployTx.Type} | bytecode: {deployTx.Data.Length} bytes");
+Console.WriteLine($"SDK call tx:     {sdkCallTx.Type} | FNV-1a selector: 0x{Convert.ToHexString(sdkCallTx.Data[..4]).ToLowerInvariant()} | data: {sdkCallTx.Data.Length} bytes");
 
 // Staking
 var stakeTx = StakingBuilder.Deposit(new UInt256(100_000))
@@ -161,9 +162,13 @@ Console.WriteLine($"Register val:    {registerTx.Type} | BLS key in data: {regis
 
 Console.WriteLine("\n--- 4. ABI Encoding ---\n");
 
-var selector = AbiEncoder.ComputeSelector("transfer");
-Console.WriteLine($"Selector for 'transfer':    0x{Convert.ToHexString(selector).ToLowerInvariant()}");
-Console.WriteLine($"Selector for 'storage_set': 0x{Convert.ToHexString(AbiEncoder.ComputeSelector("storage_set")).ToLowerInvariant()}");
+// BLAKE3 selectors (built-in methods)
+var blake3Selector = AbiEncoder.ComputeSelector("transfer");
+Console.WriteLine($"BLAKE3 selector for 'transfer':    0x{Convert.ToHexString(blake3Selector).ToLowerInvariant()}");
+
+// FNV-1a selectors (SDK contracts)
+var fnv1aSelector = SdkContractEncoder.ComputeFnvSelector("Transfer");
+Console.WriteLine($"FNV-1a selector for 'Transfer':    0x{Convert.ToHexString(fnv1aSelector).ToLowerInvariant()}");
 
 // Round-trip encoding
 var amount = new UInt256(42_000_000);
@@ -182,12 +187,6 @@ offset = 0;
 var decodedStr = AbiEncoder.DecodeString(encodedStr, ref offset);
 Console.WriteLine($"String round-trip:  \"{decodedStr}\" ({encodedStr.Length} bytes, 4-byte length prefix + UTF-8)");
 
-// Full call encoding
-var callData = AbiEncoder.EncodeCall("transfer",
-    AbiEncoder.EncodeAddress(recipient),
-    AbiEncoder.EncodeUInt256(amount));
-Console.WriteLine($"\nFull call data:     {callData.Length} bytes (4 selector + 20 addr + 32 uint256)");
-
 Console.WriteLine();
 
 // ─── 5. Interactive Wallet ──────────────────────────────────────────
@@ -201,7 +200,7 @@ if (nodeUrl is null)
 else
 {
     manager.SetActive(wallet.GetAccount(0).Address);
-    using var provider = new BasaltProvider(nodeUrl, chainId: 4242);
+    using var provider = new BasaltProvider(nodeUrl, chainId: 31337);
     await InteractiveLoop(provider, wallet, manager, nodeUrl);
 }
 
@@ -214,7 +213,7 @@ return;
 
 async Task InteractiveLoop(BasaltProvider provider, HdWallet hdWallet, AccountManager acctMgr, string baseUrl)
 {
-    Address? deployedContract = null;
+    Address? deployedToken = null;
 
     Console.WriteLine("=== Basalt Interactive Wallet ===\n");
 
@@ -226,20 +225,36 @@ async Task InteractiveLoop(BasaltProvider provider, HdWallet hdWallet, AccountMa
     {
         var active = acctMgr.ActiveAccount!;
         Console.WriteLine($"Active: {FormatAddress(active.Address)}");
-        if (deployedContract.HasValue)
-            Console.WriteLine($"Contract: {FormatAddress(deployedContract.Value)}");
+        if (deployedToken.HasValue)
+            Console.WriteLine($"Token:  {FormatAddress(deployedToken.Value)}");
         Console.WriteLine();
-        Console.WriteLine("  1) Show status");
-        Console.WriteLine("  2) List accounts & balances");
-        Console.WriteLine("  3) Switch account");
-        Console.WriteLine("  4) Request faucet");
-        Console.WriteLine("  5) Transfer BSLT");
-        Console.WriteLine("  6) Deploy contract");
-        Console.WriteLine("  7) Contract: storage_set");
-        Console.WriteLine("  8) Contract: storage_get");
-        Console.WriteLine("  9) Transaction lookup");
-        Console.WriteLine(" 10) Subscribe to blocks");
-        Console.WriteLine("  0) Exit");
+        Console.WriteLine("  -- General --");
+        Console.WriteLine("   1) Show status");
+        Console.WriteLine("   2) List accounts & balances");
+        Console.WriteLine("   3) Switch account");
+        Console.WriteLine("   4) Request faucet");
+        Console.WriteLine("   5) Transfer BSLT");
+        Console.WriteLine();
+        Console.WriteLine("  -- Deploy Contracts --");
+        Console.WriteLine("   6) Deploy BST-20 token");
+        Console.WriteLine("   7) Deploy BST-721 token");
+        Console.WriteLine();
+        Console.WriteLine("  -- Token Interaction --");
+        Console.WriteLine("   8) Token: Transfer");
+        Console.WriteLine("   9) Token: BalanceOf");
+        Console.WriteLine("  10) Token: Name / Symbol / TotalSupply");
+        Console.WriteLine();
+        Console.WriteLine("  -- System Contracts --");
+        Console.WriteLine("  11) WBSLT: Deposit (wrap BSLT)");
+        Console.WriteLine("  12) WBSLT: Withdraw (unwrap)");
+        Console.WriteLine("  13) WBSLT: BalanceOf");
+        Console.WriteLine("  14) BNS: Register name");
+        Console.WriteLine("  15) BNS: Resolve name");
+        Console.WriteLine();
+        Console.WriteLine("  -- Utilities --");
+        Console.WriteLine("  16) Transaction lookup");
+        Console.WriteLine("  17) Subscribe to blocks");
+        Console.WriteLine("   0) Exit");
         Console.Write("\n> ");
 
         var input = Console.ReadLine()?.Trim();
@@ -257,11 +272,18 @@ async Task InteractiveLoop(BasaltProvider provider, HdWallet hdWallet, AccountMa
                 case "3": CmdSwitchAccount(acctMgr, hdWallet); break;
                 case "4": await CmdFaucet(provider, acctMgr.ActiveAccount!); break;
                 case "5": await CmdTransfer(provider, acctMgr, hdWallet); break;
-                case "6": deployedContract = await CmdDeployContract(provider, acctMgr.ActiveAccount!); break;
-                case "7": await CmdStorageSet(provider, acctMgr.ActiveAccount!, deployedContract); break;
-                case "8": await CmdStorageGet(provider, acctMgr.ActiveAccount!, deployedContract); break;
-                case "9": await CmdTxLookup(provider); break;
-                case "10": await CmdSubscribe(baseUrl); break;
+                case "6": deployedToken = await CmdDeployBST20(provider, acctMgr.ActiveAccount!); break;
+                case "7": deployedToken = await CmdDeployBST721(provider, acctMgr.ActiveAccount!); break;
+                case "8": await CmdTokenTransfer(provider, acctMgr.ActiveAccount!, hdWallet, deployedToken); break;
+                case "9": await CmdTokenBalanceOf(provider, hdWallet, deployedToken); break;
+                case "10": await CmdTokenMetadata(provider, deployedToken); break;
+                case "11": await CmdWBSLTDeposit(provider, acctMgr.ActiveAccount!); break;
+                case "12": await CmdWBSLTWithdraw(provider, acctMgr.ActiveAccount!); break;
+                case "13": await CmdWBSLTBalanceOf(provider, hdWallet); break;
+                case "14": await CmdBNSRegister(provider, acctMgr.ActiveAccount!); break;
+                case "15": await CmdBNSResolve(provider); break;
+                case "16": await CmdTxLookup(provider); break;
+                case "17": await CmdSubscribe(baseUrl); break;
                 default: Console.WriteLine("Unknown option."); break;
             }
         }
@@ -348,7 +370,6 @@ async Task CmdTransfer(BasaltProvider provider, AccountManager acctMgr, HdWallet
 {
     var senderAccount = acctMgr.ActiveAccount!;
 
-    // Recipient
     Console.Write("Recipient (account index 0-2, or 0x hex address): ");
     var recipInput = Console.ReadLine()?.Trim();
     if (string.IsNullOrEmpty(recipInput))
@@ -372,7 +393,6 @@ async Task CmdTransfer(BasaltProvider provider, AccountManager acctMgr, HdWallet
         return;
     }
 
-    // Amount
     Console.Write("Amount in BSLT (e.g. 1, 0.5, 10): ");
     var amountInput = Console.ReadLine()?.Trim();
     if (string.IsNullOrEmpty(amountInput) || !TryParseBsltToWei(amountInput, out var weiAmount))
@@ -381,20 +401,17 @@ async Task CmdTransfer(BasaltProvider provider, AccountManager acctMgr, HdWallet
         return;
     }
 
-    // Show balances before
     var senderBal = await provider.GetBalanceAsync(senderAccount.Address);
     var recipBal = await provider.GetBalanceAsync(recipientAddr);
     Console.WriteLine($"\nBefore:");
     Console.WriteLine($"  Sender:    {FormatBslt(senderBal)}");
     Console.WriteLine($"  Recipient: {FormatBslt(recipBal)}");
 
-    // Send
     Console.WriteLine($"\nSending {amountInput} BSLT to {FormatAddress(recipientAddr)}...");
     var result = await provider.TransferAsync(senderAccount, recipientAddr, weiAmount);
     Console.WriteLine($"  Tx hash: {result.Hash}");
     Console.WriteLine($"  Status:  {result.Status}");
 
-    // Wait and show after
     Console.WriteLine("  Waiting 5s for block inclusion...");
     await Task.Delay(5000);
 
@@ -405,23 +422,60 @@ async Task CmdTransfer(BasaltProvider provider, AccountManager acctMgr, HdWallet
     Console.WriteLine($"  Recipient: {FormatBslt(recipBal)}");
 }
 
-// ── 6) Deploy Contract ──────────────────────────────────────────────
+// ── 6) Deploy BST-20 Token ──────────────────────────────────────────
 
-async Task<Address?> CmdDeployContract(BasaltProvider provider, IAccount account)
+async Task<Address?> CmdDeployBST20(BasaltProvider provider, IAccount account)
 {
-    // Basalt Phase 1 VM: any bytecode works, dispatch is selector-based
-    var code = new byte[] { 0xCA, 0xFE, 0xBA, 0xBE };
+    Console.Write("Token name: ");
+    var name = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(name)) { Console.WriteLine("Cancelled."); return null; }
 
-    Console.WriteLine("Deploying storage contract (4 bytes)...");
+    Console.Write("Token symbol: ");
+    var symbol = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(symbol)) { Console.WriteLine("Cancelled."); return null; }
 
-    // Get the on-chain nonce before deploying — the chain uses this to derive the contract address
+    Console.Write("Decimals (default 18): ");
+    var decStr = Console.ReadLine()?.Trim();
+    byte decimals = string.IsNullOrEmpty(decStr) ? (byte)18 : byte.Parse(decStr);
+
+    var manifest = SdkContractEncoder.BuildBST20Manifest(name, symbol, decimals);
+    Console.WriteLine($"\n  Manifest: {manifest.Length} bytes (type 0x0001, magic 0xBA5A)");
+
     var deployNonce = await provider.GetNonceAsync(account.Address);
-
-    var result = await provider.DeployContractAsync(account, code, gasLimit: 500_000);
+    var result = await provider.DeploySdkContractAsync(account, manifest, gasLimit: 1_000_000);
     Console.WriteLine($"  Tx hash: {result.Hash}");
     Console.WriteLine($"  Status:  {result.Status}");
 
-    // Derive contract address: BLAKE3(sender || nonce) last 20 bytes
+    var contractAddress = DeriveContractAddress(account.Address, deployNonce);
+    Console.WriteLine($"  Contract address: {FormatAddress(contractAddress)}");
+
+    Console.WriteLine("  Waiting 5s for block inclusion...");
+    await Task.Delay(5000);
+
+    Console.WriteLine($"\n  Note: BST-20 has no public Mint. Use WBSLT.Deposit to mint wrapped tokens.");
+    return contractAddress;
+}
+
+// ── 7) Deploy BST-721 Token ─────────────────────────────────────────
+
+async Task<Address?> CmdDeployBST721(BasaltProvider provider, IAccount account)
+{
+    Console.Write("Token name: ");
+    var name = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(name)) { Console.WriteLine("Cancelled."); return null; }
+
+    Console.Write("Token symbol: ");
+    var symbol = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(symbol)) { Console.WriteLine("Cancelled."); return null; }
+
+    var manifest = SdkContractEncoder.BuildBST721Manifest(name, symbol);
+    Console.WriteLine($"\n  Manifest: {manifest.Length} bytes (type 0x0002, magic 0xBA5A)");
+
+    var deployNonce = await provider.GetNonceAsync(account.Address);
+    var result = await provider.DeploySdkContractAsync(account, manifest, gasLimit: 1_000_000);
+    Console.WriteLine($"  Tx hash: {result.Hash}");
+    Console.WriteLine($"  Status:  {result.Status}");
+
     var contractAddress = DeriveContractAddress(account.Address, deployNonce);
     Console.WriteLine($"  Contract address: {FormatAddress(contractAddress)}");
 
@@ -431,93 +485,85 @@ async Task<Address?> CmdDeployContract(BasaltProvider provider, IAccount account
     return contractAddress;
 }
 
-// ── 7) Contract: storage_set ────────────────────────────────────────
+// ── 8) Token: Transfer ──────────────────────────────────────────────
 
-async Task CmdStorageSet(BasaltProvider provider, IAccount account, Address? contractAddress)
+async Task CmdTokenTransfer(BasaltProvider provider, IAccount account, HdWallet hdWallet, Address? contractAddress)
 {
     if (!contractAddress.HasValue)
     {
-        Console.WriteLine("No contract deployed yet. Use option 6 first.");
+        Console.WriteLine("No token deployed yet. Use option 6 or 7 first.");
         return;
     }
 
-    Console.Write("Key (string): ");
-    var keyStr = Console.ReadLine()?.Trim();
-    if (string.IsNullOrEmpty(keyStr))
+    Console.Write("Recipient (account index 0-2, or 0x hex): ");
+    var recipInput = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(recipInput)) { Console.WriteLine("Cancelled."); return; }
+
+    Address recipientAddr;
+    if (uint.TryParse(recipInput, out var recipIdx) && recipIdx <= 2)
+        recipientAddr = hdWallet.GetAccount(recipIdx).Address;
+    else if (recipInput.StartsWith("0x") && recipInput.Length == 42)
+        recipientAddr = new Address(Convert.FromHexString(recipInput[2..]));
+    else { Console.WriteLine("Invalid recipient."); return; }
+
+    Console.Write("Amount (token units): ");
+    var amountStr = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(amountStr) || !ulong.TryParse(amountStr, out var tokenAmount))
     {
-        Console.WriteLine("Cancelled.");
+        Console.WriteLine("Invalid amount.");
         return;
     }
 
-    Console.Write("Value (string): ");
-    var valueStr = Console.ReadLine()?.Trim();
-    if (string.IsNullOrEmpty(valueStr))
-    {
-        Console.WriteLine("Cancelled.");
-        return;
-    }
-
-    // Hash the key string to get a 32-byte storage key
-    var keyHash = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(keyStr));
-    var keyBytes = new byte[Hash256.Size];
-    keyHash.WriteTo(keyBytes);
-    var valueBytes = System.Text.Encoding.UTF8.GetBytes(valueStr);
-
-    Console.WriteLine($"\n  Key hash: 0x{Convert.ToHexString(keyBytes[..8]).ToLowerInvariant()}...");
-    Console.WriteLine($"  Value:    \"{valueStr}\" ({valueBytes.Length} bytes)");
-
+    Console.WriteLine($"\n  Transferring {tokenAmount} tokens to {FormatAddress(recipientAddr)}...");
     var contract = provider.GetContract(contractAddress.Value);
-    var result = await contract.CallAsync(
+    var result = await contract.CallSdkAsync(
         account,
-        "storage_set",
-        gasLimit: 100_000,
-        args: [keyBytes, AbiEncoder.EncodeBytes(valueBytes)]);
-
+        "Transfer",
+        gasLimit: 200_000,
+        args: [
+            SdkContractEncoder.EncodeBytes(recipientAddr.ToArray()),
+            SdkContractEncoder.EncodeUInt64(tokenAmount),
+        ]);
     Console.WriteLine($"  Tx hash: {result.Hash}");
     Console.WriteLine($"  Status:  {result.Status}");
 }
 
-// ── 8) Contract: storage_get ────────────────────────────────────────
+// ── 9) Token: BalanceOf ─────────────────────────────────────────────
 
-async Task CmdStorageGet(BasaltProvider provider, IAccount account, Address? contractAddress)
+async Task CmdTokenBalanceOf(BasaltProvider provider, HdWallet hdWallet, Address? contractAddress)
 {
     if (!contractAddress.HasValue)
     {
-        Console.WriteLine("No contract deployed yet. Use option 6 first.");
+        Console.WriteLine("No token deployed yet. Use option 6 or 7 first.");
         return;
     }
 
-    Console.Write("Key (string): ");
-    var keyStr = Console.ReadLine()?.Trim();
-    if (string.IsNullOrEmpty(keyStr))
-    {
-        Console.WriteLine("Cancelled.");
-        return;
-    }
+    Console.Write("Address to query (account index 0-2, or 0x hex): ");
+    var addrInput = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(addrInput)) { Console.WriteLine("Cancelled."); return; }
 
-    // Hash the key string to get a 32-byte storage key
-    var keyHash = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(keyStr));
-    var keyBytes = new byte[Hash256.Size];
-    keyHash.WriteTo(keyBytes);
-
-    Console.WriteLine($"\n  Key hash: 0x{Convert.ToHexString(keyBytes[..8]).ToLowerInvariant()}...");
+    Address targetAddr;
+    if (uint.TryParse(addrInput, out var idx) && idx <= 2)
+        targetAddr = hdWallet.GetAccount(idx).Address;
+    else if (addrInput.StartsWith("0x") && addrInput.Length == 42)
+        targetAddr = new Address(Convert.FromHexString(addrInput[2..]));
+    else { Console.WriteLine("Invalid address."); return; }
 
     var contract = provider.GetContract(contractAddress.Value);
-    var result = await contract.ReadAsync(
-        "storage_get",
+    var result = await contract.ReadSdkAsync(
+        "BalanceOf",
         gasLimit: 100_000,
-        args: [keyBytes]);
+        args: [SdkContractEncoder.EncodeBytes(targetAddr.ToArray())]);
 
     if (result.Success && result.ReturnData is { Length: > 0 })
     {
-        var valueBytes = Convert.FromHexString(result.ReturnData);
-        var valueStr = System.Text.Encoding.UTF8.GetString(valueBytes);
-        Console.WriteLine($"  Value:   {valueStr}");
-        Console.WriteLine($"  Raw hex: 0x{result.ReturnData.ToLowerInvariant()}");
+        var returnBytes = Convert.FromHexString(result.ReturnData);
+        var balance = SdkContractEncoder.DecodeUInt64(returnBytes);
+        Console.WriteLine($"  Balance: {balance}");
     }
     else if (result.Success)
     {
-        Console.WriteLine("  (key not found — empty return data)");
+        Console.WriteLine("  Balance: 0 (empty return)");
     }
     else
     {
@@ -526,7 +572,192 @@ async Task CmdStorageGet(BasaltProvider provider, IAccount account, Address? con
     Console.WriteLine($"  Gas used: {result.GasUsed}");
 }
 
-// ── 9) Transaction Lookup ───────────────────────────────────────────
+// ── 10) Token: Metadata ─────────────────────────────────────────────
+
+async Task CmdTokenMetadata(BasaltProvider provider, Address? contractAddress)
+{
+    if (!contractAddress.HasValue)
+    {
+        Console.WriteLine("No token deployed yet. Use option 6 or 7 first.");
+        return;
+    }
+
+    var contract = provider.GetContract(contractAddress.Value);
+
+    Console.WriteLine("Querying token metadata...\n");
+
+    // Name
+    var nameResult = await contract.ReadSdkAsync("Name", gasLimit: 100_000);
+    if (nameResult.Success && nameResult.ReturnData is { Length: > 0 })
+        Console.WriteLine($"  Name:         {SdkContractEncoder.DecodeString(Convert.FromHexString(nameResult.ReturnData))}");
+    else
+        Console.WriteLine($"  Name:         (error: {nameResult.Error})");
+
+    // Symbol
+    var symbolResult = await contract.ReadSdkAsync("Symbol", gasLimit: 100_000);
+    if (symbolResult.Success && symbolResult.ReturnData is { Length: > 0 })
+        Console.WriteLine($"  Symbol:       {SdkContractEncoder.DecodeString(Convert.FromHexString(symbolResult.ReturnData))}");
+    else
+        Console.WriteLine($"  Symbol:       (error: {symbolResult.Error})");
+
+    // TotalSupply
+    var supplyResult = await contract.ReadSdkAsync("TotalSupply", gasLimit: 100_000);
+    if (supplyResult.Success && supplyResult.ReturnData is { Length: > 0 })
+        Console.WriteLine($"  TotalSupply:  {SdkContractEncoder.DecodeUInt64(Convert.FromHexString(supplyResult.ReturnData))}");
+    else
+        Console.WriteLine($"  TotalSupply:  (error: {supplyResult.Error})");
+
+    // Decimals
+    var decResult = await contract.ReadSdkAsync("Decimals", gasLimit: 100_000);
+    if (decResult.Success && decResult.ReturnData is { Length: > 0 })
+        Console.WriteLine($"  Decimals:     {SdkContractEncoder.DecodeByte(Convert.FromHexString(decResult.ReturnData))}");
+    else
+        Console.WriteLine($"  Decimals:     (error: {decResult.Error})");
+}
+
+// ── 11) WBSLT: Deposit ──────────────────────────────────────────────
+
+async Task CmdWBSLTDeposit(BasaltProvider provider, IAccount account)
+{
+    Console.Write("Amount of BSLT to wrap: ");
+    var amountInput = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(amountInput) || !TryParseBsltToWei(amountInput, out var weiAmount))
+    {
+        Console.WriteLine("Invalid amount.");
+        return;
+    }
+
+    Console.WriteLine($"\n  Wrapping {amountInput} BSLT into WBSLT...");
+    var wbsltAddr = BasaltProvider.SystemContracts.WBSLT;
+    var contract = provider.GetContract(wbsltAddr);
+    var result = await contract.CallSdkAsync(
+        account,
+        "Deposit",
+        gasLimit: 200_000,
+        value: weiAmount);
+
+    Console.WriteLine($"  Tx hash: {result.Hash}");
+    Console.WriteLine($"  Status:  {result.Status}");
+    Console.WriteLine($"  WBSLT contract: {FormatAddress(wbsltAddr)}");
+}
+
+// ── 12) WBSLT: Withdraw ─────────────────────────────────────────────
+
+async Task CmdWBSLTWithdraw(BasaltProvider provider, IAccount account)
+{
+    Console.Write("Amount of WBSLT to unwrap (in wei): ");
+    var amountStr = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(amountStr) || !ulong.TryParse(amountStr, out var weiAmount))
+    {
+        Console.WriteLine("Invalid amount.");
+        return;
+    }
+
+    Console.WriteLine($"\n  Unwrapping {weiAmount} wei WBSLT back to native BSLT...");
+    var contract = provider.GetContract(BasaltProvider.SystemContracts.WBSLT);
+    var result = await contract.CallSdkAsync(
+        account,
+        "Withdraw",
+        gasLimit: 200_000,
+        args: [SdkContractEncoder.EncodeUInt64(weiAmount)]);
+
+    Console.WriteLine($"  Tx hash: {result.Hash}");
+    Console.WriteLine($"  Status:  {result.Status}");
+}
+
+// ── 13) WBSLT: BalanceOf ────────────────────────────────────────────
+
+async Task CmdWBSLTBalanceOf(BasaltProvider provider, HdWallet hdWallet)
+{
+    Console.Write("Address to query (account index 0-2, or 0x hex): ");
+    var addrInput = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(addrInput)) { Console.WriteLine("Cancelled."); return; }
+
+    Address targetAddr;
+    if (uint.TryParse(addrInput, out var idx) && idx <= 2)
+        targetAddr = hdWallet.GetAccount(idx).Address;
+    else if (addrInput.StartsWith("0x") && addrInput.Length == 42)
+        targetAddr = new Address(Convert.FromHexString(addrInput[2..]));
+    else { Console.WriteLine("Invalid address."); return; }
+
+    var contract = provider.GetContract(BasaltProvider.SystemContracts.WBSLT);
+    var result = await contract.ReadSdkAsync(
+        "BalanceOf",
+        gasLimit: 100_000,
+        args: [SdkContractEncoder.EncodeBytes(targetAddr.ToArray())]);
+
+    if (result.Success && result.ReturnData is { Length: > 0 })
+    {
+        var balance = SdkContractEncoder.DecodeUInt64(Convert.FromHexString(result.ReturnData));
+        Console.WriteLine($"  WBSLT Balance: {balance} wei");
+    }
+    else if (result.Success)
+    {
+        Console.WriteLine("  WBSLT Balance: 0");
+    }
+    else
+    {
+        Console.WriteLine($"  Error: {result.Error}");
+    }
+}
+
+// ── 14) BNS: Register ───────────────────────────────────────────────
+
+async Task CmdBNSRegister(BasaltProvider provider, IAccount account)
+{
+    Console.Write("Name to register: ");
+    var name = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(name)) { Console.WriteLine("Cancelled."); return; }
+
+    // Default registration fee is 1_000_000_000 wei
+    var fee = new UInt256(1_000_000_000);
+    Console.WriteLine($"\n  Registering \"{name}\" (fee: {fee} wei)...");
+
+    var contract = provider.GetContract(BasaltProvider.SystemContracts.NameService);
+    var result = await contract.CallSdkAsync(
+        account,
+        "Register",
+        gasLimit: 200_000,
+        value: fee,
+        args: [SdkContractEncoder.EncodeString(name)]);
+
+    Console.WriteLine($"  Tx hash: {result.Hash}");
+    Console.WriteLine($"  Status:  {result.Status}");
+}
+
+// ── 15) BNS: Resolve ────────────────────────────────────────────────
+
+async Task CmdBNSResolve(BasaltProvider provider)
+{
+    Console.Write("Name to resolve: ");
+    var name = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(name)) { Console.WriteLine("Cancelled."); return; }
+
+    var contract = provider.GetContract(BasaltProvider.SystemContracts.NameService);
+    var result = await contract.ReadSdkAsync(
+        "Resolve",
+        gasLimit: 100_000,
+        args: [SdkContractEncoder.EncodeString(name)]);
+
+    if (result.Success && result.ReturnData is { Length: > 0 })
+    {
+        var addrBytes = SdkContractEncoder.DecodeByteArray(Convert.FromHexString(result.ReturnData));
+        if (addrBytes.Length == 20)
+            Console.WriteLine($"  Resolved: {FormatAddress(new Address(addrBytes))}");
+        else
+            Console.WriteLine($"  Resolved: 0x{Convert.ToHexString(addrBytes).ToLowerInvariant()}");
+    }
+    else if (result.Success)
+    {
+        Console.WriteLine("  Name not found.");
+    }
+    else
+    {
+        Console.WriteLine($"  Error: {result.Error}");
+    }
+}
+
+// ── 16) Transaction Lookup ──────────────────────────────────────────
 
 async Task CmdTxLookup(BasaltProvider provider)
 {
@@ -556,7 +787,7 @@ async Task CmdTxLookup(BasaltProvider provider)
         Console.WriteLine($"  Block:  #{tx.BlockNumber}");
 }
 
-// ── 10) Subscribe to Blocks ─────────────────────────────────────────
+// ── 17) Subscribe to Blocks ─────────────────────────────────────────
 
 async Task CmdSubscribe(string baseUrl)
 {
@@ -605,8 +836,6 @@ static string FormatBslt(string weiBalance)
 {
     if (weiBalance == "0") return "0 BSLT";
 
-    // UInt256 doesn't support division, so do string-based formatting
-    // 1 BSLT = 10^18 wei
     const int decimals = 18;
     var padded = weiBalance.PadLeft(decimals + 1, '0');
     var integerPart = padded[..^decimals];
@@ -615,7 +844,6 @@ static string FormatBslt(string weiBalance)
     if (fractionalPart.Length == 0)
         return $"{integerPart} BSLT";
 
-    // Show at most 4 decimal places
     if (fractionalPart.Length > 4)
         fractionalPart = fractionalPart[..4];
 
@@ -632,12 +860,10 @@ static bool TryParseBsltToWei(string bslt, out UInt256 wei)
     var integerStr = parts[0];
     var fractionalStr = parts.Length == 2 ? parts[1] : "";
 
-    // Pad fractional to 18 digits
     if (fractionalStr.Length > 18) return false;
     fractionalStr = fractionalStr.PadRight(18, '0');
 
     var fullStr = integerStr + fractionalStr;
-    // Strip leading zeros but keep at least "0"
     fullStr = fullStr.TrimStart('0');
     if (fullStr.Length == 0) fullStr = "0";
 
@@ -654,7 +880,7 @@ static bool TryParseBsltToWei(string bslt, out UInt256 wei)
 
 /// <summary>
 /// Derive a contract address from sender + nonce, matching the chain's algorithm.
-/// BLAKE3(sender || nonce) → last 20 bytes.
+/// BLAKE3(sender || nonce) last 20 bytes.
 /// </summary>
 static Address DeriveContractAddress(Address senderAddr, ulong nonce)
 {

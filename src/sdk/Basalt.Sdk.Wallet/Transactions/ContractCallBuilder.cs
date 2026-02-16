@@ -19,13 +19,27 @@ public sealed class ContractCallBuilder
     /// <summary>
     /// Creates a new contract call builder targeting the specified contract and method.
     /// The method name is hashed via BLAKE3 to produce a 4-byte selector, matching
-    /// the dispatch convention used by the Basalt VM.
+    /// the dispatch convention used by the Basalt VM for built-in methods.
     /// </summary>
     /// <param name="contractAddress">The address of the contract to call.</param>
     /// <param name="methodName">The method name (e.g. <c>"transfer"</c>). Hashed to a 4-byte selector.</param>
     public ContractCallBuilder(Address contractAddress, string methodName)
     {
         _selector = ComputeSelector(methodName);
+
+        _inner = TransactionBuilder.ContractCall()
+            .WithTo(contractAddress);
+    }
+
+    /// <summary>
+    /// Creates a new contract call builder with a pre-computed selector.
+    /// Use <see cref="Basalt.Sdk.Wallet.Contracts.SdkContractEncoder.ComputeFnvSelector"/> for SDK contracts.
+    /// </summary>
+    /// <param name="contractAddress">The address of the contract to call.</param>
+    /// <param name="selector">A pre-computed 4-byte method selector.</param>
+    public ContractCallBuilder(Address contractAddress, byte[] selector)
+    {
+        _selector = selector;
 
         _inner = TransactionBuilder.ContractCall()
             .WithTo(contractAddress);

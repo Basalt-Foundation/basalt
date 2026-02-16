@@ -109,6 +109,73 @@ public sealed class ContractClient
     }
 
     /// <summary>
+    /// Calls an SDK contract method using FNV-1a selectors and BasaltWriter encoding.
+    /// </summary>
+    /// <param name="account">The account to sign the transaction with.</param>
+    /// <param name="methodName">The method name (PascalCase, e.g. "Transfer", "BalanceOf").</param>
+    /// <param name="gasLimit">Gas limit for the call.</param>
+    /// <param name="value">Native tokens to send with the call.</param>
+    /// <param name="args">Encoded arguments (use <see cref="SdkContractEncoder"/> methods).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The transaction submission result.</returns>
+    public async Task<TransactionSubmitResult> CallSdkAsync(
+        IAccount account,
+        string methodName,
+        ulong gasLimit = 100_000,
+        UInt256 value = default,
+        byte[][]? args = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+        ArgumentNullException.ThrowIfNull(methodName);
+
+        var data = SdkContractEncoder.EncodeSdkCall(methodName, args ?? []);
+        var addressHex = "0x" + Convert.ToHexString(account.Address.ToArray()).ToLowerInvariant();
+        var nonce = await _nonceManager.GetNextNonceAsync(addressHex, _client, ct).ConfigureAwait(false);
+
+        var tx = TransactionBuilder.ContractCall()
+            .WithNonce(nonce)
+            .WithSender(account.Address)
+            .WithTo(_contractAddress)
+            .WithValue(value)
+            .WithGasLimit(gasLimit)
+            .WithGasPrice(UInt256.One)
+            .WithData(data)
+            .WithChainId(_chainId)
+            .Build();
+
+        var signedTx = account.SignTransaction(tx);
+        var result = await _client.SendTransactionAsync(signedTx, ct).ConfigureAwait(false);
+        _nonceManager.IncrementNonce(addressHex);
+        return result;
+    }
+
+    /// <summary>
+    /// Executes a read-only SDK contract call using FNV-1a selectors.
+    /// No account or signing required.
+    /// </summary>
+    /// <param name="methodName">The method name (PascalCase, e.g. "Name", "BalanceOf").</param>
+    /// <param name="gasLimit">Gas limit for the call.</param>
+    /// <param name="args">Encoded arguments (use <see cref="SdkContractEncoder"/> methods).</param>
+    /// <param name="from">Optional caller address in "0x..." hex format.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The call result containing return data.</returns>
+    public async Task<CallResult> ReadSdkAsync(
+        string methodName,
+        ulong gasLimit = 100_000,
+        byte[][]? args = null,
+        string? from = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(methodName);
+
+        var data = SdkContractEncoder.EncodeSdkCall(methodName, args ?? []);
+        var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
+        var toHex = "0x" + Convert.ToHexString(_contractAddress.ToArray()).ToLowerInvariant();
+        return await _client.CallReadOnlyAsync(toHex, dataHex, from, gasLimit, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Deploys a new contract, returning the submission result.
     /// </summary>
     /// <param name="account">The account to deploy from.</param>

@@ -271,6 +271,43 @@ public sealed class BasaltProvider : IDisposable
     public ContractClient GetContract(Address contractAddress)
         => new(_client, _nonceManager, contractAddress, _chainId);
 
+    /// <summary>
+    /// Deploys an SDK contract using a 0xBA5A manifest.
+    /// Use <see cref="SdkContractEncoder"/> to build manifests.
+    /// </summary>
+    /// <param name="account">The deploying account.</param>
+    /// <param name="manifest">The SDK contract manifest (0xBA5A + typeId + constructor args).</param>
+    /// <param name="gasLimit">Gas limit. Default: 500,000.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public Task<TransactionSubmitResult> DeploySdkContractAsync(
+        IAccount account,
+        byte[] manifest,
+        ulong gasLimit = 500_000,
+        CancellationToken ct = default)
+    {
+        return DeployContractAsync(account, manifest, gasLimit, ct);
+    }
+
+    /// <summary>
+    /// Well-known system contract addresses deployed at genesis.
+    /// </summary>
+    public static class SystemContracts
+    {
+        public static readonly Address WBSLT = MakeSystemAddress(0x1001);
+        public static readonly Address NameService = MakeSystemAddress(0x1002);
+        public static readonly Address Governance = MakeSystemAddress(0x1003);
+        public static readonly Address Escrow = MakeSystemAddress(0x1004);
+        public static readonly Address StakingPool = MakeSystemAddress(0x1005);
+
+        private static Address MakeSystemAddress(ushort id)
+        {
+            var bytes = new byte[20];
+            bytes[18] = (byte)(id >> 8);
+            bytes[19] = (byte)(id & 0xFF);
+            return new Address(bytes);
+        }
+    }
+
     // ── Subscription Methods ───────────────────────────────────────────
 
     /// <summary>
