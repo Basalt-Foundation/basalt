@@ -171,6 +171,7 @@ var account = await client.GetAccountAsync("0x...");
 var block = await client.GetLatestBlockAsync();
 var tx = await client.GetTransactionAsync("0x...");
 var result = await client.SendTransactionAsync(signedTx);
+var callResult = await client.CallReadOnlyAsync("0xContract", "5DB08A5F..."); // eth_call equivalent
 var faucet = await client.RequestFaucetAsync("0x...");
 var validators = await client.GetValidatorsAsync();
 ```
@@ -217,11 +218,19 @@ High-level contract interaction combining RPC, nonce management, and ABI encodin
 ```csharp
 var contract = provider.GetContract(contractAddress);
 
+// Write call (submits a transaction)
 var result = await contract.CallAsync(
     account,
     "transfer",
     gasLimit: 100_000,
     args: [AbiEncoder.EncodeAddress(to), AbiEncoder.EncodeUInt256(amount)]);
+
+// Read-only call (no transaction, returns data immediately)
+var readResult = await contract.ReadAsync(
+    "storage_get",
+    gasLimit: 100_000,
+    args: [storageKeyBytes]);
+// readResult.Success, readResult.ReturnData, readResult.GasUsed
 
 // Deploy a new contract
 var result = await ContractClient.DeployAsync(account, bytecode, client, nonceManager);
@@ -276,6 +285,10 @@ var result = await provider.DeployContractAsync(account, bytecode, gasLimit: 500
 // Interact with a contract
 var contract = provider.GetContract(contractAddress);
 var result = await contract.CallAsync(account, "method_name", args: [...]);
+var readResult = await contract.ReadAsync("storage_get", args: [keyBytes]); // read-only
+
+// Read-only call (low-level)
+var callResult = await provider.CallReadOnlyAsync(contractAddr, callData);
 
 // Subscribe to blocks
 await using var sub = BasaltProvider.CreateBlockSubscription("http://localhost:5100");
@@ -309,7 +322,7 @@ Basalt.Sdk.Wallet/
 │   ├── BasaltClientOptions.cs   # Client configuration
 │   ├── NonceManager.cs          # Nonce tracking
 │   ├── WalletJsonContext.cs     # Source-gen JSON (AOT safe)
-│   └── Models/                  # 7 response DTOs
+│   └── Models/                  # 8 response DTOs (incl. CallResult)
 ├── Contracts/
 │   ├── AbiEncoder.cs            # ABI encode/decode
 │   └── ContractClient.cs        # Contract interaction

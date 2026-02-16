@@ -194,11 +194,11 @@ public interface IContractRuntime
 
 Phase 1 in-process contract runtime. Stores contract code under the well-known storage key `0xFF01` during deployment. Call dispatch uses the first 4 bytes of `callData` as a method selector.
 
-Built-in selectors:
-- `0x53746f72` -- `storage_set(key, value)`: write to contract storage
-- `0x53746f67` -- `storage_get(key)`: read from contract storage
-- `0x53746f64` -- `storage_del(key)`: delete from contract storage
-- `0x456d6974` -- `emit_event(signature, data)`: emit a log event
+Built-in selectors (BLAKE3-based, first 4 bytes of `BLAKE3(method_name)`):
+- `0x3E927582` -- `storage_set(key, value)`: write to contract storage
+- `0x5DB08A5F` -- `storage_get(key)`: read from contract storage
+- `0x758EC466` -- `storage_del(key)`: delete from contract storage
+- `0x81359626` -- `emit_event(signature, data)`: emit a log event
 
 If `callData` is shorter than 4 bytes, it is treated as a fallback/receive call (accepts value only).
 

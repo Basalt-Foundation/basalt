@@ -9,9 +9,20 @@ RESTful HTTP API for the Basalt blockchain node. Provides endpoints for submitti
 | `POST` | `/v1/transactions` | Submit a signed transaction |
 | `GET` | `/v1/blocks/latest` | Get the latest block |
 | `GET` | `/v1/blocks/{id}` | Get block by number or hash |
+| `GET` | `/v1/blocks?page=&pageSize=` | Paginated block list |
+| `GET` | `/v1/blocks/{number}/transactions` | Transactions in a block |
+| `GET` | `/v1/transactions/recent?count=` | Recent transactions (default 50, max 200) |
+| `GET` | `/v1/transactions/{hash}` | Get transaction by hash |
 | `GET` | `/v1/accounts/{address}` | Get account balance and nonce |
+| `GET` | `/v1/accounts/{address}/transactions` | Account transaction history |
 | `GET` | `/v1/status` | Node status (height, mempool, version) |
+| `POST` | `/v1/call` | Read-only contract call (eth_call equivalent) |
+| `GET` | `/v1/contracts/{address}` | Contract metadata (code size, deployer, deploy tx) |
+| `GET` | `/v1/contracts/{address}/storage?key=` | Read contract storage by string key |
 | `POST` | `/v1/faucet` | Request test tokens (rate-limited) |
+| `GET` | `/v1/faucet/status` | Faucet address and balance |
+| `GET` | `/v1/validators` | Validator list with stakes |
+| `GET` | `/v1/debug/mempool` | Diagnostic mempool dump |
 | `GET` | `/metrics` | Prometheus-format metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 
@@ -22,11 +33,14 @@ RESTful HTTP API for the Basalt blockchain node. Provides endpoints for submitti
 ```csharp
 var app = WebApplication.Create();
 
-RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb);
+var contractRuntime = new ManagedContractRuntime();
+RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime);
 MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
 FaucetEndpoint.MapFaucetEndpoint(app, stateDb);
 app.MapWebSocketEndpoint(webSocketHandler);
 ```
+
+The `contractRuntime` parameter enables the `POST /v1/call`, `GET /v1/contracts/{address}`, and `GET /v1/contracts/{address}/storage` endpoints. Pass `null` to disable contract-related endpoints.
 
 ### Submit a Transaction
 
@@ -76,6 +90,40 @@ The faucet directly debits a configurable faucet address and credits the recipie
 
 Returns `{"success":true,"message":"Sent 100 BSLT to 0x...","txHash":"0x0000..."}` on success. The `txHash` field is a placeholder (`Hash256.Zero`) since the faucet modifies state directly rather than creating a transaction.
 
+### Read-Only Contract Call
+
+```bash
+curl -X POST http://localhost:5000/v1/call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "0x...",
+    "data": "5DB08A5F...",
+    "from": "0x...",
+    "gasLimit": 100000
+  }'
+# {"success":true,"returnData":"00000006626173616C74","gasUsed":900,"error":null}
+```
+
+Executes a contract call without modifying state. The `data` field is the ABI-encoded call data (4-byte BLAKE3 selector + arguments). The `from` and `gasLimit` fields are optional.
+
+### Contract Info
+
+```bash
+curl http://localhost:5000/v1/contracts/0x...
+# {"address":"0x...","codeSize":4,"codeHash":"0x...","deployer":"0x...","deployTxHash":"0x...","deployBlockNumber":5}
+```
+
+Returns contract metadata: code size, BLAKE3 code hash, deployer address, deploy transaction hash, and deploy block number. Scans up to 5000 recent blocks to find the deployment transaction.
+
+### Storage Read
+
+```bash
+curl "http://localhost:5000/v1/contracts/0x.../storage?key=welcome"
+# {"key":"welcome","keyHash":"0x...","found":true,"valueHex":"00000006626173616C74","valueUtf8":"basalt","valueSize":10,"gasUsed":900}
+```
+
+Reads a storage value by string key. The server BLAKE3-hashes the key to derive the 32-byte storage key, then executes a read-only `storage_get` call. Returns the value as both hex and decoded UTF-8 (when valid).
+
 ### WebSocket
 
 Connect to `/ws/blocks` for real-time block notifications. Non-WebSocket requests to this path receive a 400 response.
@@ -123,7 +171,7 @@ TPS is calculated per-block via `MetricsEndpoint.RecordBlock(txCount, timestampM
 
 Two AOT-compatible source-generated `JsonSerializerContext` classes are defined:
 
-- `BasaltApiJsonContext` -- covers `TransactionRequest`, `TransactionResponse`, `BlockResponse`, `AccountResponse`, `StatusResponse`, `ErrorResponse`, `FaucetRequest`, `FaucetResponse`.
+- `BasaltApiJsonContext` -- covers `TransactionRequest`, `TransactionResponse`, `BlockResponse`, `AccountResponse`, `StatusResponse`, `ErrorResponse`, `FaucetRequest`, `FaucetResponse`, `TransactionDetailResponse`, `PaginatedBlocksResponse`, `ValidatorInfoResponse`, `CallRequest`, `CallResponse`, `ContractInfoResponse`, `StorageReadResponse`.
 - `WsJsonContext` -- covers `WebSocketBlockMessage`, `WebSocketBlockData`.
 
 ## Dependencies
@@ -131,8 +179,9 @@ Two AOT-compatible source-generated `JsonSerializerContext` classes are defined:
 | Package / Project | Purpose |
 |-------------------|---------|
 | `Basalt.Core` | Hash256, Address, UInt256, Block, Transaction |
+| `Basalt.Crypto` | BLAKE3 hashing (contract code hash, storage key derivation) |
 | `Basalt.Codec` | Binary serialization |
-| `Basalt.Execution` | ChainManager, Mempool, TransactionValidator |
-| `Basalt.Storage` | IStateDatabase for account queries |
+| `Basalt.Execution` | ChainManager, Mempool, TransactionValidator, IContractRuntime |
+| `Basalt.Storage` | IStateDatabase for account and storage queries |
 | `System.Text.Json` | JSON serialization with source generators |
 | `Microsoft.AspNetCore.App` | ASP.NET Minimal APIs framework |
