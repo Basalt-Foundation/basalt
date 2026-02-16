@@ -559,6 +559,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _logger.LogInformation("Peer {PeerId} disconnected", peerId);
     }
 
+    /// <summary>
+    /// Extract validator index from Docker-style hostname (e.g., "validator-2" → 2).
+    /// </summary>
+    private static bool TryParseValidatorIndex(string hostname, out int index)
+    {
+        index = -1;
+        const string prefix = "validator-";
+        if (!hostname.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return int.TryParse(hostname.AsSpan(prefix.Length), out index);
+    }
+
     private void HandleRawMessage(PeerId sender, byte[] data)
     {
         try
@@ -984,6 +996,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 _peerManager.UpdatePeerBestBlock(result.PeerId, result.PeerBestBlock, result.PeerBestBlockHash);
                 _episub!.OnPeerConnected(result.PeerId);
+
+                // Update validator set with real PeerId (replaces placeholder)
+                if (TryParseValidatorIndex(host, out var peerValidatorIndex))
+                {
+                    _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey);
+                    _logger.LogInformation("Updated validator {Index} identity: {PeerId}", peerValidatorIndex, result.PeerId);
+                }
 
                 _logger.LogInformation("Connected to peer {PeerId} at {Host}:{Port}, best block: #{BestBlock}",
                     result.PeerId, host, port, result.PeerBestBlock);
