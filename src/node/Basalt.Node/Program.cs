@@ -147,7 +147,8 @@ try
     RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb);
 
     // Map faucet endpoint
-    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey);
+    var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
+    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey, faucetLogger);
 
     // Map WebSocket endpoint
     app.UseWebSockets();

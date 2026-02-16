@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Basalt.Example.Wallet</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- Disable AOT/trim analyzers for example project -->
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Wallet/Basalt.Sdk.Wallet.csproj" />
+  </ItemGroup>
+</Project>

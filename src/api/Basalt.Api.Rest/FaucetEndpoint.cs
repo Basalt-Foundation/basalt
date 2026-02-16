@@ -7,6 +7,7 @@ using Basalt.Storage;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 
 namespace Basalt.Api.Rest;
 
@@ -42,14 +43,18 @@ public static class FaucetEndpoint
     private static bool _nonceInitialized;
     private static readonly object _nonceLock = new();
 
+    private static ILogger? _logger;
+
     public static void MapFaucetEndpoint(
         IEndpointRouteBuilder app,
         IStateDatabase stateDb,
         Mempool mempool,
         ChainParameters chainParams,
-        byte[] faucetPrivateKey)
+        byte[] faucetPrivateKey,
+        ILogger? logger = null)
     {
         _faucetPrivateKey = faucetPrivateKey;
+        _logger = logger;
 
         // Derive the faucet address from its key
         var faucetPublicKey = Ed25519Signer.GetPublicKey(faucetPrivateKey);
@@ -129,13 +134,25 @@ public static class FaucetEndpoint
 
             var signedTx = Transaction.Sign(unsignedTx, _faucetPrivateKey);
 
+            _logger?.LogInformation(
+                "Faucet tx created: hash={Hash}, nonce={Nonce}, sender={Sender}, to={To}, chainId={ChainId}, mempoolSize={MempoolSize}",
+                signedTx.Hash.ToHexString()[..18] + "...", nonce,
+                FaucetAddress.ToHexString()[..18] + "...", request.Address[..18] + "...",
+                chainParams.ChainId, mempool.Count);
+
             // Submit to mempool (will be picked up by consensus and included in a block)
             if (!mempool.Add(signedTx))
+            {
+                _logger?.LogWarning("Faucet tx {Hash} rejected by mempool", signedTx.Hash.ToHexString()[..18] + "...");
                 return Results.BadRequest(new FaucetResponse
                 {
                     Success = false,
                     Message = "Transaction rejected by mempool.",
                 });
+            }
+
+            _logger?.LogInformation("Faucet tx {Hash} added to mempool (size={Size})",
+                signedTx.Hash.ToHexString()[..18] + "...", mempool.Count);
 
             // Record the request time
             _lastRequest[addrKey] = DateTimeOffset.UtcNow;
@@ -145,6 +162,21 @@ public static class FaucetEndpoint
                 Success = true,
                 Message = $"Sent 100 BSLT to {request.Address}",
                 TxHash = signedTx.Hash.ToHexString(),
+            });
+        });
+
+        // Diagnostic endpoint — check faucet account state and mempool
+        app.MapGet("/v1/faucet/status", () =>
+        {
+            var faucetAccount = stateDb.GetAccount(FaucetAddress);
+            return Results.Ok(new
+            {
+                faucetAddress = FaucetAddress.ToHexString(),
+                balance = faucetAccount?.Balance.ToString() ?? "NOT FOUND",
+                nonce = faucetAccount?.Nonce ?? 0,
+                pendingNonce = _pendingNonce,
+                nonceInitialized = _nonceInitialized,
+                mempoolSize = mempool.Count,
             });
         });
     }

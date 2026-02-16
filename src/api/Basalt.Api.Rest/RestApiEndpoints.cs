@@ -221,6 +221,37 @@ public static class RestApiEndpoints
 
             return Microsoft.AspNetCore.Http.Results.NotFound();
         });
+
+        // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
+        app.MapGet("/v1/debug/mempool", () =>
+        {
+            var pending = mempool.GetPending(100);
+            var results = pending.Select(tx =>
+            {
+                var validation = validator.Validate(tx, stateDb);
+                var senderAccount = stateDb.GetAccount(tx.Sender);
+                return new
+                {
+                    hash = tx.Hash.ToHexString(),
+                    type = tx.Type.ToString(),
+                    nonce = tx.Nonce,
+                    sender = tx.Sender.ToHexString(),
+                    to = tx.To.ToHexString(),
+                    value = tx.Value.ToString(),
+                    gasLimit = tx.GasLimit,
+                    gasPrice = tx.GasPrice.ToString(),
+                    chainId = tx.ChainId,
+                    signatureValid = tx.VerifySignature(),
+                    validationOk = validation.IsSuccess,
+                    validationError = validation.IsSuccess ? null : validation.Message,
+                    senderExists = senderAccount.HasValue,
+                    senderNonce = senderAccount?.Nonce ?? 0,
+                    senderBalance = senderAccount?.Balance.ToString() ?? "0",
+                };
+            }).ToArray();
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new { count = pending.Count, transactions = results });
+        });
     }
 }
 

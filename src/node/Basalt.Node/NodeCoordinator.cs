@@ -366,12 +366,20 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var block = BlockCodec.DeserializeBlock(blockData);
 
             // Execute transactions if we didn't propose this block
-            if (hash != _myProposedBlockHash && block.Transactions.Count > 0)
+            var weProposed = hash == _myProposedBlockHash;
+            if (!weProposed && block.Transactions.Count > 0)
             {
+                _logger.LogInformation("Executing {TxCount} txs from block #{Number} (proposed by other validator)",
+                    block.Transactions.Count, block.Number);
                 for (int i = 0; i < block.Transactions.Count; i++)
                 {
                     _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
                 }
+            }
+            else if (weProposed && block.Transactions.Count > 0)
+            {
+                _logger.LogInformation("Block #{Number} finalized with {TxCount} txs (we proposed, state already applied)",
+                    block.Number, block.Transactions.Count);
             }
             _myProposedBlockHash = Hash256.Zero;
 
@@ -418,7 +426,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             ? _config.ValidatorAddress
             : $"0x{_config.ValidatorIndex:X40}");
 
-        _blockBuilder = new BlockBuilder(_chainParams);
+        _blockBuilder = new BlockBuilder(_chainParams, _loggerFactory.CreateLogger<BlockBuilder>());
 
         IContractRuntime contractRuntime = _config.UseSandbox
             ? new SandboxedContractRuntime(new SandboxConfiguration())
@@ -473,8 +481,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             _myProposedBlockHash = block.Hash;
             _gossip!.BroadcastConsensusMessage(proposal);
-            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}",
-                block.Number, block.Hash.ToHexString()[..18] + "...");
+            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, BlockTxs: {BlockTxs}",
+                block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, block.Transactions.Count);
         }
     }
 
@@ -717,6 +725,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         // Re-announce to other peers (skip sender)
                         _gossip!.BroadcastTransaction(tx.Hash, sender);
                     }
+                }
+                else
+                {
+                    _logger.LogWarning("Rejected gossipped tx {Hash} from {Sender}: {Error}",
+                        tx.Hash.ToHexString()[..18] + "...", sender, validationResult.Message);
                 }
             }
             catch (Exception ex)

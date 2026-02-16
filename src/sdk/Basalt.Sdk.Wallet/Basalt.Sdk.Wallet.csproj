@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Basalt.Sdk.Wallet</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Basalt.Sdk.Wallet</PackageId>
+    <Description>Full-featured wallet SDK for Basalt blockchain — key management, HD wallets, transaction building, RPC client, and real-time subscriptions</Description>
+    <PackageTags>basalt;blockchain;wallet;sdk</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Basalt-Foundation/basalt</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Basalt-Foundation/basalt</RepositoryUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" />
+  </ItemGroup>
+</Project>

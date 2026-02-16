@@ -1,6 +1,7 @@
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Storage;
+using Microsoft.Extensions.Logging;
 
 namespace Basalt.Execution;
 
@@ -12,12 +13,14 @@ public sealed class BlockBuilder
     private readonly ChainParameters _chainParams;
     private readonly TransactionValidator _validator;
     private readonly TransactionExecutor _executor;
+    private readonly ILogger<BlockBuilder>? _logger;
 
-    public BlockBuilder(ChainParameters chainParams)
+    public BlockBuilder(ChainParameters chainParams, ILogger<BlockBuilder>? logger = null)
     {
         _chainParams = chainParams;
         _validator = new TransactionValidator(chainParams);
         _executor = new TransactionExecutor(chainParams);
+        _logger = logger;
     }
 
     /// <summary>
@@ -61,7 +64,11 @@ public sealed class BlockBuilder
 
             var validation = _validator.Validate(tx, stateDb);
             if (!validation.IsSuccess)
+            {
+                _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
+                    tx.Hash.ToHexString()[..18] + "...", validation.Message);
                 continue;
+            }
 
             var receipt = _executor.Execute(tx, stateDb, preliminaryHeader, validTxs.Count);
             validTxs.Add(tx);
