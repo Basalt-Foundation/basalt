@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Consensus.Staking;
+using Basalt.Crypto;
 using Basalt.Execution;
 using Basalt.Network;
 using Basalt.Storage;
@@ -36,7 +37,12 @@ try
     BlockStore? blockStore = null;
     ReceiptStore? receiptStore = null;
 
-    var faucetAddr = Address.FromHexString("0x00000000000000000000000000000000000000FF");
+    // Deterministic faucet key — all validators derive the same address
+    var faucetPrivateKey = new byte[32];
+    faucetPrivateKey[31] = 0xFF;
+    var faucetPublicKey = Ed25519Signer.GetPublicKey(faucetPrivateKey);
+    var faucetAddr = Ed25519Signer.DeriveAddress(faucetPublicKey);
+
     var genesisBalances = new Dictionary<Address, UInt256>
     {
         [Address.FromHexString("0x0000000000000000000000000000000000000001")] = UInt256.Parse("1000000000000000000000000"),
@@ -141,8 +147,7 @@ try
     RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb);
 
     // Map faucet endpoint
-    FaucetEndpoint.FaucetAddress = faucetAddr;
-    FaucetEndpoint.MapFaucetEndpoint(app, stateDb);
+    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey);
 
     // Map WebSocket endpoint
     app.UseWebSockets();

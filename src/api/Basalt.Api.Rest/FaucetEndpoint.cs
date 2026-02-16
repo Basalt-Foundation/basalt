@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using Basalt.Core;
+using Basalt.Crypto;
 using Basalt.Execution;
+using Basalt.Storage;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -10,25 +12,49 @@ namespace Basalt.Api.Rest;
 
 /// <summary>
 /// Faucet endpoint for distributing testnet tokens.
+/// Creates proper signed transactions submitted through the mempool.
 /// Rate-limited per address with configurable drip amount and cooldown.
 /// </summary>
 public static class FaucetEndpoint
 {
     private static readonly ConcurrentDictionary<string, DateTimeOffset> _lastRequest = new();
 
-    /// <summary>Drip amount in base units (default: 100 BSLT = 100 * 10^18).</summary>
-    public static ulong DripAmount { get; set; } = 100;
+    /// <summary>Drip amount: 100 BSLT (100 * 10^18 base units).</summary>
+    public static readonly UInt256 DripAmount = UInt256.Parse("100000000000000000000");
 
     /// <summary>Cooldown between requests per address in seconds.</summary>
     public static int CooldownSeconds { get; set; } = 60;
 
-    /// <summary>Faucet source address.</summary>
+    /// <summary>Faucet source address (derived from faucet private key).</summary>
     public static Address FaucetAddress { get; set; } = Address.Zero;
+
+    /// <summary>
+    /// Well-known deterministic faucet private key for testnet/devnet.
+    /// All validators share this key so any node can serve faucet requests.
+    /// </summary>
+    private static byte[] _faucetPrivateKey = [];
+
+    /// <summary>
+    /// Local nonce tracker to handle rapid sequential requests
+    /// before the previous transaction is mined.
+    /// </summary>
+    private static ulong _pendingNonce;
+    private static bool _nonceInitialized;
+    private static readonly object _nonceLock = new();
 
     public static void MapFaucetEndpoint(
         IEndpointRouteBuilder app,
-        Storage.IStateDatabase stateDb)
+        IStateDatabase stateDb,
+        Mempool mempool,
+        ChainParameters chainParams,
+        byte[] faucetPrivateKey)
     {
+        _faucetPrivateKey = faucetPrivateKey;
+
+        // Derive the faucet address from its key
+        var faucetPublicKey = Ed25519Signer.GetPublicKey(faucetPrivateKey);
+        FaucetAddress = Ed25519Signer.DeriveAddress(faucetPublicKey);
+
         app.MapPost("/v1/faucet", (FaucetRequest request) =>
         {
             if (string.IsNullOrWhiteSpace(request.Address))
@@ -63,36 +89,53 @@ public static class FaucetEndpoint
             }
 
             // Check faucet balance
-            var dripValue = (UInt256)DripAmount;
             var faucetAccount = stateDb.GetAccount(FaucetAddress);
-            if (faucetAccount == null || faucetAccount.Value.Balance < dripValue)
+            var gasCost = chainParams.MinGasPrice * new UInt256(chainParams.TransferGasCost);
+            var totalCost = DripAmount + gasCost;
+            if (faucetAccount == null || faucetAccount.Value.Balance < totalCost)
                 return Results.BadRequest(new FaucetResponse
                 {
                     Success = false,
                     Message = "Faucet is empty.",
                 });
 
-            // Debit faucet
-            var faucetState = faucetAccount.Value;
-            stateDb.SetAccount(FaucetAddress, new Storage.AccountState
+            // Get the next nonce (track locally for rapid requests)
+            ulong nonce;
+            lock (_nonceLock)
             {
-                Balance = faucetState.Balance - dripValue,
-                Nonce = faucetState.Nonce + 1,
-                StorageRoot = faucetState.StorageRoot,
-                CodeHash = faucetState.CodeHash,
-                AccountType = faucetState.AccountType,
-                ComplianceHash = faucetState.ComplianceHash,
-            });
+                var onChainNonce = faucetAccount.Value.Nonce;
+                if (!_nonceInitialized || onChainNonce > _pendingNonce)
+                {
+                    _pendingNonce = onChainNonce;
+                    _nonceInitialized = true;
+                }
+                nonce = _pendingNonce++;
+            }
 
-            // Credit recipient
-            var recipientAccount = stateDb.GetAccount(recipientAddr);
-            var recipientBalance = recipientAccount?.Balance ?? UInt256.Zero;
-            var recipientNonce = recipientAccount?.Nonce ?? 0ul;
-            stateDb.SetAccount(recipientAddr, new Storage.AccountState
+            // Create and sign a proper transaction
+            var unsignedTx = new Transaction
             {
-                Balance = recipientBalance + dripValue,
-                Nonce = recipientNonce,
-            });
+                Type = TransactionType.Transfer,
+                Nonce = nonce,
+                Sender = FaucetAddress,
+                To = recipientAddr,
+                Value = DripAmount,
+                GasLimit = chainParams.TransferGasCost,
+                GasPrice = chainParams.MinGasPrice,
+                Data = [],
+                Priority = 0,
+                ChainId = chainParams.ChainId,
+            };
+
+            var signedTx = Transaction.Sign(unsignedTx, _faucetPrivateKey);
+
+            // Submit to mempool (will be picked up by consensus and included in a block)
+            if (!mempool.Add(signedTx))
+                return Results.BadRequest(new FaucetResponse
+                {
+                    Success = false,
+                    Message = "Transaction rejected by mempool.",
+                });
 
             // Record the request time
             _lastRequest[addrKey] = DateTimeOffset.UtcNow;
@@ -100,8 +143,8 @@ public static class FaucetEndpoint
             return Results.Ok(new FaucetResponse
             {
                 Success = true,
-                Message = $"Sent {DripAmount} BSLT to {request.Address}",
-                TxHash = Hash256.Zero.ToHexString(),
+                Message = $"Sent 100 BSLT to {request.Address}",
+                TxHash = signedTx.Hash.ToHexString(),
             });
         });
     }
