@@ -259,6 +259,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _episub = new EpisubService(_peerManager, _loggerFactory.CreateLogger<EpisubService>());
         _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>());
 
+        // Send our validator identity as "validator-N" so peers can map us in their ValidatorSet.
+        var listenAddress = $"validator-{_config.ValidatorIndex}";
+
         _handshake = new HandshakeProtocol(
             _config.ChainId,
             _publicKey,
@@ -267,7 +270,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             () => _chainManager.LatestBlockNumber,
             () => _chainManager.LatestBlock?.Hash ?? Hash256.Zero,
             () => _chainManager.GetBlockByNumber(0)?.Hash ?? Hash256.Zero,
-            _loggerFactory.CreateLogger<HandshakeProtocol>());
+            _loggerFactory.CreateLogger<HandshakeProtocol>(),
+            listenAddress);
 
         // Wire transport → message processing
         _transport.OnMessageReceived += HandleRawMessage;
@@ -539,8 +543,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _peerManager.UpdatePeerBestBlock(result.PeerId, result.PeerBestBlock, result.PeerBestBlockHash);
             _episub!.OnPeerConnected(result.PeerId);
 
-            _logger.LogInformation("Peer {PeerId} connected (inbound), best block: #{BestBlock}",
-                result.PeerId, result.PeerBestBlock);
+            // Update validator set with real PeerId (replaces placeholder)
+            // PeerHost comes from the peer's Hello.ListenAddress (Docker hostname, e.g. "validator-1")
+            if (TryParseValidatorIndex(result.PeerHost, out var peerValidatorIndex))
+            {
+                _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey);
+                _logger.LogInformation("Updated validator {Index} identity (inbound): {PeerId}", peerValidatorIndex, result.PeerId);
+            }
+
+            _logger.LogInformation("Peer {PeerId} connected (inbound) from {Host}, best block: #{BestBlock}",
+                result.PeerId, result.PeerHost, result.PeerBestBlock);
 
             // Start reading messages
             _transport!.StartReadLoop(connection);

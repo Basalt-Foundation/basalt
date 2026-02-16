@@ -16,6 +16,7 @@ public sealed class HandshakeProtocol
     private readonly Func<Hash256> _getBestBlockHash;
     private readonly Func<Hash256> _getGenesisHash;
     private readonly int _listenPort;
+    private readonly string _listenAddress;
     private readonly ILogger _logger;
 
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(5);
@@ -28,12 +29,14 @@ public sealed class HandshakeProtocol
         Func<ulong> getBestBlockNumber,
         Func<Hash256> getBestBlockHash,
         Func<Hash256> getGenesisHash,
-        ILogger logger)
+        ILogger logger,
+        string? listenAddress = null)
     {
         _chainId = chainId;
         _localPublicKey = localPublicKey;
         _localPeerId = localPeerId;
         _listenPort = listenPort;
+        _listenAddress = listenAddress ?? "";
         _getBestBlockNumber = getBestBlockNumber;
         _getBestBlockHash = getBestBlockHash;
         _getGenesisHash = getGenesisHash;
@@ -171,7 +174,7 @@ public sealed class HandshakeProtocol
             BestBlockHash = _getBestBlockHash(),
             GenesisHash = _getGenesisHash(),
             NodePublicKey = _localPublicKey,
-            ListenAddress = "",
+            ListenAddress = _listenAddress,
             ListenPort = _listenPort,
         };
     }
