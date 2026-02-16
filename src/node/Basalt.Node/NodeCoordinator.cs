@@ -671,10 +671,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 break;
 
             case ViewChangeMessage viewChange:
+                ViewChangeMessage? autoJoinVc;
                 if (_config.UsePipelining)
-                    _pipelinedConsensus!.HandleViewChange(viewChange);
+                    autoJoinVc = _pipelinedConsensus!.HandleViewChange(viewChange);
                 else
-                    _consensus!.HandleViewChange(viewChange);
+                    autoJoinVc = _consensus!.HandleViewChange(viewChange);
+                // Broadcast auto-join so other nodes can count our vote
+                if (autoJoinVc != null)
+                    _gossip!.BroadcastConsensusMessage(autoJoinVc);
                 break;
 
             case IHaveMessage ihave:
@@ -1135,8 +1139,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var viewChange = _consensus.CheckViewTimeout();
                 if (viewChange != null)
                 {
-                    _consensus.HandleViewChange(viewChange);
+                    var autoJoin = _consensus.HandleViewChange(viewChange);
                     _gossip!.BroadcastConsensusMessage(viewChange);
+                    if (autoJoin != null)
+                        _gossip.BroadcastConsensusMessage(autoJoin);
                 }
 
                 _episub!.RebalanceTiers();
@@ -1170,8 +1176,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var viewChange = _pipelinedConsensus!.CheckViewTimeout();
                 if (viewChange != null)
                 {
-                    _pipelinedConsensus.HandleViewChange(viewChange);
+                    var autoJoin = _pipelinedConsensus.HandleViewChange(viewChange);
                     _gossip!.BroadcastConsensusMessage(viewChange);
+                    if (autoJoin != null)
+                        _gossip.BroadcastConsensusMessage(autoJoin);
                 }
 
                 // Cleanup finalized rounds periodically

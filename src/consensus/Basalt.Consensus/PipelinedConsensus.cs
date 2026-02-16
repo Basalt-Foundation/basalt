@@ -241,10 +241,12 @@ public sealed class PipelinedConsensus
 
     /// <summary>
     /// Handle a view change message. On quorum, abort all in-flight rounds and restart.
+    /// Returns a ViewChangeMessage if this node auto-joined (so the caller can broadcast it).
     /// </summary>
-    public void HandleViewChange(ViewChangeMessage viewChange)
+    public ViewChangeMessage? HandleViewChange(ViewChangeMessage viewChange)
     {
         var votes = _viewChangeVotes.GetOrAdd(viewChange.ProposedView, _ => new HashSet<PeerId>());
+        bool newAutoJoin = false;
 
         lock (votes)
         {
@@ -259,7 +261,7 @@ public sealed class PipelinedConsensus
                     maxActiveView = round.View;
             }
             if (viewChange.ProposedView > maxActiveView)
-                votes.Add(_localPeerId);
+                newAutoJoin = votes.Add(_localPeerId);
 
             if (votes.Count >= _validatorSet.QuorumThreshold)
             {
@@ -287,6 +289,26 @@ public sealed class PipelinedConsensus
                 OnViewChange?.Invoke(viewChange.ProposedView);
             }
         }
+
+        // Broadcast auto-join to make the vote visible to other nodes
+        if (newAutoJoin)
+        {
+            Span<byte> viewBytes = stackalloc byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, viewChange.ProposedView);
+            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+            var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+
+            return new ViewChangeMessage
+            {
+                SenderId = _localPeerId,
+                CurrentView = 0, // Not meaningful in pipelined mode
+                ProposedView = viewChange.ProposedView,
+                VoterSignature = signature,
+                VoterPublicKey = publicKey,
+            };
+        }
+
+        return null;
     }
 
     /// <summary>

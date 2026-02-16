@@ -430,6 +430,151 @@ public class ViewChangeTests
         vote.Should().BeNull();
     }
 
+    // --- Auto-join broadcast ---
+
+    [Fact]
+    public void HandleViewChange_AutoJoin_ReturnsViewChangeMessage()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        // Receive a VC from another validator for a higher view.
+        // Since proposedView 5 > currentView 1, the node auto-joins and should return
+        // a ViewChangeMessage for broadcast.
+        var autoJoin = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 1,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+
+        autoJoin.Should().NotBeNull("should return VC for broadcast when auto-joining");
+        autoJoin!.SenderId.Should().Be(_validators[0].PeerId);
+        autoJoin.ProposedView.Should().Be(5);
+    }
+
+    [Fact]
+    public void HandleViewChange_NoAutoJoin_ForCurrentOrPastView()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(5);
+
+        // VC for current view (5) — should not auto-join
+        var result1 = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 5,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+        result1.Should().BeNull("should not auto-join for current view");
+
+        // VC for past view (3) — should not auto-join
+        var result2 = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[2].PeerId,
+            CurrentView = 3,
+            ProposedView = 3,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+        result2.Should().BeNull("should not auto-join for past view");
+    }
+
+    [Fact]
+    public void HandleViewChange_AutoJoin_OnlyOnce()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        // First VC for view 5 — auto-join (returns message)
+        var first = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 1,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+        first.Should().NotBeNull();
+
+        // Second VC for same view 5 — already auto-joined, should not return again
+        var second = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[2].PeerId,
+            CurrentView = 1,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+        second.Should().BeNull("should not auto-join twice for the same view");
+    }
+
+    [Fact]
+    public void HandleViewChange_ParitySplit_Resolved_WithBroadcast()
+    {
+        // Simulates the parity split scenario:
+        // Group A (V0, V2) at view 20. Group B (V1, V3) at view 21.
+        // Group B sends VCs for view 22. Group A auto-joins and broadcasts.
+        // Group B receives Group A's auto-join VCs → reaches quorum for 22.
+        // All 4 converge on view 22.
+
+        var bfts = new BasaltBft[4];
+        for (int i = 0; i < 4; i++)
+            bfts[i] = CreateBft(i);
+
+        // Group A at view 20, Group B at view 21
+        bfts[0].StartRound(20);
+        bfts[2].StartRound(20);
+        bfts[1].StartRound(21);
+        bfts[3].StartRound(21);
+
+        // Group B (V1, V3) send VCs for view 22
+        var vcFromV1 = new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId, CurrentView = 21, ProposedView = 22,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        };
+        var vcFromV3 = new ViewChangeMessage
+        {
+            SenderId = _validators[3].PeerId, CurrentView = 21, ProposedView = 22,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        };
+
+        // V0 receives V1's VC for 22 → auto-joins, returns broadcast VC
+        var autoJoinV0 = bfts[0].HandleViewChange(vcFromV1);
+        autoJoinV0.Should().NotBeNull("V0 should auto-join for view 22");
+
+        // V0 receives V3's VC for 22 → {V1, V0, V3} = 3 = quorum → V0 jumps to 22
+        bfts[0].HandleViewChange(vcFromV3);
+        bfts[0].CurrentView.Should().Be(22);
+
+        // V2 similarly receives VCs and jumps to 22
+        var autoJoinV2 = bfts[2].HandleViewChange(vcFromV1);
+        autoJoinV2.Should().NotBeNull();
+        bfts[2].HandleViewChange(vcFromV3);
+        bfts[2].CurrentView.Should().Be(22);
+
+        // Now V1 receives V0's auto-join VC (the broadcast)
+        // V1 already sent its own VC for 22 (counted locally) and has V3's VC.
+        // With V0's auto-join: {V1, V3, V0} = 3 = quorum → V1 jumps to 22.
+        bfts[1].HandleViewChange(vcFromV1); // self-handle
+        bfts[1].HandleViewChange(vcFromV3);
+        bfts[1].HandleViewChange(autoJoinV0!); // broadcast from V0
+        bfts[1].CurrentView.Should().Be(22, "V1 should converge to 22 via auto-join broadcast");
+
+        // V3 similarly converges
+        bfts[3].HandleViewChange(vcFromV3); // self-handle
+        bfts[3].HandleViewChange(vcFromV1);
+        bfts[3].HandleViewChange(autoJoinV2!); // broadcast from V2
+        bfts[3].CurrentView.Should().Be(22, "V3 should converge to 22 via auto-join broadcast");
+    }
+
     // --- Fast-forward (proposal from future view) ---
 
     /// <summary>

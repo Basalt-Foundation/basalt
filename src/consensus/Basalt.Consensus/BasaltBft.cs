@@ -314,12 +314,17 @@ public sealed class BasaltBft
 
     /// <summary>
     /// Handle a view change message.
+    /// Returns a ViewChangeMessage if this node auto-joined the view change
+    /// (so the caller can broadcast it to make the vote visible to other nodes).
+    /// Without broadcasting auto-joins, a 2-2 parity split causes views to skip
+    /// by 2 indefinitely because each side's auto-join vote is invisible to the other.
     /// </summary>
-    public void HandleViewChange(ViewChangeMessage viewChange)
+    public ViewChangeMessage? HandleViewChange(ViewChangeMessage viewChange)
     {
         // Use a distinct key (Commit+1 via cast) to avoid collision with consensus phase votes
         var voteKey = (viewChange.ProposedView, (VotePhase)0xFF);
         var votes = _votes.GetOrAdd(voteKey, _ => new HashSet<PeerId>());
+        bool newAutoJoin = false;
 
         lock (votes)
         {
@@ -329,8 +334,9 @@ public sealed class BasaltBft
             // This prevents deadlocks where validators at different views each propose
             // currentView+1 but never converge (e.g. V2 at view 750 proposes 751,
             // while V1/V3 at view 751 propose 752 — neither reaches quorum).
+            // HashSet.Add returns true only if the element was newly added.
             if (viewChange.ProposedView > _currentView)
-                votes.Add(_localPeerId);
+                newAutoJoin = votes.Add(_localPeerId);
 
             if (votes.Count >= _validatorSet.QuorumThreshold && _currentView < viewChange.ProposedView)
             {
@@ -338,12 +344,47 @@ public sealed class BasaltBft
                 _state = ConsensusState.Proposing;
                 _viewStartTime = DateTimeOffset.UtcNow;
                 _viewChangeRequestedForView = null;
-                _votes.Clear();
-                _voteSignatures.Clear();
+
+                // Selective clearing: keep pre-counted votes for the target view,
+                // clear everything else (stale consensus + view change votes).
+                var targetView = viewChange.ProposedView;
+                foreach (var key in _votes.Keys)
+                {
+                    if (key.View != targetView)
+                        _votes.TryRemove(key, out _);
+                }
+                foreach (var key in _voteSignatures.Keys)
+                {
+                    if (key.View != targetView)
+                        _voteSignatures.TryRemove(key, out _);
+                }
+
                 _logger.LogInformation("View changed to {View}", _currentView);
                 OnViewChange?.Invoke(_currentView);
             }
         }
+
+        // Return a signed ViewChangeMessage so the caller can broadcast it.
+        // This makes the auto-join vote visible to other nodes, resolving the
+        // parity split where two groups of validators alternate even/odd views.
+        if (newAutoJoin)
+        {
+            Span<byte> viewBytes = stackalloc byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, viewChange.ProposedView);
+            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+            var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+
+            return new ViewChangeMessage
+            {
+                SenderId = _localPeerId,
+                CurrentView = _currentView,
+                ProposedView = viewChange.ProposedView,
+                VoterSignature = signature,
+                VoterPublicKey = publicKey,
+            };
+        }
+
+        return null;
     }
 
     private ConsensusVoteMessage? HandlePrepareVote(PeerId sender, ulong view, Hash256 blockHash)
