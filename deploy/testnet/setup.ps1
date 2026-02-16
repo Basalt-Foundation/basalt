@@ -12,7 +12,15 @@
 
 $ErrorActionPreference = "Stop"
 
-$BASALT_DIR = "$env:USERPROFILE\basalt"
+# Detect if running from inside the repo already
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = (Resolve-Path "$scriptDir\..\..").Path
+
+if (Test-Path "$repoRoot\Basalt.sln") {
+    $BASALT_DIR = $repoRoot
+} else {
+    $BASALT_DIR = "$env:USERPROFILE\basalt"
+}
 $DEPLOY_DIR = "$BASALT_DIR\deploy\testnet"
 
 Write-Host "============================================" -ForegroundColor Cyan
@@ -42,15 +50,13 @@ if ($dockerInfo -match "OSType:\s+windows") {
 }
 Write-Host "  Docker is running Linux containers."
 
-# ─── Step 2: Clone Basalt ────────────────────────────────────────────
-if (Test-Path $BASALT_DIR) {
-    Write-Host "[2/6] Basalt repo exists, pulling latest..." -ForegroundColor Yellow
-    Push-Location $BASALT_DIR
-    git pull
-    Pop-Location
+# ─── Step 2: Verify repo ──────────────────────────────────────────────
+if (Test-Path "$BASALT_DIR\Basalt.sln") {
+    Write-Host "[2/6] Basalt repo found at $BASALT_DIR" -ForegroundColor Yellow
 } else {
-    Write-Host "[2/6] Cloning Basalt..." -ForegroundColor Yellow
-    git clone https://github.com/basalt-foundation/basalt.git $BASALT_DIR
+    Write-Host "[2/6] ERROR: Basalt repo not found." -ForegroundColor Red
+    Write-Host "  Clone it first: git clone https://github.com/basalt-foundation/basalt.git" -ForegroundColor Red
+    exit 1
 }
 
 Set-Location $DEPLOY_DIR
