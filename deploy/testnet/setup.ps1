@@ -70,7 +70,9 @@ if (Test-Path ".env") {
 
     function New-ValidatorKey {
         $bytes = New-Object byte[] 32
-        [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($bytes)
+        $rng.Dispose()
         return ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
     }
 
