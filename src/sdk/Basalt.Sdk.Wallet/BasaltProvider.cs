@@ -153,6 +153,27 @@ public sealed class BasaltProvider : IDisposable
         return _client.RequestFaucetAsync(hex, ct);
     }
 
+    /// <summary>
+    /// Executes a read-only contract call without submitting a transaction.
+    /// </summary>
+    /// <param name="to">The contract address.</param>
+    /// <param name="data">The call data bytes.</param>
+    /// <param name="from">Optional caller address.</param>
+    /// <param name="gasLimit">Gas limit for the call. Default: 1,000,000.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public Task<CallResult> CallReadOnlyAsync(
+        Address to,
+        byte[] data,
+        Address? from = null,
+        ulong gasLimit = 1_000_000,
+        CancellationToken ct = default)
+    {
+        var toHex = "0x" + Convert.ToHexString(to.ToArray()).ToLowerInvariant();
+        var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
+        var fromHex = from.HasValue ? "0x" + Convert.ToHexString(from.Value.ToArray()).ToLowerInvariant() : null;
+        return _client.CallReadOnlyAsync(toHex, dataHex, fromHex, gasLimit, ct);
+    }
+
     // ── Transaction Methods ────────────────────────────────────────────
 
     /// <summary>

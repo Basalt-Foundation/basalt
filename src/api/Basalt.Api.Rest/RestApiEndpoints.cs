@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Basalt.Core;
 using Basalt.Execution;
+using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -18,7 +19,8 @@ public static class RestApiEndpoints
         ChainManager chainManager,
         Mempool mempool,
         TransactionValidator validator,
-        Storage.IStateDatabase stateDb)
+        Storage.IStateDatabase stateDb,
+        IContractRuntime? contractRuntime = null)
     {
         // POST /v1/transactions
         app.MapPost("/v1/transactions", (TransactionRequest request) =>
@@ -252,6 +254,93 @@ public static class RestApiEndpoints
             return Microsoft.AspNetCore.Http.Results.NotFound();
         });
 
+        // POST /v1/call — read-only contract call (eth_call equivalent)
+        if (contractRuntime != null)
+        {
+            app.MapPost("/v1/call", (CallRequest request) =>
+            {
+                try
+                {
+                    var dataHex = request.Data.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                        ? request.Data[2..] : request.Data;
+
+                    if (!Address.TryFromHexString(request.To, out var contractAddr))
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Invalid 'to' address format.",
+                        });
+
+                    var contractState = stateDb.GetAccount(contractAddr);
+                    if (contractState == null || contractState.Value.AccountType != Storage.AccountType.Contract)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Address is not a contract account.",
+                        });
+
+                    // Load contract code from storage (0xFF01 key)
+                    Span<byte> codeKeySpan = stackalloc byte[32];
+                    codeKeySpan.Clear();
+                    codeKeySpan[0] = 0xFF;
+                    codeKeySpan[1] = 0x01;
+                    var codeStorageKey = new Hash256(codeKeySpan);
+                    var code = stateDb.GetStorage(contractAddr, codeStorageKey) ?? [];
+
+                    if (code.Length == 0)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Contract has no code.",
+                        });
+
+                    var callData = string.IsNullOrEmpty(dataHex) ? [] : Convert.FromHexString(dataHex);
+
+                    // Derive caller address (optional)
+                    var caller = Address.Zero;
+                    if (!string.IsNullOrEmpty(request.From) && Address.TryFromHexString(request.From, out var fromAddr))
+                        caller = fromAddr;
+
+                    var latestBlock = chainManager.LatestBlock;
+                    var gasMeter = new GasMeter(request.GasLimit > 0 ? request.GasLimit : 1_000_000);
+
+                    var ctx = new VmExecutionContext
+                    {
+                        Caller = caller,
+                        ContractAddress = contractAddr,
+                        Value = UInt256.Zero,
+                        BlockTimestamp = latestBlock != null ? (ulong)latestBlock.Header.Timestamp : 0,
+                        BlockNumber = latestBlock?.Number ?? 0,
+                        BlockProposer = latestBlock?.Header.Proposer ?? Address.Zero,
+                        ChainId = latestBlock?.Header.ChainId ?? 1,
+                        GasMeter = gasMeter,
+                        StateDb = stateDb,
+                        CallDepth = 0,
+                    };
+
+                    var result = contractRuntime.Execute(code, callData, ctx);
+
+                    return Microsoft.AspNetCore.Http.Results.Ok(new CallResponse
+                    {
+                        Success = result.Success,
+                        ReturnData = result.ReturnData is { Length: > 0 }
+                            ? Convert.ToHexString(result.ReturnData)
+                            : null,
+                        GasUsed = gasMeter.GasUsed,
+                        Error = result.ErrorMessage,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                    {
+                        Code = (int)BasaltErrorCode.InternalError,
+                        Message = ex.Message,
+                    });
+                }
+            });
+        }
+
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
         app.MapGet("/v1/debug/mempool", () =>
         {
@@ -435,6 +524,22 @@ public sealed class ValidatorInfoResponse
     [JsonPropertyName("status")] public string Status { get; set; } = "active";
 }
 
+public sealed class CallRequest
+{
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("data")] public string Data { get; set; } = "";
+    [JsonPropertyName("from")] public string? From { get; set; }
+    [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; } = 1_000_000;
+}
+
+public sealed class CallResponse
+{
+    [JsonPropertyName("success")] public required bool Success { get; set; }
+    [JsonPropertyName("returnData")] public string? ReturnData { get; set; }
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+    [JsonPropertyName("error")] public string? Error { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -448,4 +553,6 @@ public sealed class ValidatorInfoResponse
 [JsonSerializable(typeof(PaginatedBlocksResponse))]
 [JsonSerializable(typeof(ValidatorInfoResponse))]
 [JsonSerializable(typeof(ValidatorInfoResponse[]))]
+[JsonSerializable(typeof(CallRequest))]
+[JsonSerializable(typeof(CallResponse))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

@@ -94,6 +94,17 @@ public sealed class FaucetRequest
 }
 
 /// <summary>
+/// JSON request body for read-only contract calls.
+/// </summary>
+public sealed class CallReadOnlyRequest
+{
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("data")] public string Data { get; set; } = "";
+    [JsonPropertyName("from")] public string? From { get; set; }
+    [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
+}
+
+/// <summary>
 /// Source-generated JSON serializer context for AOT-safe serialization of all
 /// wallet RPC request and response types.
 /// </summary>
@@ -107,4 +118,6 @@ public sealed class FaucetRequest
 [JsonSerializable(typeof(ValidatorInfo[]))]
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(FaucetRequest))]
+[JsonSerializable(typeof(CallReadOnlyRequest))]
+[JsonSerializable(typeof(CallResult))]
 internal partial class WalletJsonContext : JsonSerializerContext;

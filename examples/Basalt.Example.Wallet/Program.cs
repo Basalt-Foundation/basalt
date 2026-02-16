@@ -503,15 +503,27 @@ async Task CmdStorageGet(BasaltProvider provider, IAccount account, Address? con
     Console.WriteLine($"\n  Key hash: 0x{Convert.ToHexString(keyBytes[..8]).ToLowerInvariant()}...");
 
     var contract = provider.GetContract(contractAddress.Value);
-    var result = await contract.CallAsync(
-        account,
+    var result = await contract.ReadAsync(
         "storage_get",
         gasLimit: 100_000,
         args: [keyBytes]);
 
-    Console.WriteLine($"  Tx hash: {result.Hash}");
-    Console.WriteLine($"  Status:  {result.Status}");
-    Console.WriteLine("  (storage_get is a write tx in Phase 1 — no read-only RPC yet)");
+    if (result.Success && result.ReturnData is { Length: > 0 })
+    {
+        var valueBytes = Convert.FromHexString(result.ReturnData);
+        var valueStr = System.Text.Encoding.UTF8.GetString(valueBytes);
+        Console.WriteLine($"  Value:   {valueStr}");
+        Console.WriteLine($"  Raw hex: 0x{result.ReturnData.ToLowerInvariant()}");
+    }
+    else if (result.Success)
+    {
+        Console.WriteLine("  (key not found — empty return data)");
+    }
+    else
+    {
+        Console.WriteLine($"  Error: {result.Error}");
+    }
+    Console.WriteLine($"  Gas used: {result.GasUsed}");
 }
 
 // ── 9) Transaction Lookup ───────────────────────────────────────────

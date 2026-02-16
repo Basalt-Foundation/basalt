@@ -84,6 +84,31 @@ public sealed class ContractClient
     }
 
     /// <summary>
+    /// Executes a read-only contract call without submitting a transaction.
+    /// No account or signing required — the call is executed against current state.
+    /// </summary>
+    /// <param name="methodName">The method name to call.</param>
+    /// <param name="gasLimit">Gas limit for the call.</param>
+    /// <param name="args">Encoded arguments (use <see cref="AbiEncoder"/> methods).</param>
+    /// <param name="from">Optional caller address in "0x..." hex format.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The call result containing return data.</returns>
+    public async Task<CallResult> ReadAsync(
+        string methodName,
+        ulong gasLimit = 100_000,
+        byte[][]? args = null,
+        string? from = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(methodName);
+
+        var data = AbiEncoder.EncodeCall(methodName, args ?? []);
+        var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
+        var toHex = "0x" + Convert.ToHexString(_contractAddress.ToArray()).ToLowerInvariant();
+        return await _client.CallReadOnlyAsync(toHex, dataHex, from, gasLimit, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Deploys a new contract, returning the submission result.
     /// </summary>
     /// <param name="account">The account to deploy from.</param>

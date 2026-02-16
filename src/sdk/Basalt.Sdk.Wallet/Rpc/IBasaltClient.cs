@@ -80,4 +80,16 @@ public interface IBasaltClient : IDisposable
     /// <param name="ct">Cancellation token.</param>
     /// <returns>An array of validator information.</returns>
     Task<ValidatorInfo[]> GetValidatorsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Executes a read-only contract call without submitting a transaction.
+    /// Equivalent to eth_call — executes against current state and returns the result.
+    /// </summary>
+    /// <param name="to">The contract address in "0x..." hex format.</param>
+    /// <param name="data">The call data in "0x..." hex format.</param>
+    /// <param name="from">Optional caller address in "0x..." hex format.</param>
+    /// <param name="gasLimit">Gas limit for the call. Default: 1,000,000.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The call result containing return data and gas used.</returns>
+    Task<CallResult> CallReadOnlyAsync(string to, string data, string? from = null, ulong gasLimit = 1_000_000, CancellationToken ct = default);
 }

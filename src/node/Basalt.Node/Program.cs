@@ -2,6 +2,7 @@ using Basalt.Core;
 using Basalt.Consensus.Staking;
 using Basalt.Crypto;
 using Basalt.Execution;
+using Basalt.Execution.VM;
 using Basalt.Network;
 using Basalt.Storage;
 using Basalt.Storage.RocksDb;
@@ -143,8 +144,9 @@ try
 
     var app = builder.Build();
 
-    // Map REST endpoints
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb);
+    // Map REST endpoints (with read-only call support via ManagedContractRuntime)
+    var contractRuntime = new ManagedContractRuntime();
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");

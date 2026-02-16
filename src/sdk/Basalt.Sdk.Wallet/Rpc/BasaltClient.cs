@@ -174,6 +174,25 @@ public sealed class BasaltClient : IBasaltClient
     }
 
     /// <inheritdoc />
+    public async Task<CallResult> CallReadOnlyAsync(string to, string data, string? from = null, ulong gasLimit = 1_000_000, CancellationToken ct = default)
+    {
+        var request = new CallReadOnlyRequest
+        {
+            To = to,
+            Data = data,
+            From = from,
+            GasLimit = gasLimit,
+        };
+
+        var response = await _http.PostAsJsonAsync("/v1/call", request, WalletJsonContext.Default.CallReadOnlyRequest, ct)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        return await JsonSerializer.DeserializeAsync(stream, WalletJsonContext.Default.CallResult, ct).ConfigureAwait(false)
+               ?? throw new InvalidOperationException("Failed to deserialize call response.");
+    }
+
+    /// <inheritdoc />
     public void Dispose()
     {
         if (_ownsHttpClient)
