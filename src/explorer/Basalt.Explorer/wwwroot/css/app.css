@@ -505,6 +505,65 @@ tr:hover {
     margin-bottom: 1rem;
 }
 
+/* Storage Explorer */
+.storage-input-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.storage-input-row input {
+    flex: 1;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.875rem;
+}
+
+.storage-input-row input::placeholder {
+    color: var(--text-secondary);
+}
+
+.storage-input-row button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.storage-input-row button:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+.storage-input-row button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.storage-result {
+    background: var(--bg-primary);
+    border-radius: 4px;
+    padding: 1rem;
+}
+
+/* Method badge for contract calls */
+.method-badge {
+    display: inline-block;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: rgba(163, 113, 247, 0.12);
+    color: #a371f7;
+}
+
 footer {
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);

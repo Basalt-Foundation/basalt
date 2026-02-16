@@ -1,6 +1,8 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Basalt.Core;
+using Basalt.Crypto;
 using Basalt.Execution;
 using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
@@ -341,6 +343,200 @@ public static class RestApiEndpoints
             });
         }
 
+        // GET /v1/contracts/{address} — contract metadata
+        if (contractRuntime != null)
+        {
+            app.MapGet("/v1/contracts/{address}", (string address) =>
+            {
+                try
+                {
+                    if (!Address.TryFromHexString(address, out var contractAddr))
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Invalid address format.",
+                        });
+
+                    var account = stateDb.GetAccount(contractAddr);
+                    if (account == null || account.Value.AccountType != Storage.AccountType.Contract)
+                        return Microsoft.AspNetCore.Http.Results.NotFound();
+
+                    // Load contract code from storage (0xFF01 key)
+                    Span<byte> codeKeySpan = stackalloc byte[32];
+                    codeKeySpan.Clear();
+                    codeKeySpan[0] = 0xFF;
+                    codeKeySpan[1] = 0x01;
+                    var codeStorageKey = new Hash256(codeKeySpan);
+                    var code = stateDb.GetStorage(contractAddr, codeStorageKey) ?? [];
+
+                    var codeHashHex = "";
+                    if (code.Length > 0)
+                    {
+                        var codeHash = Blake3Hasher.Hash(code);
+                        codeHashHex = codeHash.ToHexString();
+                    }
+
+                    // Scan blocks for the ContractDeploy tx targeting this address
+                    string? deployer = null;
+                    string? deployTxHash = null;
+                    ulong? deployBlockNumber = null;
+
+                    var latestNum = chainManager.LatestBlockNumber;
+                    var scanDepth = Math.Min(latestNum + 1, 5000UL);
+
+                    for (ulong i = 0; i < scanDepth; i++)
+                    {
+                        var block = chainManager.GetBlockByNumber(latestNum - i);
+                        if (block == null) continue;
+
+                        foreach (var tx in block.Transactions)
+                        {
+                            if (tx.Type == TransactionType.ContractDeploy && tx.To == contractAddr)
+                            {
+                                deployer = tx.Sender.ToHexString();
+                                deployTxHash = tx.Hash.ToHexString();
+                                deployBlockNumber = block.Number;
+                                break;
+                            }
+                        }
+
+                        if (deployer != null) break;
+                    }
+
+                    return Microsoft.AspNetCore.Http.Results.Ok(new ContractInfoResponse
+                    {
+                        Address = contractAddr.ToHexString(),
+                        CodeSize = code.Length,
+                        CodeHash = codeHashHex,
+                        Deployer = deployer,
+                        DeployTxHash = deployTxHash,
+                        DeployBlockNumber = deployBlockNumber,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                    {
+                        Code = (int)BasaltErrorCode.InternalError,
+                        Message = ex.Message,
+                    });
+                }
+            });
+
+            // GET /v1/contracts/{address}/storage?key={stringKey} — read storage with server-side BLAKE3 hashing
+            app.MapGet("/v1/contracts/{address}/storage", (string address, string? key) =>
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(key))
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Missing 'key' query parameter.",
+                        });
+
+                    if (!Address.TryFromHexString(address, out var contractAddr))
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Invalid address format.",
+                        });
+
+                    var account = stateDb.GetAccount(contractAddr);
+                    if (account == null || account.Value.AccountType != Storage.AccountType.Contract)
+                        return Microsoft.AspNetCore.Http.Results.NotFound();
+
+                    // Load contract code from storage (0xFF01 key)
+                    Span<byte> codeKeySpan = stackalloc byte[32];
+                    codeKeySpan.Clear();
+                    codeKeySpan[0] = 0xFF;
+                    codeKeySpan[1] = 0x01;
+                    var codeStorageKey = new Hash256(codeKeySpan);
+                    var code = stateDb.GetStorage(contractAddr, codeStorageKey) ?? [];
+
+                    if (code.Length == 0)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Contract has no code.",
+                        });
+
+                    // BLAKE3-hash the key string to get a 32-byte storage key
+                    var keyHash = Blake3Hasher.Hash(Encoding.UTF8.GetBytes(key));
+
+                    // Build storage_get call data: [4-byte selector][32-byte key hash]
+                    var storageGetSelector = ManagedContractRuntime.ComputeSelector("storage_get");
+                    var callData = new byte[4 + 32];
+                    storageGetSelector.CopyTo(callData, 0);
+                    keyHash.WriteTo(callData.AsSpan(4));
+
+                    // Create execution context for read-only call
+                    var latestBlock = chainManager.LatestBlock;
+                    var gasMeter = new GasMeter(100_000);
+
+                    var ctx = new VmExecutionContext
+                    {
+                        Caller = Address.Zero,
+                        ContractAddress = contractAddr,
+                        Value = UInt256.Zero,
+                        BlockTimestamp = latestBlock != null ? (ulong)latestBlock.Header.Timestamp : 0,
+                        BlockNumber = latestBlock?.Number ?? 0,
+                        BlockProposer = latestBlock?.Header.Proposer ?? Address.Zero,
+                        ChainId = latestBlock?.Header.ChainId ?? 1,
+                        GasMeter = gasMeter,
+                        StateDb = stateDb,
+                        CallDepth = 0,
+                    };
+
+                    var result = contractRuntime.Execute(code, callData, ctx);
+
+                    string? valueHex = null;
+                    string? valueUtf8 = null;
+                    var valueSize = 0;
+                    var found = false;
+
+                    if (result.Success && result.ReturnData is { Length: > 0 })
+                    {
+                        found = true;
+                        valueHex = Convert.ToHexString(result.ReturnData);
+                        valueSize = result.ReturnData.Length;
+
+                        // Try to decode as UTF-8 (return data is length-prefixed: [4-byte BE length][raw bytes])
+                        try
+                        {
+                            if (result.ReturnData.Length >= 4)
+                            {
+                                var len = (result.ReturnData[0] << 24) | (result.ReturnData[1] << 16) |
+                                          (result.ReturnData[2] << 8) | result.ReturnData[3];
+                                if (len > 0 && 4 + len <= result.ReturnData.Length)
+                                    valueUtf8 = Encoding.UTF8.GetString(result.ReturnData, 4, len);
+                            }
+                        }
+                        catch { /* Not valid UTF-8, leave null */ }
+                    }
+
+                    return Microsoft.AspNetCore.Http.Results.Ok(new StorageReadResponse
+                    {
+                        Key = key,
+                        KeyHash = keyHash.ToHexString(),
+                        Found = found,
+                        ValueHex = valueHex,
+                        ValueUtf8 = valueUtf8,
+                        ValueSize = valueSize,
+                        GasUsed = gasMeter.GasUsed,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                    {
+                        Code = (int)BasaltErrorCode.InternalError,
+                        Message = ex.Message,
+                    });
+                }
+            });
+        }
+
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
         app.MapGet("/v1/debug/mempool", () =>
         {
@@ -540,6 +736,27 @@ public sealed class CallResponse
     [JsonPropertyName("error")] public string? Error { get; set; }
 }
 
+public sealed class ContractInfoResponse
+{
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("codeSize")] public int CodeSize { get; set; }
+    [JsonPropertyName("codeHash")] public string CodeHash { get; set; } = "";
+    [JsonPropertyName("deployer")] public string? Deployer { get; set; }
+    [JsonPropertyName("deployTxHash")] public string? DeployTxHash { get; set; }
+    [JsonPropertyName("deployBlockNumber")] public ulong? DeployBlockNumber { get; set; }
+}
+
+public sealed class StorageReadResponse
+{
+    [JsonPropertyName("key")] public string Key { get; set; } = "";
+    [JsonPropertyName("keyHash")] public string KeyHash { get; set; } = "";
+    [JsonPropertyName("found")] public bool Found { get; set; }
+    [JsonPropertyName("valueHex")] public string? ValueHex { get; set; }
+    [JsonPropertyName("valueUtf8")] public string? ValueUtf8 { get; set; }
+    [JsonPropertyName("valueSize")] public int ValueSize { get; set; }
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -555,4 +772,6 @@ public sealed class CallResponse
 [JsonSerializable(typeof(ValidatorInfoResponse[]))]
 [JsonSerializable(typeof(CallRequest))]
 [JsonSerializable(typeof(CallResponse))]
+[JsonSerializable(typeof(ContractInfoResponse))]
+[JsonSerializable(typeof(StorageReadResponse))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

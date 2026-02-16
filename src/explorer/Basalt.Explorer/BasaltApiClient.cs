@@ -81,6 +81,18 @@ public sealed class BasaltApiClient
         try { return await _http.GetFromJsonAsync("v1/faucet/status", ExplorerJsonContext.Default.FaucetStatusDto); }
         catch { return null; }
     }
+
+    public async Task<ContractInfoDto?> GetContractInfoAsync(string address)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/contracts/{address}", ExplorerJsonContext.Default.ContractInfoDto); }
+        catch { return null; }
+    }
+
+    public async Task<StorageReadResponseDto?> ReadContractStorageAsync(string address, string key)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/contracts/{address}/storage?key={Uri.EscapeDataString(key)}", ExplorerJsonContext.Default.StorageReadResponseDto); }
+        catch { return null; }
+    }
 }
 
 public sealed class NodeStatusDto
@@ -184,6 +196,27 @@ public sealed class FaucetStatusDto
     [JsonPropertyName("mempoolSize")] public int MempoolSize { get; set; }
 }
 
+public sealed class ContractInfoDto
+{
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("codeSize")] public int CodeSize { get; set; }
+    [JsonPropertyName("codeHash")] public string CodeHash { get; set; } = "";
+    [JsonPropertyName("deployer")] public string? Deployer { get; set; }
+    [JsonPropertyName("deployTxHash")] public string? DeployTxHash { get; set; }
+    [JsonPropertyName("deployBlockNumber")] public ulong? DeployBlockNumber { get; set; }
+}
+
+public sealed class StorageReadResponseDto
+{
+    [JsonPropertyName("key")] public string Key { get; set; } = "";
+    [JsonPropertyName("keyHash")] public string KeyHash { get; set; } = "";
+    [JsonPropertyName("found")] public bool Found { get; set; }
+    [JsonPropertyName("valueHex")] public string? ValueHex { get; set; }
+    [JsonPropertyName("valueUtf8")] public string? ValueUtf8 { get; set; }
+    [JsonPropertyName("valueSize")] public int ValueSize { get; set; }
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+}
+
 [JsonSerializable(typeof(NodeStatusDto))]
 [JsonSerializable(typeof(BlockDto))]
 [JsonSerializable(typeof(BlockDto[]))]
@@ -197,4 +230,6 @@ public sealed class FaucetStatusDto
 [JsonSerializable(typeof(MempoolTransactionDto))]
 [JsonSerializable(typeof(MempoolTransactionDto[]))]
 [JsonSerializable(typeof(FaucetStatusDto))]
+[JsonSerializable(typeof(ContractInfoDto))]
+[JsonSerializable(typeof(StorageReadResponseDto))]
 internal partial class ExplorerJsonContext : JsonSerializerContext;

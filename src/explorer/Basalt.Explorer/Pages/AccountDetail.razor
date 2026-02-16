@@ -55,10 +55,99 @@
     </div>
 </div>
 
+@if (_isContract && _contractInfo != null)
+{
+    <div class="card" style="margin-top: 1.5rem">
+        <div class="card-header">Contract Details</div>
+        <div class="card-body">
+            <div class="detail-row">
+                <span class="detail-label">Code Size</span>
+                <span class="detail-value">@FormatHelper.FormatBytes(_contractInfo.CodeSize)</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Code Hash</span>
+                <span class="detail-value hash-static">@FormatHelper.TruncateHash(_contractInfo.CodeHash)</span>
+            </div>
+            @if (_contractInfo.Deployer != null)
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Deployer</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToAccount(_contractInfo.Deployer)">@FormatHelper.TruncateHash(_contractInfo.Deployer)</span>
+                </div>
+            }
+            @if (_contractInfo.DeployTxHash != null)
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Deploy Transaction</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToTx(_contractInfo.DeployTxHash)">@FormatHelper.TruncateHash(_contractInfo.DeployTxHash)</span>
+                </div>
+            }
+            @if (_contractInfo.DeployBlockNumber.HasValue)
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Deploy Block</span>
+                    <span class="detail-value hash" @onclick="() => NavigateToBlock(_contractInfo.DeployBlockNumber.Value)">@_contractInfo.DeployBlockNumber</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@if (_isContract)
+{
+    <div class="card" style="margin-top: 1.5rem">
+        <div class="card-header">Storage Explorer</div>
+        <div class="card-body">
+            <div class="storage-input-row">
+                <input type="text" placeholder="Enter storage key (string)..."
+                       @bind="_storageKey" @onkeydown="HandleStorageKeyDown" />
+                <button @onclick="ReadStorage" disabled="@_storageLoading">
+                    @(_storageLoading ? "Reading..." : "Read")
+                </button>
+            </div>
+            @if (_storageResult != null)
+            {
+                <div class="storage-result">
+                    @if (_storageResult.Found && !string.IsNullOrEmpty(_storageResult.ValueHex))
+                    {
+                        @if (!string.IsNullOrEmpty(_storageResult.ValueUtf8))
+                        {
+                            <div class="detail-row">
+                                <span class="detail-label">Value (UTF-8)</span>
+                                <span class="detail-value">@_storageResult.ValueUtf8</span>
+                            </div>
+                        }
+                        <div class="detail-row">
+                            <span class="detail-label">Value (Hex)</span>
+                            <span class="detail-value hash-static">0x@(_storageResult.ValueHex.ToLowerInvariant())</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Key Hash</span>
+                            <span class="detail-value hash-static">@FormatHelper.TruncateHash(_storageResult.KeyHash)</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Size</span>
+                            <span class="detail-value">@FormatHelper.FormatBytes(_storageResult.ValueSize)</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Gas Used</span>
+                            <span class="detail-value">@_storageResult.GasUsed</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="empty-state">Key not found (empty return data)</div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @if (_transactions != null && _transactions.Length > 0)
 {
     <div class="card" style="margin-top: 1.5rem">
-        <div class="card-header">Account Transactions</div>
+        <div class="card-header">@(_isContract ? "Contract" : "Account") Transactions</div>
         <div class="card-body">
             <table class="data-table">
                 <thead>
@@ -66,6 +155,10 @@
                         <th>Hash</th>
                         <th>Block</th>
                         <th>Type</th>
+                        @if (_isContract)
+                        {
+                            <th>Method</th>
+                        }
                         <th>Direction</th>
                         <th>Counterparty</th>
                         <th>Value</th>
@@ -86,6 +179,19 @@
                             <td>
                                 <span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span>
                             </td>
+                            @if (_isContract)
+                            {
+                                <td>
+                                    @if (tx.Type == "ContractCall" || tx.Type == "ContractDeploy")
+                                    {
+                                        <span class="method-badge">@FormatHelper.FormatMethodBadge(tx.Data)</span>
+                                    }
+                                    else
+                                    {
+                                        <span>\u2014</span>
+                                    }
+                                </td>
+                            }
                             <td>
                                 @if (isOutgoing)
                                 {
@@ -120,13 +226,24 @@
 
     private AccountDto? _account;
     private TransactionDto[]? _transactions;
+    private ContractInfoDto? _contractInfo;
     private string? _error;
+    private bool _isContract;
+
+    // Storage explorer state
+    private string _storageKey = "";
+    private StorageReadResponseDto? _storageResult;
+    private bool _storageLoading;
 
     protected override async Task OnParametersSetAsync()
     {
         _account = null;
         _transactions = null;
+        _contractInfo = null;
         _error = null;
+        _isContract = false;
+        _storageResult = null;
+        _storageKey = "";
 
         try
         {
@@ -137,12 +254,48 @@
                 return;
             }
 
-            _transactions = await Api.GetAccountTransactionsAsync(Address, 25);
+            _isContract = string.Equals(_account.AccountType, "Contract", StringComparison.OrdinalIgnoreCase);
+
+            var txTask = Api.GetAccountTransactionsAsync(Address, 25);
+            var contractTask = _isContract ? Api.GetContractInfoAsync(Address) : Task.FromResult<ContractInfoDto?>(null);
+
+            await Task.WhenAll(txTask, contractTask);
+
+            _transactions = txTask.Result;
+            _contractInfo = contractTask.Result;
         }
         catch (Exception ex)
         {
             _error = ex.Message;
         }
+    }
+
+    private async Task ReadStorage()
+    {
+        if (string.IsNullOrWhiteSpace(_storageKey)) return;
+
+        _storageLoading = true;
+        _storageResult = null;
+        StateHasChanged();
+
+        try
+        {
+            _storageResult = await Api.ReadContractStorageAsync(Address, _storageKey);
+        }
+        catch
+        {
+            _storageResult = null;
+        }
+        finally
+        {
+            _storageLoading = false;
+        }
+    }
+
+    private async Task HandleStorageKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await ReadStorage();
     }
 
     private bool IsOutgoing(TransactionDto tx)

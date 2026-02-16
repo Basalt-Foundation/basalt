@@ -56,6 +56,42 @@ public static class FormatHelper
         _ => type ?? "Unknown",
     };
 
+    // Hardcoded BLAKE3 selectors (first 4 bytes of BLAKE3(method_name) as uppercase hex).
+    // Must match ManagedContractRuntime / AbiEncoder.ComputeSelector.
+    private static readonly Dictionary<string, string> KnownSelectors = new()
+    {
+        ["3E927582"] = "storage_set",
+        ["5DB08A5F"] = "storage_get",
+        ["758EC466"] = "storage_del",
+        ["81359626"] = "emit_event",
+    };
+
+    /// <summary>
+    /// Decode the first 4 bytes of tx data into a human-readable method name.
+    /// Returns null if data is too short or the selector is unknown.
+    /// </summary>
+    public static string? DecodeMethodName(string? txData)
+    {
+        if (string.IsNullOrEmpty(txData) || txData.Length < 8)
+            return null;
+
+        var selector = txData[..8].ToUpperInvariant();
+        return KnownSelectors.GetValueOrDefault(selector);
+    }
+
+    /// <summary>
+    /// Format a method badge label from tx data.
+    /// Returns the method name or the raw selector if unknown.
+    /// </summary>
+    public static string FormatMethodBadge(string? txData)
+    {
+        if (string.IsNullOrEmpty(txData) || txData.Length < 8)
+            return "\u2014";
+
+        var selector = txData[..8].ToUpperInvariant();
+        return KnownSelectors.TryGetValue(selector, out var name) ? name : "0x" + selector.ToLowerInvariant();
+    }
+
     public static string TruncateHash(string? hash)
     {
         if (string.IsNullOrEmpty(hash) || hash.Length <= 16) return hash ?? "";
