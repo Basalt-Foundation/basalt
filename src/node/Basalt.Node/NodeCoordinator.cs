@@ -949,24 +949,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleConsensusProposal(PeerId sender, ConsensusProposalMessage proposal)
     {
-        // Double-sign detection: check if the SAME proposer already sent a DIFFERENT
-        // block hash for this view. Keying by (view, proposer) ensures that different
-        // proposers at the same view (e.g. after a view change) don't trigger false positives.
-        var proposalKey = (proposal.ViewNumber, proposal.SenderId);
-        if (_slashingEngine != null && _proposalsByView.TryGetValue(proposalKey, out var existingHash))
+        // Double-sign detection: only for proposals matching the current block number.
+        // View numbers are reused across blocks (StartRound sets view = blockNumber),
+        // so delayed proposals from previous blocks can arrive after _proposalsByView
+        // was cleared and collide with current-round entries, causing false positives.
+        var currentBlock = _config.UsePipelining
+            ? _pipelinedConsensus!.LastFinalizedBlock + 1
+            : _consensus!.CurrentBlockNumber;
+
+        if (proposal.BlockNumber == currentBlock)
         {
-            if (existingHash != proposal.BlockHash)
+            var proposalKey = (proposal.ViewNumber, proposal.SenderId);
+            if (_slashingEngine != null && _proposalsByView.TryGetValue(proposalKey, out var existingHash))
             {
-                var proposerInfo = _validatorSet?.GetByPeerId(proposal.SenderId);
-                if (proposerInfo != null)
+                if (existingHash != proposal.BlockHash)
                 {
-                    _slashingEngine.SlashDoubleSign(proposerInfo.Address, proposal.BlockNumber, existingHash, proposal.BlockHash);
-                    _logger.LogWarning("Double-sign detected from validator {Address} at view {View}",
-                        proposerInfo.Address, proposal.ViewNumber);
+                    var proposerInfo = _validatorSet?.GetByPeerId(proposal.SenderId);
+                    if (proposerInfo != null)
+                    {
+                        _slashingEngine.SlashDoubleSign(proposerInfo.Address, proposal.BlockNumber, existingHash, proposal.BlockHash);
+                        _logger.LogWarning("Double-sign detected from validator {Address} at view {View}",
+                            proposerInfo.Address, proposal.ViewNumber);
+                    }
                 }
             }
+            _proposalsByView[proposalKey] = proposal.BlockHash;
         }
-        _proposalsByView[proposalKey] = proposal.BlockHash;
 
         ConsensusVoteMessage? vote;
         if (_config.UsePipelining)
