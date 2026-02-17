@@ -41,14 +41,15 @@ public class ViewChangeTests
         }));
     }
 
-    private BasaltBft CreateBft(int validatorIndex)
+    private BasaltBft CreateBft(int validatorIndex, TimeSpan? viewTimeout = null)
     {
         var v = _validators[validatorIndex];
         return new BasaltBft(
             _validatorSet,
             v.PeerId,
             v.PrivateKey,
-            NullLogger<BasaltBft>.Instance);
+            NullLogger<BasaltBft>.Instance,
+            viewTimeout: viewTimeout);
     }
 
     // --- ViewChange quorum detection ---
@@ -60,8 +61,8 @@ public class ViewChangeTests
         bft.StartRound(1);
 
         // With 4 validators, quorum = 3
-        // Send 1 view change message. Auto-join adds local validator's vote
-        // (proposedView 2 > currentView 1), so total = 2, still below quorum of 3.
+        // Send 1 view change message. Auto-join does NOT fire (node hasn't timed out),
+        // so total = 1, still below quorum of 3.
         bft.HandleViewChange(new ViewChangeMessage
         {
             SenderId = _validators[1].PeerId,
@@ -71,7 +72,7 @@ public class ViewChangeTests
             VoterPublicKey = new BlsPublicKey(new byte[48]),
         });
 
-        // View should NOT have changed (1 external + 1 auto-join = 2, below quorum of 3)
+        // View should NOT have changed (1 external vote, no auto-join = 1, below quorum of 3)
         bft.CurrentView.Should().Be(1);
     }
 
@@ -435,12 +436,16 @@ public class ViewChangeTests
     [Fact]
     public void HandleViewChange_AutoJoin_ReturnsViewChangeMessage()
     {
-        var bft = CreateBft(0);
+        var bft = CreateBft(0, viewTimeout: TimeSpan.FromMilliseconds(1));
         bft.StartRound(1);
 
+        // Simulate timeout so the node has independently requested a view change
+        Thread.Sleep(10);
+        var timeout = bft.CheckViewTimeout();
+        timeout.Should().NotBeNull("timeout should fire after 1ms");
+
         // Receive a VC from another validator for a higher view.
-        // Since proposedView 5 > currentView 1, the node auto-joins and should return
-        // a ViewChangeMessage for broadcast.
+        // Since proposedView 5 > currentView 1 AND the node timed out, it auto-joins.
         var autoJoin = bft.HandleViewChange(new ViewChangeMessage
         {
             SenderId = _validators[1].PeerId,
@@ -450,7 +455,7 @@ public class ViewChangeTests
             VoterPublicKey = new BlsPublicKey(new byte[48]),
         });
 
-        autoJoin.Should().NotBeNull("should return VC for broadcast when auto-joining");
+        autoJoin.Should().NotBeNull("should return VC for broadcast when auto-joining after timeout");
         autoJoin!.SenderId.Should().Be(_validators[0].PeerId);
         autoJoin.ProposedView.Should().Be(5);
     }
@@ -458,10 +463,14 @@ public class ViewChangeTests
     [Fact]
     public void HandleViewChange_NoAutoJoin_ForCurrentOrPastView()
     {
-        var bft = CreateBft(0);
+        var bft = CreateBft(0, viewTimeout: TimeSpan.FromMilliseconds(1));
         bft.StartRound(5);
 
-        // VC for current view (5) — should not auto-join
+        // Trigger timeout so auto-join is eligible
+        Thread.Sleep(10);
+        bft.CheckViewTimeout();
+
+        // VC for current view (5) — should not auto-join (proposedView == currentView)
         var result1 = bft.HandleViewChange(new ViewChangeMessage
         {
             SenderId = _validators[1].PeerId,
@@ -487,8 +496,12 @@ public class ViewChangeTests
     [Fact]
     public void HandleViewChange_AutoJoin_OnlyOnce()
     {
-        var bft = CreateBft(0);
+        var bft = CreateBft(0, viewTimeout: TimeSpan.FromMilliseconds(1));
         bft.StartRound(1);
+
+        // Trigger timeout so auto-join is eligible
+        Thread.Sleep(10);
+        bft.CheckViewTimeout();
 
         // First VC for view 5 — auto-join (returns message)
         var first = bft.HandleViewChange(new ViewChangeMessage
@@ -518,19 +531,27 @@ public class ViewChangeTests
     {
         // Simulates the parity split scenario:
         // Group A (V0, V2) at view 20. Group B (V1, V3) at view 21.
+        // Both groups have independently timed out (this is realistic — they're stuck).
         // Group B sends VCs for view 22. Group A auto-joins and broadcasts.
         // Group B receives Group A's auto-join VCs → reaches quorum for 22.
         // All 4 converge on view 22.
 
         var bfts = new BasaltBft[4];
         for (int i = 0; i < 4; i++)
-            bfts[i] = CreateBft(i);
+            bfts[i] = CreateBft(i, viewTimeout: TimeSpan.FromMilliseconds(1));
 
         // Group A at view 20, Group B at view 21
         bfts[0].StartRound(20);
         bfts[2].StartRound(20);
         bfts[1].StartRound(21);
         bfts[3].StartRound(21);
+
+        // Both groups time out (they're stuck, which is why they need auto-join)
+        Thread.Sleep(10);
+        bfts[0].CheckViewTimeout();
+        bfts[2].CheckViewTimeout();
+        bfts[1].CheckViewTimeout();
+        bfts[3].CheckViewTimeout();
 
         // Group B (V1, V3) send VCs for view 22
         var vcFromV1 = new ViewChangeMessage
@@ -573,6 +594,25 @@ public class ViewChangeTests
         bfts[3].HandleViewChange(vcFromV1);
         bfts[3].HandleViewChange(autoJoinV2!); // broadcast from V2
         bfts[3].CurrentView.Should().Be(22, "V3 should converge to 22 via auto-join broadcast");
+    }
+
+    [Fact]
+    public void HandleViewChange_NoAutoJoin_WithoutTimeout()
+    {
+        // Without timeout, auto-join should NOT fire even for a higher view.
+        // This prevents the cascade where a single timeout propagates to all validators.
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        var result = bft.HandleViewChange(new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 1,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(new byte[48]),
+        });
+        result.Should().BeNull("should not auto-join when node hasn't timed out");
     }
 
     // --- Block number validation in HandleProposal ---

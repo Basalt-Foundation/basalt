@@ -405,6 +405,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+                // Clear proposal history to prevent false double-sign detection.
+                // View numbers reset with each new block (StartRound sets view = blockNumber),
+                // so proposals from previous blocks' view changes must not carry over.
+                _proposalsByView.Clear();
+
                 // Persist to RocksDB if available
                 PersistBlock(block, blockData);
 

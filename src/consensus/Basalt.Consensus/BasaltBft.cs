@@ -38,7 +38,7 @@ public sealed class BasaltBft
 
     // Timing
     private DateTimeOffset _viewStartTime;
-    private readonly TimeSpan _viewTimeout = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan _viewTimeout;
     private ulong? _viewChangeRequestedForView;
 
     // Callbacks
@@ -61,13 +61,15 @@ public sealed class BasaltBft
         PeerId localPeerId,
         byte[] privateKey,
         ILogger<BasaltBft> logger,
-        IBlsSigner? blsSigner = null)
+        IBlsSigner? blsSigner = null,
+        TimeSpan? viewTimeout = null)
     {
         _validatorSet = validatorSet;
         _localPeerId = localPeerId;
         _privateKey = privateKey;
         _blsSigner = blsSigner ?? new BlsSigner();
         _logger = logger;
+        _viewTimeout = viewTimeout ?? TimeSpan.FromSeconds(2);
     }
 
     /// <summary>
@@ -350,12 +352,15 @@ public sealed class BasaltBft
         {
             votes.Add(viewChange.SenderId);
 
-            // Auto-join: if the proposed view is higher than ours, add our own vote.
-            // This prevents deadlocks where validators at different views each propose
-            // currentView+1 but never converge (e.g. V2 at view 750 proposes 751,
-            // while V1/V3 at view 751 propose 752 — neither reaches quorum).
-            // HashSet.Add returns true only if the element was newly added.
-            if (viewChange.ProposedView > _currentView)
+            // Auto-join: if the proposed view is higher than ours AND we have
+            // independently timed out, add our own vote. The timeout guard prevents
+            // a cascade where a single validator's timeout instantly propagates to
+            // all others (racing against and defeating proposals). Without the guard,
+            // by the time the leader proposes, everyone has already jumped to the
+            // next view. With it, only nodes that have genuinely timed out participate,
+            // which still resolves the parity-split deadlock (both sides have timed out).
+            if (viewChange.ProposedView > _currentView
+                && _viewChangeRequestedForView == _currentView)
                 newAutoJoin = votes.Add(_localPeerId);
 
             if (votes.Count >= _validatorSet.QuorumThreshold && _currentView < viewChange.ProposedView)

@@ -252,15 +252,23 @@ public sealed class PipelinedConsensus
         {
             votes.Add(viewChange.SenderId);
 
-            // Auto-join: if the proposed view is higher than our highest active round,
-            // add our own vote to prevent view change deadlocks.
+            // Auto-join: if the proposed view is higher than our highest active round
+            // AND at least one round has independently timed out, add our own vote.
+            // The timeout guard prevents a cascade where a single validator's timeout
+            // instantly propagates to all others, racing against proposals.
             ulong maxActiveView = 0;
+            bool anyRoundTimedOut = false;
             foreach (var round in _activeRounds.Values)
             {
-                if (round.State != ConsensusState.Finalized && round.View > maxActiveView)
-                    maxActiveView = round.View;
+                if (round.State != ConsensusState.Finalized)
+                {
+                    if (round.View > maxActiveView)
+                        maxActiveView = round.View;
+                    if (round.ViewChangeRequested)
+                        anyRoundTimedOut = true;
+                }
             }
-            if (viewChange.ProposedView > maxActiveView)
+            if (viewChange.ProposedView > maxActiveView && anyRoundTimedOut)
                 newAutoJoin = votes.Add(_localPeerId);
 
             if (votes.Count >= _validatorSet.QuorumThreshold)
