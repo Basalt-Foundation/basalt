@@ -252,12 +252,6 @@ public sealed class BasaltBft
         _currentProposalData = proposal.BlockData;
         _state = ConsensusState.Preparing;
 
-        // Reset view timeout from proposal acceptance, not from StartRound.
-        // Non-leaders may receive the proposal 500ms+ after StartRound (block building,
-        // network transit). Without this reset, the 2-second timeout measures idle wait
-        // time instead of actual consensus phase time, causing premature PRE-COMMIT timeouts.
-        _viewStartTime = DateTimeOffset.UtcNow;
-
         // Count leader's implicit PREPARE vote — the leader self-voted locally in
         // ProposeBlock but doesn't broadcast a separate PREPARE message. Without this,
         // non-leaders can only count (self + other non-leaders) = 3 of 4 votes max,
@@ -371,19 +365,8 @@ public sealed class BasaltBft
                 _viewStartTime = DateTimeOffset.UtcNow;
                 _viewChangeRequestedForView = null;
 
-                // Selective clearing: keep pre-counted votes for the target view,
-                // clear everything else (stale consensus + view change votes).
-                var targetView = viewChange.ProposedView;
-                foreach (var key in _votes.Keys)
-                {
-                    if (key.View != targetView)
-                        _votes.TryRemove(key, out _);
-                }
-                foreach (var key in _voteSignatures.Keys)
-                {
-                    if (key.View != targetView)
-                        _voteSignatures.TryRemove(key, out _);
-                }
+                _votes.Clear();
+                _voteSignatures.Clear();
 
                 _logger.LogInformation("View changed to {View}", _currentView);
                 OnViewChange?.Invoke(_currentView);
