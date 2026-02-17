@@ -69,7 +69,7 @@ public sealed class BasaltBft
         _privateKey = privateKey;
         _blsSigner = blsSigner ?? new BlsSigner();
         _logger = logger;
-        _viewTimeout = viewTimeout ?? TimeSpan.FromSeconds(2);
+        _viewTimeout = viewTimeout ?? TimeSpan.FromSeconds(5);
     }
 
     /// <summary>
@@ -268,15 +268,18 @@ public sealed class BasaltBft
 
     /// <summary>
     /// Handle a vote message.
-    /// Accepts votes for the current view AND the next view (pre-counting).
-    /// Votes for _currentView + 1 are stored but don't trigger phase transitions
-    /// (because _state doesn't match). When HandleProposal fast-forwards to that view,
-    /// the pre-counted votes are already available, preventing quorum failure when
-    /// votes arrive before the proposal due to network timing.
+    /// Accepts votes within a small window around the current view to tolerate
+    /// minor view divergence between validators after view changes.
+    /// Pre-counted votes for nearby views are preserved so that when a proposal
+    /// or view change fast-forwards us, quorum can be reached immediately.
     /// </summary>
     public ConsensusVoteMessage? HandleVote(ConsensusVoteMessage vote)
     {
-        if (vote.ViewNumber != _currentView && vote.ViewNumber != _currentView + 1)
+        // Accept votes within ±2 of our current view to tolerate view divergence.
+        var diff = vote.ViewNumber > _currentView
+            ? vote.ViewNumber - _currentView
+            : _currentView - vote.ViewNumber;
+        if (diff > 2)
             return null;
 
         if (!_validatorSet.IsValidator(vote.SenderId))
@@ -365,13 +368,24 @@ public sealed class BasaltBft
 
             if (votes.Count >= _validatorSet.QuorumThreshold && _currentView < viewChange.ProposedView)
             {
-                _currentView = viewChange.ProposedView;
+                var newView = viewChange.ProposedView;
+                _currentView = newView;
                 _state = ConsensusState.Proposing;
                 _viewStartTime = DateTimeOffset.UtcNow;
                 _viewChangeRequestedForView = null;
 
-                _votes.Clear();
-                _voteSignatures.Clear();
+                // Preserve any pre-arrived votes for the new view — only clear stale ones.
+                // Matches the selective clearing in HandleProposal fast-forward.
+                foreach (var key in _votes.Keys)
+                {
+                    if (key.View != newView)
+                        _votes.TryRemove(key, out _);
+                }
+                foreach (var key in _voteSignatures.Keys)
+                {
+                    if (key.View != newView)
+                        _voteSignatures.TryRemove(key, out _);
+                }
 
                 _logger.LogInformation("View changed to {View}", _currentView);
                 OnViewChange?.Invoke(_currentView);
