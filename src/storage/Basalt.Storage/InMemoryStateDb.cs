@@ -59,6 +59,16 @@ public sealed class InMemoryStateDb : IStateDatabase
         return hasher.Finalize();
     }
 
+    public IStateDatabase Fork()
+    {
+        var fork = new InMemoryStateDb();
+        foreach (var (addr, state) in _accounts)
+            fork._accounts[addr] = state;
+        foreach (var (key, value) in _storage)
+            fork._storage[key] = value;
+        return fork;
+    }
+
     public IEnumerable<(Address Address, AccountState State)> GetAllAccounts()
     {
         return _accounts.Select(kv => (kv.Key, kv.Value));

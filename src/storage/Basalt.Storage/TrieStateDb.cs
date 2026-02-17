@@ -77,6 +77,13 @@ public sealed class TrieStateDb : IStateDatabase
         return _worldTrie.RootHash;
     }
 
+    public IStateDatabase Fork()
+    {
+        var currentRoot = ComputeStateRoot();
+        var overlay = new OverlayTrieNodeStore(_nodeStore);
+        return new TrieStateDb(overlay, currentRoot);
+    }
+
     public IEnumerable<(Address Address, AccountState State)> GetAllAccounts()
     {
         // For the trie-backed store, we iterate over all leaves

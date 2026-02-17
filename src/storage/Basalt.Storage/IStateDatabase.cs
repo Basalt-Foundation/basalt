@@ -18,6 +18,13 @@ public interface IStateDatabase
     byte[]? GetStorage(Address contract, Hash256 key);
     void SetStorage(Address contract, Hash256 key, byte[] value);
     void DeleteStorage(Address contract, Hash256 key);
+
+    /// <summary>
+    /// Creates a lightweight fork of this state database.
+    /// Writes to the fork do not affect the original.
+    /// Used for speculative block building during consensus proposals.
+    /// </summary>
+    IStateDatabase Fork();
 }
 
 /// <summary>

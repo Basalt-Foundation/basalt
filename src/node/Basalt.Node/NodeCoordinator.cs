@@ -57,7 +57,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private BlockBuilder? _blockBuilder;
     private TransactionExecutor? _txExecutor;
     private Address _proposerAddress;
-    private Hash256 _myProposedBlockHash = Hash256.Zero;
 
     // Runtime
     private CancellationTokenSource? _cts;
@@ -378,23 +377,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
-            // Execute transactions if we didn't propose this block
-            var weProposed = hash == _myProposedBlockHash;
-            if (!weProposed && block.Transactions.Count > 0)
+            // All validators execute finalized transactions against canonical state.
+            // Proposals use a forked state, so the leader's live state is never speculatively mutated.
+            if (block.Transactions.Count > 0)
             {
-                _logger.LogInformation("Executing {TxCount} txs from block #{Number} (proposed by other validator)",
-                    block.Transactions.Count, block.Number);
                 for (int i = 0; i < block.Transactions.Count; i++)
                 {
                     _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
                 }
             }
-            else if (weProposed && block.Transactions.Count > 0)
-            {
-                _logger.LogInformation("Block #{Number} finalized with {TxCount} txs (we proposed, state already applied)",
-                    block.Number, block.Transactions.Count);
-            }
-            _myProposedBlockHash = Hash256.Zero;
 
             var result = _chainManager.AddBlock(block);
             if (result.IsSuccess)
@@ -506,14 +497,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock);
-        var block = _blockBuilder!.BuildBlock(pendingTxs, _stateDb, parentBlock.Header, _proposerAddress);
+        var proposalState = _stateDb.Fork();
+        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _consensus.ProposeBlock(blockData, block.Hash);
 
         if (proposal != null)
         {
-            _myProposedBlockHash = block.Hash;
             _gossip!.BroadcastConsensusMessage(proposal);
             _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, BlockTxs: {BlockTxs}",
                 block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, block.Transactions.Count);
@@ -540,14 +531,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock);
-        var block = _blockBuilder!.BuildBlock(pendingTxs, _stateDb, parentBlock.Header, _proposerAddress);
+        var proposalState = _stateDb.Fork();
+        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _pipelinedConsensus.StartRound(nextBlock, blockData, block.Hash);
 
         if (proposal != null)
         {
-            _myProposedBlockHash = block.Hash;
             _gossip!.BroadcastConsensusMessage(proposal);
             _logger.LogInformation("Proposed pipelined block #{Number}. Active rounds: {Active}",
                 nextBlock, _pipelinedConsensus.ActiveRoundCount);
