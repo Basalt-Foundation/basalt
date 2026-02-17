@@ -97,7 +97,15 @@ public class BasaltBftTests
     [Fact]
     public void FullConsensus_4Validators_FinalizeBlock()
     {
+        // This test exercises the leader-collected voting path:
+        // votes are sent only to the leader, leader builds aggregate QCs,
+        // non-leaders advance via HandleAggregateVote.
         var bfts = Enumerable.Range(0, 4).Select(CreateBft).ToArray();
+
+        // Capture aggregate votes from leader
+        var aggregates = new List<AggregateVoteMessage>();
+        foreach (var bft in bfts)
+            bft.OnAggregateVote += agg => aggregates.Add(agg);
 
         // Start round on all validators
         foreach (var bft in bfts)
@@ -112,7 +120,7 @@ public class BasaltBftTests
         var proposal = bfts[leaderIndex].ProposeBlock([0x01, 0x02, 0x03], blockHash);
         proposal.Should().NotBeNull();
 
-        // Other validators handle proposal and send PREPARE votes
+        // Other validators handle proposal and return PREPARE votes (sent to leader only)
         var prepareVotes = new List<ConsensusVoteMessage>();
         for (int i = 0; i < 4; i++)
         {
@@ -121,50 +129,72 @@ public class BasaltBftTests
             if (vote != null) prepareVotes.Add(vote);
         }
 
-        prepareVotes.Should().HaveCount(3); // 3 non-leader validators
+        prepareVotes.Should().HaveCount(3);
 
-        // Distribute PREPARE votes to all validators
-        var preCommitVotes = new List<ConsensusVoteMessage>();
+        // Send PREPARE votes to leader only (leader-collected)
+        aggregates.Clear();
         foreach (var vote in prepareVotes)
+            bfts[leaderIndex].HandleVote(vote);
+
+        // Leader should have built a PREPARE aggregate QC
+        aggregates.Should().ContainSingle(a => a.Phase == VotePhase.Prepare);
+        var prepareQC = aggregates.First(a => a.Phase == VotePhase.Prepare);
+
+        // Non-leaders receive PREPARE QC and return PRE-COMMIT votes
+        var preCommitVotes = new List<ConsensusVoteMessage>();
+        for (int i = 0; i < 4; i++)
         {
-            for (int i = 0; i < 4; i++)
-            {
-                var result = bfts[i].HandleVote(vote);
-                if (result != null) preCommitVotes.Add(result);
-            }
+            if (i == leaderIndex) continue;
+            var response = bfts[i].HandleAggregateVote(prepareQC);
+            if (response != null) preCommitVotes.Add(response);
         }
 
-        // Should have transitioned to PreCommit (quorum of 3 PREPARE votes reached)
-        preCommitVotes.Should().NotBeEmpty();
+        preCommitVotes.Should().HaveCount(3);
 
-        // Distribute PRE-COMMIT votes
-        var commitVotes = new List<ConsensusVoteMessage>();
+        // Send PRE-COMMIT votes to leader
+        aggregates.Clear();
         foreach (var vote in preCommitVotes)
+            bfts[leaderIndex].HandleVote(vote);
+
+        // Leader should have built a PRE-COMMIT aggregate QC
+        aggregates.Should().ContainSingle(a => a.Phase == VotePhase.PreCommit);
+        var preCommitQC = aggregates.First(a => a.Phase == VotePhase.PreCommit);
+
+        // Non-leaders receive PRE-COMMIT QC and return COMMIT votes
+        var commitVotes = new List<ConsensusVoteMessage>();
+        for (int i = 0; i < 4; i++)
         {
-            for (int i = 0; i < 4; i++)
-            {
-                var result = bfts[i].HandleVote(vote);
-                if (result != null) commitVotes.Add(result);
-            }
+            if (i == leaderIndex) continue;
+            var response = bfts[i].HandleAggregateVote(preCommitQC);
+            if (response != null) commitVotes.Add(response);
         }
 
-        commitVotes.Should().NotBeEmpty();
+        commitVotes.Should().HaveCount(3);
 
-        // Distribute COMMIT votes — should finalize
-        bool finalized = false;
+        // Send COMMIT votes to leader
+        aggregates.Clear();
+        var finalizedCount = 0;
         foreach (var bft in bfts)
-            bft.OnBlockFinalized += (hash, data) => finalized = true;
+            bft.OnBlockFinalized += (hash, data) => finalizedCount++;
 
         foreach (var vote in commitVotes)
+            bfts[leaderIndex].HandleVote(vote);
+
+        // Leader should have finalized and built a COMMIT aggregate QC
+        aggregates.Should().ContainSingle(a => a.Phase == VotePhase.Commit);
+        var commitQC = aggregates.First(a => a.Phase == VotePhase.Commit);
+        bfts[leaderIndex].State.Should().Be(ConsensusState.Finalized);
+
+        // Non-leaders receive COMMIT QC and finalize
+        for (int i = 0; i < 4; i++)
         {
-            for (int i = 0; i < 4; i++)
-                bfts[i].HandleVote(vote);
+            if (i == leaderIndex) continue;
+            bfts[i].HandleAggregateVote(commitQC);
         }
 
-        finalized.Should().BeTrue();
-
-        // At least one BFT should be in Finalized state
-        bfts.Any(b => b.State == ConsensusState.Finalized).Should().BeTrue();
+        // All validators should be finalized
+        foreach (var bft in bfts)
+            bft.State.Should().Be(ConsensusState.Finalized);
     }
 
     [Fact]

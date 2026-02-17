@@ -329,6 +329,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // When a block is finalized by consensus, apply it
         _consensus.OnBlockFinalized += HandleBlockFinalized;
 
+        // When the leader builds an aggregate QC, broadcast to all peers
+        _consensus.OnAggregateVote += aggregate =>
+            _gossip!.BroadcastConsensusMessage(aggregate);
+
         _consensus.OnViewChange += (view) =>
         {
             _logger.LogInformation("Consensus view changed to {View}", view);
@@ -545,6 +549,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
     }
 
+    private void SendVoteToLeader(ConsensusVoteMessage vote)
+    {
+        var leader = _validatorSet!.GetLeader(vote.ViewNumber);
+        if (leader.PeerId == _localPeerId)
+            _consensus!.HandleVote(vote);
+        else
+            _gossip!.SendToPeer(leader.PeerId, vote);
+    }
+
     private async void HandleNewConnection(PeerConnection connection)
     {
         try
@@ -676,6 +689,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             case ConsensusVoteMessage vote:
                 HandleConsensusVote(sender, vote);
+                break;
+
+            case AggregateVoteMessage aggregateVote:
+                HandleAggregateVote(sender, aggregateVote);
                 break;
 
             case ViewChangeMessage viewChange:
@@ -974,13 +991,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         ConsensusVoteMessage? vote;
         if (_config.UsePipelining)
-            vote = _pipelinedConsensus!.HandleProposal(proposal);
-        else
-            vote = _consensus!.HandleProposal(proposal);
-
-        if (vote != null)
         {
-            _gossip!.BroadcastConsensusMessage(vote);
+            vote = _pipelinedConsensus!.HandleProposal(proposal);
+            if (vote != null)
+                _gossip!.BroadcastConsensusMessage(vote);
+        }
+        else
+        {
+            vote = _consensus!.HandleProposal(proposal);
+            if (vote != null)
+                SendVoteToLeader(vote);
         }
     }
 
@@ -991,16 +1011,28 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (voterInfo != null)
             _lastActiveBlock[voterInfo.Address] = _chainManager.LatestBlockNumber;
 
-        ConsensusVoteMessage? response;
         if (_config.UsePipelining)
-            response = _pipelinedConsensus!.HandleVote(vote);
-        else
-            response = _consensus!.HandleVote(vote);
-
-        if (response != null)
         {
-            _gossip!.BroadcastConsensusMessage(response);
+            var response = _pipelinedConsensus!.HandleVote(vote);
+            if (response != null)
+                _gossip!.BroadcastConsensusMessage(response);
         }
+        else
+        {
+            // In sequential mode, HandleVote returns null (leader builds aggregate QCs
+            // internally and fires OnAggregateVote). No response to route.
+            _consensus!.HandleVote(vote);
+        }
+    }
+
+    private void HandleAggregateVote(PeerId sender, AggregateVoteMessage aggregate)
+    {
+        if (_config.UsePipelining)
+            return;
+
+        var response = _consensus!.HandleAggregateVote(aggregate);
+        if (response != null)
+            SendVoteToLeader(response);
     }
 
     private async Task ConnectToStaticPeers()

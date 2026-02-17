@@ -92,6 +92,24 @@ public sealed class ValidatorSet
     }
 
     /// <summary>
+    /// Get the index of a validator by their PeerId. Returns -1 if not found.
+    /// </summary>
+    public int GetValidatorIndex(PeerId id) =>
+        _byPeerId.TryGetValue(id, out var v) ? v.Index : -1;
+
+    /// <summary>
+    /// Returns validators whose bit is set in the bitmap (bit i = validator at index i).
+    /// </summary>
+    public IEnumerable<ValidatorInfo> GetValidatorsFromBitmap(ulong bitmap)
+    {
+        for (int i = 0; i < _validators.Count && i < 64; i++)
+        {
+            if ((bitmap & (1UL << i)) != 0)
+                yield return _validators[i];
+        }
+    }
+
+    /// <summary>
     /// Compute the quorum threshold (2f+1 for 3f+1 validators).
     /// BFT requires >2/3 agreement.
     /// </summary>

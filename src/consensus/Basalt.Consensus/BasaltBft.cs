@@ -48,6 +48,7 @@ public sealed class BasaltBft
     public event Action<ConsensusVoteMessage>? OnVote;
 #pragma warning restore CS0067
     public event Action<Hash256, byte[]>? OnBlockFinalized;
+    public event Action<AggregateVoteMessage>? OnAggregateVote;
     public event Action<ulong>? OnViewChange;
 
     /// <summary>
@@ -91,6 +92,9 @@ public sealed class BasaltBft
     /// Check if this node is the leader for the current view.
     /// </summary>
     public bool IsLeader => _validatorSet.GetLeader(_currentView).PeerId == _localPeerId;
+
+    private bool IsLeaderForView(ulong view) =>
+        _validatorSet.GetLeader(view).PeerId == _localPeerId;
 
     /// <summary>
     /// Start a new consensus round for the given block number.
@@ -139,7 +143,9 @@ public sealed class BasaltBft
 
         _logger.LogInformation("Proposed block {BlockHash} for height {Height}", blockHash, _currentBlockNumber);
 
-        // Self-vote PREPARE
+        // Self-vote PREPARE — CreateVote tracks the signature in _voteSignatures
+        // for future aggregation; HandlePrepareVote counts the PeerId in _votes.
+        CreateVote(VotePhase.Prepare, blockHash);
         HandlePrepareVote(_localPeerId, _currentView, blockHash);
 
         return proposal;
@@ -254,15 +260,9 @@ public sealed class BasaltBft
         _currentProposalData = proposal.BlockData;
         _state = ConsensusState.Preparing;
 
-        // Count leader's implicit PREPARE vote — the leader self-voted locally in
-        // ProposeBlock but doesn't broadcast a separate PREPARE message. Without this,
-        // non-leaders can only count (self + other non-leaders) = 3 of 4 votes max,
-        // and losing a single vote to network timing prevents quorum.
-        HandlePrepareVote(proposal.SenderId, _currentView, proposal.BlockHash);
-
-        // Self-count PREPARE vote before returning it for broadcast
+        // Non-leaders just create and return their PREPARE vote (sent to leader only).
+        // They don't self-count because they transition only via aggregate QCs.
         var vote = CreateVote(VotePhase.Prepare, proposal.BlockHash);
-        HandlePrepareVote(_localPeerId, _currentView, proposal.BlockHash);
         return vote;
     }
 
@@ -275,6 +275,10 @@ public sealed class BasaltBft
     /// </summary>
     public ConsensusVoteMessage? HandleVote(ConsensusVoteMessage vote)
     {
+        // Only the leader collects individual votes; non-leaders transition via aggregate QCs.
+        if (!IsLeaderForView(vote.ViewNumber))
+            return null;
+
         // Accept votes within ±2 of our current view to tolerate view divergence.
         var diff = vote.ViewNumber > _currentView
             ? vote.ViewNumber - _currentView
@@ -427,13 +431,18 @@ public sealed class BasaltBft
             if (votes.Count >= _validatorSet.QuorumThreshold && _state == ConsensusState.Preparing)
             {
                 _state = ConsensusState.PreCommitting;
-                _logger.LogInformation("PREPARE quorum reached ({Count}/{Threshold}), moving to PRE-COMMIT",
+                _logger.LogInformation("PREPARE quorum reached ({Count}/{Threshold}), building aggregate QC",
                     votes.Count, _validatorSet.QuorumThreshold);
 
-                // Self-count PRE-COMMIT before broadcast
+                // Build and broadcast aggregate PREPARE QC
+                var aggregate = BuildAggregateVote(view, blockHash, VotePhase.Prepare);
+                if (aggregate != null)
+                    OnAggregateVote?.Invoke(aggregate);
+
+                // Leader self-votes next phase and self-counts
                 var vote = CreateVote(VotePhase.PreCommit, blockHash);
                 HandlePreCommitVote(_localPeerId, view, blockHash);
-                return vote;
+                return null;
             }
         }
 
@@ -452,13 +461,18 @@ public sealed class BasaltBft
             if (votes.Count >= _validatorSet.QuorumThreshold && _state == ConsensusState.PreCommitting)
             {
                 _state = ConsensusState.Committing;
-                _logger.LogInformation("PRE-COMMIT quorum reached ({Count}/{Threshold}), moving to COMMIT",
+                _logger.LogInformation("PRE-COMMIT quorum reached ({Count}/{Threshold}), building aggregate QC",
                     votes.Count, _validatorSet.QuorumThreshold);
 
-                // Self-count COMMIT before broadcast
+                // Build and broadcast aggregate PRE-COMMIT QC
+                var aggregate = BuildAggregateVote(view, blockHash, VotePhase.PreCommit);
+                if (aggregate != null)
+                    OnAggregateVote?.Invoke(aggregate);
+
+                // Leader self-votes next phase and self-counts
                 var vote = CreateVote(VotePhase.Commit, blockHash);
                 HandleCommitVote(_localPeerId, view, blockHash);
-                return vote;
+                return null;
             }
         }
 
@@ -479,6 +493,11 @@ public sealed class BasaltBft
                 _state = ConsensusState.Finalized;
                 _logger.LogInformation("COMMIT quorum reached — block {Hash} finalized at height {Height}",
                     blockHash, _currentBlockNumber);
+
+                // Build and broadcast aggregate COMMIT QC
+                var aggregate = BuildAggregateVote(view, blockHash, VotePhase.Commit);
+                if (aggregate != null)
+                    OnAggregateVote?.Invoke(aggregate);
 
                 OnBlockFinalized?.Invoke(blockHash, _currentProposalData ?? []);
                 return null;
@@ -514,6 +533,140 @@ public sealed class BasaltBft
             VoterSignature = signature,
             VoterPublicKey = publicKey,
         };
+    }
+
+    private AggregateVoteMessage? BuildAggregateVote(ulong view, Hash256 blockHash, VotePhase phase)
+    {
+        var sigKey = (view, phase);
+        if (!_voteSignatures.TryGetValue(sigKey, out var sigList))
+            return null;
+
+        byte[][] sigs;
+        ulong bitmap = 0;
+        lock (sigList)
+        {
+            sigs = sigList.Select(s => s.Signature).ToArray();
+            foreach (var (sig, pubKey) in sigList)
+            {
+                // Find validator index by matching BLS public key
+                foreach (var v in _validatorSet.Validators)
+                {
+                    if (v.BlsPublicKey.ToArray().AsSpan().SequenceEqual(pubKey))
+                    {
+                        bitmap |= 1UL << v.Index;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (sigs.Length == 0)
+            return null;
+
+        var aggregated = _blsSigner.AggregateSignatures(sigs);
+
+        return new AggregateVoteMessage
+        {
+            SenderId = _localPeerId,
+            ViewNumber = view,
+            BlockNumber = _currentBlockNumber,
+            BlockHash = blockHash,
+            Phase = phase,
+            AggregateSignature = new BlsSignature(aggregated),
+            VoterBitmap = bitmap,
+        };
+    }
+
+    /// <summary>
+    /// Handle an aggregate vote (quorum certificate) from the leader.
+    /// Non-leaders use this to advance through consensus phases.
+    /// </summary>
+    public ConsensusVoteMessage? HandleAggregateVote(AggregateVoteMessage aggregate)
+    {
+        // Verify sender is the leader for this view
+        var leader = _validatorSet.GetLeader(aggregate.ViewNumber);
+        if (aggregate.SenderId != leader.PeerId)
+        {
+            _logger.LogWarning("Aggregate vote from non-leader {Sender} for view {View}",
+                aggregate.SenderId, aggregate.ViewNumber);
+            return null;
+        }
+
+        // Accept within ±2 view window
+        var diff = aggregate.ViewNumber > _currentView
+            ? aggregate.ViewNumber - _currentView
+            : _currentView - aggregate.ViewNumber;
+        if (diff > 2)
+            return null;
+
+        // Verify quorum: bitmap must have >= QuorumThreshold bits set
+        var voterCount = System.Numerics.BitOperations.PopCount(aggregate.VoterBitmap);
+        if (voterCount < _validatorSet.QuorumThreshold)
+        {
+            _logger.LogWarning("Aggregate vote has insufficient voters ({Count}/{Threshold})",
+                voterCount, _validatorSet.QuorumThreshold);
+            return null;
+        }
+
+        // Collect public keys from bitmap and verify aggregate BLS signature
+        var voters = _validatorSet.GetValidatorsFromBitmap(aggregate.VoterBitmap).ToArray();
+        var publicKeys = voters.Select(v => v.BlsPublicKey.ToArray()).ToArray();
+
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        aggregate.BlockHash.WriteTo(hashBytes);
+
+        if (!_blsSigner.VerifyAggregate(publicKeys, hashBytes, aggregate.AggregateSignature.ToArray()))
+        {
+            _logger.LogWarning("Invalid aggregate signature for view {View} phase {Phase}",
+                aggregate.ViewNumber, aggregate.Phase);
+            return null;
+        }
+
+        // Store proposal data if we have it
+        if (_currentProposalHash != aggregate.BlockHash)
+        {
+            _logger.LogDebug("Aggregate vote for unknown block hash {Hash}", aggregate.BlockHash);
+        }
+
+        return aggregate.Phase switch
+        {
+            VotePhase.Prepare => HandlePrepareQC(aggregate),
+            VotePhase.PreCommit => HandlePreCommitQC(aggregate),
+            VotePhase.Commit => HandleCommitQC(aggregate),
+            _ => null,
+        };
+    }
+
+    private ConsensusVoteMessage? HandlePrepareQC(AggregateVoteMessage aggregate)
+    {
+        if (_state != ConsensusState.Preparing)
+            return null;
+
+        _state = ConsensusState.PreCommitting;
+        _logger.LogInformation("PREPARE QC received, moving to PRE-COMMIT");
+        return CreateVote(VotePhase.PreCommit, aggregate.BlockHash);
+    }
+
+    private ConsensusVoteMessage? HandlePreCommitQC(AggregateVoteMessage aggregate)
+    {
+        if (_state != ConsensusState.PreCommitting)
+            return null;
+
+        _state = ConsensusState.Committing;
+        _logger.LogInformation("PRE-COMMIT QC received, moving to COMMIT");
+        return CreateVote(VotePhase.Commit, aggregate.BlockHash);
+    }
+
+    private ConsensusVoteMessage? HandleCommitQC(AggregateVoteMessage aggregate)
+    {
+        if (_state != ConsensusState.Committing)
+            return null;
+
+        _state = ConsensusState.Finalized;
+        _logger.LogInformation("COMMIT QC received — block {Hash} finalized at height {Height}",
+            aggregate.BlockHash, _currentBlockNumber);
+        OnBlockFinalized?.Invoke(aggregate.BlockHash, _currentProposalData ?? []);
+        return null;
     }
 
     private ViewChangeMessage RequestViewChange()

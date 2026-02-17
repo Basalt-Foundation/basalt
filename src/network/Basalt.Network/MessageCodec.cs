@@ -124,6 +124,10 @@ public static class MessageCodec
                 WriteViewChange(ref writer, viewChange);
                 break;
 
+            case AggregateVoteMessage aggregateVote:
+                WriteAggregateVote(ref writer, aggregateVote);
+                break;
+
             case SyncRequestMessage syncReq:
                 WriteSyncRequest(ref writer, syncReq);
                 break;
@@ -205,6 +209,7 @@ public static class MessageCodec
             MessageType.ConsensusProposal => ReadConsensusProposal(ref reader, senderId, timestamp),
             MessageType.ConsensusVote => ReadConsensusVote(ref reader, senderId, timestamp),
             MessageType.ConsensusViewChange => ReadViewChange(ref reader, senderId, timestamp),
+            MessageType.ConsensusAggregateVote => ReadAggregateVote(ref reader, senderId, timestamp),
             MessageType.SyncRequest => ReadSyncRequest(ref reader, senderId, timestamp),
             MessageType.SyncResponse => new SyncResponseMessage
             {
@@ -297,6 +302,16 @@ public static class MessageCodec
         writer.WriteUInt64(msg.ProposedView);
         writer.WriteBlsSignature(msg.VoterSignature);
         writer.WriteBlsPublicKey(msg.VoterPublicKey);
+    }
+
+    private static void WriteAggregateVote(ref BasaltWriter writer, AggregateVoteMessage msg)
+    {
+        writer.WriteUInt64(msg.ViewNumber);
+        writer.WriteUInt64(msg.BlockNumber);
+        writer.WriteHash256(msg.BlockHash);
+        writer.WriteByte((byte)msg.Phase);
+        writer.WriteBlsSignature(msg.AggregateSignature);
+        writer.WriteUInt64(msg.VoterBitmap);
     }
 
     private static void WriteSyncRequest(ref BasaltWriter writer, SyncRequestMessage msg)
@@ -436,6 +451,21 @@ public static class MessageCodec
         };
     }
 
+    private static AggregateVoteMessage ReadAggregateVote(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new AggregateVoteMessage
+        {
+            SenderId = senderId,
+            Timestamp = timestamp,
+            ViewNumber = reader.ReadUInt64(),
+            BlockNumber = reader.ReadUInt64(),
+            BlockHash = reader.ReadHash256(),
+            Phase = (VotePhase)reader.ReadByte(),
+            AggregateSignature = reader.ReadBlsSignature(),
+            VoterBitmap = reader.ReadUInt64(),
+        };
+    }
+
     private static SyncRequestMessage ReadSyncRequest(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
         return new SyncRequestMessage
@@ -519,6 +549,7 @@ public static class MessageCodec
             ConsensusProposalMessage m => 8 + 8 + 32 + 10 + m.BlockData.Length + BlsSignature.Size,
             ConsensusVoteMessage => 8 + 8 + 32 + 1 + BlsSignature.Size + BlsPublicKey.Size,
             ViewChangeMessage => 8 + 8 + BlsSignature.Size + BlsPublicKey.Size,
+            AggregateVoteMessage => 8 + 8 + 32 + 1 + BlsSignature.Size + 8,
             SyncRequestMessage => 8 + 4,
             SyncResponseMessage m => EstimateByteArraysSize(m.Blocks),
             IHaveMessage m => 10 + (m.MessageIds.Length * Hash256.Size),

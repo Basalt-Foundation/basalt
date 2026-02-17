@@ -436,6 +436,35 @@ public class MessageCodecTests
     }
 
     [Fact]
+    public void Roundtrip_AggregateVoteMessage()
+    {
+        var sig = new BlsSignature(new byte[96]);
+        var original = new AggregateVoteMessage
+        {
+            SenderId = MakePeerId(28),
+            Timestamp = 5500000000L,
+            ViewNumber = 7UL,
+            BlockNumber = 42UL,
+            BlockHash = MakeHash(90),
+            Phase = VotePhase.PreCommit,
+            AggregateSignature = sig,
+            VoterBitmap = 0b1011UL, // validators 0, 1, 3
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<AggregateVoteMessage>(deserialized);
+        AssertHeaderEquals(original, result);
+        Assert.Equal(original.ViewNumber, result.ViewNumber);
+        Assert.Equal(original.BlockNumber, result.BlockNumber);
+        Assert.Equal(original.BlockHash, result.BlockHash);
+        Assert.Equal(original.Phase, result.Phase);
+        Assert.Equal(original.AggregateSignature.ToArray(), result.AggregateSignature.ToArray());
+        Assert.Equal(original.VoterBitmap, result.VoterBitmap);
+    }
+
+    [Fact]
     public void Roundtrip_SyncRequestMessage()
     {
         var original = new SyncRequestMessage

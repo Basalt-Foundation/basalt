@@ -26,6 +26,7 @@ public enum MessageType : byte
     ConsensusProposal = 0x30,
     ConsensusVote = 0x31,
     ConsensusViewChange = 0x32,
+    ConsensusAggregateVote = 0x33,
 
     // Sync
     SyncRequest = 0x40,
@@ -179,6 +180,21 @@ public sealed class ViewChangeMessage : NetworkMessage
     public ulong ProposedView { get; init; }
     public BlsSignature VoterSignature { get; init; }
     public BlsPublicKey VoterPublicKey { get; init; }
+}
+
+/// <summary>
+/// Aggregated quorum certificate broadcast by the leader after collecting enough votes.
+/// Contains a single BLS aggregate signature and a bitmap of contributing validators.
+/// </summary>
+public sealed class AggregateVoteMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.ConsensusAggregateVote;
+    public ulong ViewNumber { get; init; }
+    public ulong BlockNumber { get; init; }
+    public Hash256 BlockHash { get; init; }
+    public VotePhase Phase { get; init; }
+    public BlsSignature AggregateSignature { get; init; }
+    public ulong VoterBitmap { get; init; }
 }
 
 /// <summary>
