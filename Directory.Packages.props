@@ -54,6 +54,7 @@
 
     <!-- CLI -->
     <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageVersion Include="Spectre.Console" Version="0.49.1" />
 
     <!-- Explorer (Blazor WASM) -->
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="9.0.0" />

@@ -177,7 +177,7 @@ public sealed class TransactionExecutor
 
             // Check contract exists
             var contractState = stateDb.GetAccount(tx.To);
-            if (contractState == null || contractState.Value.AccountType != AccountType.Contract)
+            if (contractState == null || contractState.Value.AccountType is not (AccountType.Contract or AccountType.SystemContract))
             {
                 return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
                     BasaltErrorCode.ContractNotFound, stateDb);

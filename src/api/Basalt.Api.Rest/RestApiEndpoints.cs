@@ -274,7 +274,7 @@ public static class RestApiEndpoints
                         });
 
                     var contractState = stateDb.GetAccount(contractAddr);
-                    if (contractState == null || contractState.Value.AccountType != Storage.AccountType.Contract)
+                    if (contractState == null || contractState.Value.AccountType is not (Storage.AccountType.Contract or Storage.AccountType.SystemContract))
                         return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                         {
                             Code = 400,
@@ -358,7 +358,7 @@ public static class RestApiEndpoints
                         });
 
                     var account = stateDb.GetAccount(contractAddr);
-                    if (account == null || account.Value.AccountType != Storage.AccountType.Contract)
+                    if (account == null || account.Value.AccountType is not (Storage.AccountType.Contract or Storage.AccountType.SystemContract))
                         return Microsoft.AspNetCore.Http.Results.NotFound();
 
                     // Load contract code from storage (0xFF01 key)
@@ -443,7 +443,7 @@ public static class RestApiEndpoints
                         });
 
                     var account = stateDb.GetAccount(contractAddr);
-                    if (account == null || account.Value.AccountType != Storage.AccountType.Contract)
+                    if (account == null || account.Value.AccountType is not (Storage.AccountType.Contract or Storage.AccountType.SystemContract))
                         return Microsoft.AspNetCore.Http.Results.NotFound();
 
                     // Load contract code from storage (0xFF01 key)

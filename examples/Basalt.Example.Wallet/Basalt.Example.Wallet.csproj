@@ -9,6 +9,9 @@
     <EnableAotAnalyzer>false</EnableAotAnalyzer>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Spectre.Console" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/sdk/Basalt.Sdk.Wallet/Basalt.Sdk.Wallet.csproj" />
   </ItemGroup>
 </Project>
