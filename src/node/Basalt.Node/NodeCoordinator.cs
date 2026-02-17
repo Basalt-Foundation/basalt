@@ -410,6 +410,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // so proposals from previous blocks' view changes must not carry over.
                 _proposalsByView.Clear();
 
+                // Announce finalized block to peers so their BestBlockNumber stays
+                // current.  Without this, TrySyncFromPeers can't find an up-to-date
+                // peer and validators that fall behind are unable to catch up.
+                _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
+
                 // Persist to RocksDB if available
                 PersistBlock(block, blockData);
 
