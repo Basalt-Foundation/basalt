@@ -50,6 +50,12 @@ public sealed class BasaltBft
     public event Action<Hash256, byte[]>? OnBlockFinalized;
     public event Action<ulong>? OnViewChange;
 
+    /// <summary>
+    /// Fired when a proposal arrives for a block number ahead of ours,
+    /// indicating this node is behind and needs to sync.
+    /// </summary>
+    public event Action<ulong>? OnBehindDetected;
+
     public BasaltBft(
         ValidatorSet validatorSet,
         PeerId localPeerId,
@@ -218,6 +224,20 @@ public sealed class BasaltBft
             return null;
         }
 
+        // Block number validation: after a view change, the leader may have already
+        // finalized our block and moved on. Accepting a proposal for a different block
+        // would cause chain desync when finalized.
+        if (proposal.BlockNumber != _currentBlockNumber)
+        {
+            if (proposal.BlockNumber > _currentBlockNumber)
+            {
+                _logger.LogWarning("Proposal for block {Block} but we are deciding block {Current} — we are behind",
+                    proposal.BlockNumber, _currentBlockNumber);
+                OnBehindDetected?.Invoke(proposal.BlockNumber);
+            }
+            return null;
+        }
+
         // Verify leader's signature (may already be verified for fast-forwarded proposals,
         // but the cost is negligible and keeps the code straightforward)
         Span<byte> hashBytes = stackalloc byte[Hash256.Size];
@@ -231,6 +251,12 @@ public sealed class BasaltBft
         _currentProposalHash = proposal.BlockHash;
         _currentProposalData = proposal.BlockData;
         _state = ConsensusState.Preparing;
+
+        // Reset view timeout from proposal acceptance, not from StartRound.
+        // Non-leaders may receive the proposal 500ms+ after StartRound (block building,
+        // network transit). Without this reset, the 2-second timeout measures idle wait
+        // time instead of actual consensus phase time, causing premature PRE-COMMIT timeouts.
+        _viewStartTime = DateTimeOffset.UtcNow;
 
         // Count leader's implicit PREPARE vote — the leader self-voted locally in
         // ProposeBlock but doesn't broadcast a separate PREPARE message. Without this,

@@ -339,6 +339,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             PruneProposalsByView(view);
         };
 
+        _consensus.OnBehindDetected += (blockNumber) =>
+        {
+            _logger.LogWarning("Consensus detected we are behind (need block #{Block}). Triggering sync.",
+                blockNumber);
+            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+        };
+
         _logger.LogInformation("Consensus: sequential mode (BasaltBft)");
     }
 

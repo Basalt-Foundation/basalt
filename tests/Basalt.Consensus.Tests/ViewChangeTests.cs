@@ -575,6 +575,58 @@ public class ViewChangeTests
         bfts[3].CurrentView.Should().Be(22, "V3 should converge to 22 via auto-join broadcast");
     }
 
+    // --- Block number validation in HandleProposal ---
+
+    [Fact]
+    public void HandleProposal_SameViewWrongBlockNumber_Rejected()
+    {
+        // After a view change, the leader may have finalized block N and propose block N+1.
+        // This node is still deciding block N. Even though views match, the proposal must
+        // be rejected to prevent chain desync.
+        var leader = _validatorSet.GetLeader(5);
+        var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader.PeerId);
+
+        // Leader at view 5, block 5 (simulating they finalized block 4 and started round 5)
+        var leaderBft = CreateBft(leaderIndex);
+        leaderBft.StartRound(5);
+        var proposal = leaderBft.ProposeBlock([0xAA], Blake3Hasher.Hash([0xAA]));
+        proposal.Should().NotBeNull();
+        proposal!.BlockNumber.Should().Be(5);
+
+        // Other node at view 5 but block 3 (behind — view changed without block finalization)
+        var otherIndex = (leaderIndex + 1) % 4;
+        var otherBft = CreateBft(otherIndex);
+        otherBft.StartRound(3); // Block 3, view 3
+        AdvanceViewViaViewChange(otherBft, 5); // View 5, block still 3
+        otherBft.CurrentView.Should().Be(5);
+        otherBft.CurrentBlockNumber.Should().Be(3);
+
+        var vote = otherBft.HandleProposal(proposal);
+        vote.Should().BeNull("should reject proposal for block 5 when deciding block 3");
+    }
+
+    [Fact]
+    public void HandleProposal_WrongBlockNumber_FiresOnBehindDetected()
+    {
+        var leader = _validatorSet.GetLeader(5);
+        var leaderIndex = _validators.ToList().FindIndex(v => v.PeerId == leader.PeerId);
+
+        var leaderBft = CreateBft(leaderIndex);
+        leaderBft.StartRound(5);
+        var proposal = leaderBft.ProposeBlock([0xBB], Blake3Hasher.Hash([0xBB]));
+
+        var otherIndex = (leaderIndex + 1) % 4;
+        var otherBft = CreateBft(otherIndex);
+        otherBft.StartRound(3);
+        AdvanceViewViaViewChange(otherBft, 5);
+
+        ulong? behindBlockNumber = null;
+        otherBft.OnBehindDetected += (bn) => behindBlockNumber = bn;
+
+        otherBft.HandleProposal(proposal!);
+        behindBlockNumber.Should().Be(5, "should fire OnBehindDetected with the leader's block number");
+    }
+
     // --- Fast-forward (proposal from future view) ---
 
     /// <summary>
