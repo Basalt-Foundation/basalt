@@ -30,11 +30,31 @@ public sealed class Transaction
     public UInt256 Value { get; init; }
     public ulong GasLimit { get; init; }
     public UInt256 GasPrice { get; init; }
+    public UInt256 MaxFeePerGas { get; init; } = UInt256.Zero;
+    public UInt256 MaxPriorityFeePerGas { get; init; } = UInt256.Zero;
     public byte[] Data { get; init; } = [];
     public byte Priority { get; init; }
     public uint ChainId { get; init; }
     public Signature Signature { get; init; }
     public PublicKey SenderPublicKey { get; init; }
+
+    /// <summary>Whether this is an EIP-1559 transaction (has explicit MaxFeePerGas).</summary>
+    public bool IsEip1559 => !MaxFeePerGas.IsZero;
+
+    /// <summary>Effective max fee: MaxFeePerGas for EIP-1559, GasPrice for legacy.</summary>
+    public UInt256 EffectiveMaxFee => IsEip1559 ? MaxFeePerGas : GasPrice;
+
+    /// <summary>
+    /// Compute the effective gas price given a base fee.
+    /// effectiveGasPrice = min(MaxFeePerGas, BaseFee + MaxPriorityFeePerGas)
+    /// For legacy transactions, returns GasPrice.
+    /// </summary>
+    public UInt256 EffectiveGasPrice(UInt256 baseFee)
+    {
+        if (!IsEip1559) return GasPrice;
+        var basePlusTip = baseFee + MaxPriorityFeePerGas;
+        return MaxFeePerGas < basePlusTip ? MaxFeePerGas : basePlusTip;
+    }
 
     private Hash256? _hash;
 
@@ -62,7 +82,7 @@ public sealed class Transaction
     /// </summary>
     public int GetSigningPayloadSize()
     {
-        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 4 + Data.Length + 1 + 4;
+        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 32 + 32 + 4 + Data.Length + 1 + 4;
     }
 
     public void WriteSigningPayload(Span<byte> buffer)
@@ -75,6 +95,8 @@ public sealed class Transaction
         writer.WriteUInt256(Value);
         writer.WriteUInt64(GasLimit);
         writer.WriteUInt256(GasPrice);
+        writer.WriteUInt256(MaxFeePerGas);
+        writer.WriteUInt256(MaxPriorityFeePerGas);
         writer.WriteBytes(Data);
         writer.WriteByte(Priority);
         writer.WriteUInt32(ChainId);
@@ -100,6 +122,8 @@ public sealed class Transaction
             Value = unsignedTx.Value,
             GasLimit = unsignedTx.GasLimit,
             GasPrice = unsignedTx.GasPrice,
+            MaxFeePerGas = unsignedTx.MaxFeePerGas,
+            MaxPriorityFeePerGas = unsignedTx.MaxPriorityFeePerGas,
             Data = unsignedTx.Data,
             Priority = unsignedTx.Priority,
             ChainId = unsignedTx.ChainId,
@@ -138,6 +162,7 @@ public sealed class TransactionReceipt
     public required bool Success { get; init; }
     public required BasaltErrorCode ErrorCode { get; init; }
     public required Hash256 PostStateRoot { get; init; }
+    public UInt256 EffectiveGasPrice { get; init; } = UInt256.Zero;
     public List<EventLog> Logs { get; init; } = [];
 }
 

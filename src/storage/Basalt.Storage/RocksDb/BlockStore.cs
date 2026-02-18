@@ -164,13 +164,14 @@ public sealed class BlockData
     public uint ChainId { get; init; }
     public ulong GasUsed { get; init; }
     public ulong GasLimit { get; init; }
+    public UInt256 BaseFee { get; init; } = UInt256.Zero;
     public uint ProtocolVersion { get; init; }
     public byte[] ExtraData { get; init; } = [];
     public Hash256[] TransactionHashes { get; init; } = [];
 
     public byte[] Encode()
     {
-        int size = 8 + Hash256.Size * 6 + 8 + Address.Size + 4 + 8 + 8 + 4 +
+        int size = 8 + Hash256.Size * 6 + 8 + Address.Size + 4 + 8 + 8 + 32 + 4 +
                    4 + ExtraData.Length +
                    4 + TransactionHashes.Length * Hash256.Size;
         var buffer = new byte[size];
@@ -187,6 +188,7 @@ public sealed class BlockData
         writer.WriteUInt32(ChainId);
         writer.WriteUInt64(GasUsed);
         writer.WriteUInt64(GasLimit);
+        writer.WriteUInt256(BaseFee);
         writer.WriteUInt32(ProtocolVersion);
         writer.WriteBytes(ExtraData);
         writer.WriteUInt32((uint)TransactionHashes.Length);
@@ -211,6 +213,7 @@ public sealed class BlockData
         var chainId = reader.ReadUInt32();
         var gasUsed = reader.ReadUInt64();
         var gasLimit = reader.ReadUInt64();
+        var baseFee = reader.ReadUInt256();
         var protocolVersion = reader.ReadUInt32();
         var extraData = reader.ReadBytes();
         var txCount = (int)reader.ReadUInt32();
@@ -231,6 +234,7 @@ public sealed class BlockData
             ChainId = chainId,
             GasUsed = gasUsed,
             GasLimit = gasLimit,
+            BaseFee = baseFee,
             ProtocolVersion = protocolVersion,
             ExtraData = extraData.ToArray(),
             TransactionHashes = txHashes,

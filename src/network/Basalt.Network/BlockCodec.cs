@@ -14,16 +14,17 @@ public static class BlockCodec
 {
     // Fixed-size portion of a serialized transaction:
     // Type(1) + Nonce(8) + Sender(20) + To(20) + Value(32) + GasLimit(8) + GasPrice(32)
-    // + Priority(1) + ChainId(4) + Signature(64) + SenderPublicKey(32) = 222 bytes
+    // + MaxFeePerGas(32) + MaxPriorityFeePerGas(32)
+    // + Priority(1) + ChainId(4) + Signature(64) + SenderPublicKey(32) = 286 bytes
     // Plus variable: varint length prefix + Data bytes
-    private const int TxFixedSize = 222;
+    private const int TxFixedSize = 286;
 
     // Fixed-size portion of a serialized block header:
     // Number(8) + ParentHash(32) + StateRoot(32) + TransactionsRoot(32) + ReceiptsRoot(32)
-    // + Timestamp(8) + Proposer(20) + ChainId(4) + GasUsed(8) + GasLimit(8)
-    // + ProtocolVersion(4) = 188 bytes
+    // + Timestamp(8) + Proposer(20) + ChainId(4) + GasUsed(8) + GasLimit(8) + BaseFee(32)
+    // + ProtocolVersion(4) = 220 bytes
     // Plus variable: varint length prefix + ExtraData bytes
-    private const int HeaderFixedSize = 188;
+    private const int HeaderFixedSize = 220;
 
     /// <summary>
     /// Serialize a <see cref="Transaction"/> into a byte array suitable for network transmission.
@@ -150,7 +151,9 @@ public static class BlockCodec
         writer.WriteUInt256(tx.Value);           // 5. Value
         writer.WriteUInt64(tx.GasLimit);         // 6. GasLimit
         writer.WriteUInt256(tx.GasPrice);        // 7. GasPrice
-        writer.WriteBytes(tx.Data ?? []);        // 8. Data (varint length-prefixed)
+        writer.WriteUInt256(tx.MaxFeePerGas);    // 8. MaxFeePerGas
+        writer.WriteUInt256(tx.MaxPriorityFeePerGas); // 9. MaxPriorityFeePerGas
+        writer.WriteBytes(tx.Data ?? []);        // 10. Data (varint length-prefixed)
         writer.WriteByte(tx.Priority);           // 9. Priority
         writer.WriteUInt32(tx.ChainId);          // 10. ChainId
         writer.WriteSignature(tx.Signature);     // 11. Signature
@@ -169,6 +172,8 @@ public static class BlockCodec
         var value = reader.ReadUInt256();
         var gasLimit = reader.ReadUInt64();
         var gasPrice = reader.ReadUInt256();
+        var maxFeePerGas = reader.ReadUInt256();
+        var maxPriorityFeePerGas = reader.ReadUInt256();
         var data = reader.ReadBytes().ToArray();
         var priority = reader.ReadByte();
         var chainId = reader.ReadUInt32();
@@ -184,6 +189,8 @@ public static class BlockCodec
             Value = value,
             GasLimit = gasLimit,
             GasPrice = gasPrice,
+            MaxFeePerGas = maxFeePerGas,
+            MaxPriorityFeePerGas = maxPriorityFeePerGas,
             Data = data,
             Priority = priority,
             ChainId = chainId,
@@ -207,6 +214,7 @@ public static class BlockCodec
         writer.WriteUInt32(header.ChainId);
         writer.WriteUInt64(header.GasUsed);
         writer.WriteUInt64(header.GasLimit);
+        writer.WriteUInt256(header.BaseFee);
         writer.WriteUInt32(header.ProtocolVersion);
         writer.WriteBytes(header.ExtraData ?? []);
     }
@@ -226,6 +234,7 @@ public static class BlockCodec
         var chainId = reader.ReadUInt32();
         var gasUsed = reader.ReadUInt64();
         var gasLimit = reader.ReadUInt64();
+        var baseFee = reader.ReadUInt256();
         var protocolVersion = reader.ReadUInt32();
         var extraData = reader.ReadBytes().ToArray();
 
@@ -241,6 +250,7 @@ public static class BlockCodec
             ChainId = chainId,
             GasUsed = gasUsed,
             GasLimit = gasLimit,
+            BaseFee = baseFee,
             ProtocolVersion = protocolVersion,
             ExtraData = extraData,
         };

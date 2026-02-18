@@ -19,6 +19,7 @@ public sealed class BlockHeader
     public uint ChainId { get; init; }
     public ulong GasUsed { get; init; }
     public ulong GasLimit { get; init; }
+    public UInt256 BaseFee { get; init; } = UInt256.Zero;
     public uint ProtocolVersion { get; init; } = 1;
     public byte[] ExtraData { get; init; } = [];
 
@@ -45,7 +46,7 @@ public sealed class BlockHeader
     public int GetSerializedSize()
     {
         return 8 + Hash256.Size + Hash256.Size + Hash256.Size + Hash256.Size +
-               8 + Address.Size + 4 + 8 + 8 + 4 + 4 + ExtraData.Length;
+               8 + Address.Size + 4 + 8 + 8 + 32 + 4 + 4 + ExtraData.Length;
     }
 
     public void WriteTo(ref BasaltWriter writer)
@@ -60,6 +61,7 @@ public sealed class BlockHeader
         writer.WriteUInt32(ChainId);
         writer.WriteUInt64(GasUsed);
         writer.WriteUInt64(GasLimit);
+        writer.WriteUInt256(BaseFee);
         writer.WriteUInt32(ProtocolVersion);
         writer.WriteBytes(ExtraData);
     }

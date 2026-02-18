@@ -36,6 +36,10 @@ public sealed class BlockBuilder
         var receipts = new List<TransactionReceipt>();
         ulong totalGasUsed = 0;
 
+        // Compute EIP-1559 base fee from parent block
+        var baseFee = BaseFeeCalculator.Calculate(
+            parentHeader.BaseFee, parentHeader.GasUsed, parentHeader.GasLimit, _chainParams);
+
         // Create a preliminary header for receipt generation
         var blockNumber = parentHeader.Number + 1;
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -52,6 +56,7 @@ public sealed class BlockBuilder
             ChainId = _chainParams.ChainId,
             GasUsed = 0,
             GasLimit = _chainParams.BlockGasLimit,
+            BaseFee = baseFee,
         };
 
         foreach (var tx in pendingTransactions)
@@ -62,7 +67,7 @@ public sealed class BlockBuilder
             if (totalGasUsed + tx.GasLimit > _chainParams.BlockGasLimit)
                 continue;
 
-            var validation = _validator.Validate(tx, stateDb);
+            var validation = _validator.Validate(tx, stateDb, baseFee);
             if (!validation.IsSuccess)
             {
                 _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
@@ -93,6 +98,7 @@ public sealed class BlockBuilder
             ChainId = _chainParams.ChainId,
             GasUsed = totalGasUsed,
             GasLimit = _chainParams.BlockGasLimit,
+            BaseFee = baseFee,
         };
 
         return new Block

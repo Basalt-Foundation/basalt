@@ -398,10 +398,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             // Proposals use a forked state, so the leader's live state is never speculatively mutated.
             if (block.Transactions.Count > 0)
             {
+                var receipts = new List<TransactionReceipt>(block.Transactions.Count);
                 for (int i = 0; i < block.Transactions.Count; i++)
                 {
-                    _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                    var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                    receipts.Add(receipt);
                 }
+                block.Receipts = receipts;
             }
 
             var result = _chainManager.AddBlock(block);
@@ -425,6 +428,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Persist to RocksDB if available
                 PersistBlock(block, blockData);
+                PersistReceipts(block.Receipts);
 
                 // Check for inactive validators and slash
                 CheckInactiveValidators(block.Number);
@@ -876,10 +880,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (block.Number != _chainManager.LatestBlockNumber + 1)
                     continue;
 
-                // Execute transactions
-                for (int i = 0; i < block.Transactions.Count; i++)
+                // Execute transactions and capture receipts
+                if (block.Transactions.Count > 0)
                 {
-                    _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
+                    for (int i = 0; i < block.Transactions.Count; i++)
+                    {
+                        var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                        receipts.Add(receipt);
+                    }
+                    block.Receipts = receipts;
                 }
 
                 var result = _chainManager.AddBlock(block);
@@ -887,6 +897,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _mempool.RemoveConfirmed(block.Transactions);
                     PersistBlock(block, blockBytes);
+                    PersistReceipts(block.Receipts);
 
                     // Apply epoch transitions for blocks received via gossip
                     var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -953,10 +964,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
                 }
 
-                // Execute transactions
-                for (int i = 0; i < block.Transactions.Count; i++)
+                // Execute transactions and capture receipts
+                if (block.Transactions.Count > 0)
                 {
-                    _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
+                    for (int i = 0; i < block.Transactions.Count; i++)
+                    {
+                        var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                        receipts.Add(receipt);
+                    }
+                    block.Receipts = receipts;
                 }
 
                 var result = _chainManager.AddBlock(block);
@@ -964,6 +981,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _mempool.RemoveConfirmed(block.Transactions);
                     PersistBlock(block, blockBytes);
+                    PersistReceipts(block.Receipts);
                     applied++;
 
                     // Apply epoch transitions for synced blocks — without this,
@@ -1486,6 +1504,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 ChainId = block.Header.ChainId,
                 GasUsed = block.Header.GasUsed,
                 GasLimit = block.Header.GasLimit,
+                BaseFee = block.Header.BaseFee,
                 ProtocolVersion = block.Header.ProtocolVersion,
                 ExtraData = block.Header.ExtraData,
                 TransactionHashes = block.Transactions.Select(t => t.Hash).ToArray(),
@@ -1496,6 +1515,42 @@ public sealed class NodeCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to persist block #{Number}", block.Number);
+        }
+    }
+
+    private void PersistReceipts(List<TransactionReceipt>? receipts)
+    {
+        if (_receiptStore == null || receipts == null || receipts.Count == 0)
+            return;
+
+        try
+        {
+            var receiptDataList = receipts.Select(r => new ReceiptData
+            {
+                TransactionHash = r.TransactionHash,
+                BlockHash = r.BlockHash,
+                BlockNumber = r.BlockNumber,
+                TransactionIndex = r.TransactionIndex,
+                From = r.From,
+                To = r.To,
+                GasUsed = r.GasUsed,
+                Success = r.Success,
+                ErrorCode = (int)r.ErrorCode,
+                PostStateRoot = r.PostStateRoot,
+                EffectiveGasPrice = r.EffectiveGasPrice,
+                Logs = (r.Logs ?? []).Select(l => new LogData
+                {
+                    Contract = l.Contract,
+                    EventSignature = l.EventSignature,
+                    Topics = l.Topics ?? [],
+                    Data = l.Data ?? [],
+                }).ToArray(),
+            });
+            _receiptStore.PutReceipts(receiptDataList);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist {Count} receipts", receipts.Count);
         }
     }
 

@@ -21,6 +21,7 @@ public sealed class BlockResult
     public string Proposer { get; set; } = "";
     public ulong GasUsed { get; set; }
     public ulong GasLimit { get; set; }
+    public string BaseFee { get; set; } = "0";
     public int TransactionCount { get; set; }
 
     public static BlockResult FromBlock(Block block) => new()
@@ -33,6 +34,7 @@ public sealed class BlockResult
         Proposer = block.Header.Proposer.ToHexString(),
         GasUsed = block.Header.GasUsed,
         GasLimit = block.Header.GasLimit,
+        BaseFee = block.Header.BaseFee.ToString(),
         TransactionCount = block.Transactions.Count,
     };
 }
@@ -62,6 +64,8 @@ public sealed class TransactionInput
     public string Value { get; set; } = "0";
     public ulong GasLimit { get; set; }
     public string GasPrice { get; set; } = "1";
+    public string? MaxFeePerGas { get; set; }
+    public string? MaxPriorityFeePerGas { get; set; }
     public string? Data { get; set; }
     public byte Priority { get; set; }
     public uint ChainId { get; set; }
@@ -79,6 +83,8 @@ public sealed class TransactionInput
             Value = UInt256.Parse(Value),
             GasLimit = GasLimit,
             GasPrice = UInt256.Parse(GasPrice),
+            MaxFeePerGas = string.IsNullOrEmpty(MaxFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxFeePerGas),
+            MaxPriorityFeePerGas = string.IsNullOrEmpty(MaxPriorityFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxPriorityFeePerGas),
             Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x") ? Data[2..] : Data),
             Priority = Priority,
             ChainId = ChainId,
@@ -86,4 +92,51 @@ public sealed class TransactionInput
             SenderPublicKey = new PublicKey(Convert.FromHexString(SenderPublicKey.StartsWith("0x") ? SenderPublicKey[2..] : SenderPublicKey)),
         };
     }
+}
+
+public sealed class ReceiptResult
+{
+    public string TransactionHash { get; set; } = "";
+    public string BlockHash { get; set; } = "";
+    public ulong BlockNumber { get; set; }
+    public int TransactionIndex { get; set; }
+    public string From { get; set; } = "";
+    public string To { get; set; } = "";
+    public ulong GasUsed { get; set; }
+    public bool Success { get; set; }
+    public string ErrorCode { get; set; } = "";
+    public string PostStateRoot { get; set; } = "";
+    public string EffectiveGasPrice { get; set; } = "0";
+    public List<EventLogResult> Logs { get; set; } = [];
+}
+
+public sealed class EventLogResult
+{
+    public string Contract { get; set; } = "";
+    public string EventSignature { get; set; } = "";
+    public List<string> Topics { get; set; } = [];
+    public string? Data { get; set; }
+}
+
+public sealed class TransactionDetailResult
+{
+    public string Hash { get; set; } = "";
+    public string Type { get; set; } = "";
+    public ulong Nonce { get; set; }
+    public string Sender { get; set; } = "";
+    public string To { get; set; } = "";
+    public string Value { get; set; } = "0";
+    public ulong GasLimit { get; set; }
+    public string GasPrice { get; set; } = "0";
+    public string? MaxFeePerGas { get; set; }
+    public string? MaxPriorityFeePerGas { get; set; }
+    public ulong? BlockNumber { get; set; }
+    public string? BlockHash { get; set; }
+    public int? TransactionIndex { get; set; }
+    // Receipt fields
+    public ulong? GasUsed { get; set; }
+    public bool? Success { get; set; }
+    public string? ErrorCode { get; set; }
+    public string? EffectiveGasPrice { get; set; }
+    public List<EventLogResult>? Logs { get; set; }
 }

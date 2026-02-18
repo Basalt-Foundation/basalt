@@ -76,6 +76,24 @@ public sealed class StakingBuilder
     }
 
     /// <summary>
+    /// Sets the maximum fee per gas (EIP-1559).
+    /// </summary>
+    public StakingBuilder WithMaxFeePerGas(UInt256 maxFeePerGas)
+    {
+        _inner.WithMaxFeePerGas(maxFeePerGas);
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum priority fee (tip) per gas (EIP-1559).
+    /// </summary>
+    public StakingBuilder WithMaxPriorityFeePerGas(UInt256 maxPriorityFeePerGas)
+    {
+        _inner.WithMaxPriorityFeePerGas(maxPriorityFeePerGas);
+        return this;
+    }
+
+    /// <summary>
     /// Sets the chain ID for replay protection. Defaults to 1.
     /// </summary>
     /// <param name="chainId">The chain identifier.</param>

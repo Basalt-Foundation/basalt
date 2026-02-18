@@ -18,6 +18,8 @@ public sealed class TransactionBuilder
     private UInt256 _value;
     private ulong _gasLimit = 21_000;
     private UInt256 _gasPrice = UInt256.One;
+    private UInt256 _maxFeePerGas = UInt256.Zero;
+    private UInt256 _maxPriorityFeePerGas = UInt256.Zero;
     private byte[] _data = [];
     private byte _priority;
     private uint _chainId = 1;
@@ -127,6 +129,30 @@ public sealed class TransactionBuilder
     }
 
     /// <summary>
+    /// Sets the maximum fee per gas (EIP-1559). When non-zero, the transaction
+    /// uses EIP-1559 fee pricing instead of legacy gas price.
+    /// </summary>
+    /// <param name="maxFeePerGas">The maximum total fee per gas unit.</param>
+    /// <returns>This builder for chaining.</returns>
+    public TransactionBuilder WithMaxFeePerGas(UInt256 maxFeePerGas)
+    {
+        _maxFeePerGas = maxFeePerGas;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum priority fee (tip) per gas (EIP-1559).
+    /// The actual tip is min(MaxPriorityFeePerGas, MaxFeePerGas - BaseFee).
+    /// </summary>
+    /// <param name="maxPriorityFeePerGas">The maximum priority fee per gas unit.</param>
+    /// <returns>This builder for chaining.</returns>
+    public TransactionBuilder WithMaxPriorityFeePerGas(UInt256 maxPriorityFeePerGas)
+    {
+        _maxPriorityFeePerGas = maxPriorityFeePerGas;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the raw data payload for the transaction.
     /// </summary>
     /// <param name="data">The data bytes.</param>
@@ -175,6 +201,8 @@ public sealed class TransactionBuilder
             Value = _value,
             GasLimit = _gasLimit,
             GasPrice = _gasPrice,
+            MaxFeePerGas = _maxFeePerGas,
+            MaxPriorityFeePerGas = _maxPriorityFeePerGas,
             Data = _data,
             Priority = _priority,
             ChainId = _chainId,

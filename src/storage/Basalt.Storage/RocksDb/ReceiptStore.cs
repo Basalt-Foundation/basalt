@@ -67,11 +67,12 @@ public sealed class ReceiptData
     public bool Success { get; init; }
     public int ErrorCode { get; init; }
     public Hash256 PostStateRoot { get; init; }
+    public UInt256 EffectiveGasPrice { get; init; } = UInt256.Zero;
     public LogData[] Logs { get; init; } = [];
 
     public byte[] Encode()
     {
-        int size = Hash256.Size * 3 + 8 + 4 + Address.Size * 2 + 8 + 1 + 4 + 4;
+        int size = Hash256.Size * 3 + 8 + 4 + Address.Size * 2 + 8 + 1 + 4 + 32 + 4;
         foreach (var log in Logs)
             size += Address.Size + Hash256.Size + 4 + log.Topics.Length * Hash256.Size + 4 + log.Data.Length;
 
@@ -88,6 +89,7 @@ public sealed class ReceiptData
         writer.WriteByte(Success ? (byte)1 : (byte)0);
         writer.WriteInt32(ErrorCode);
         writer.WriteHash256(PostStateRoot);
+        writer.WriteUInt256(EffectiveGasPrice);
         writer.WriteUInt32((uint)Logs.Length);
 
         foreach (var log in Logs)
@@ -117,6 +119,7 @@ public sealed class ReceiptData
         var success = reader.ReadByte() == 1;
         var errorCode = reader.ReadInt32();
         var postStateRoot = reader.ReadHash256();
+        var effectiveGasPrice = reader.ReadUInt256();
         var logCount = (int)reader.ReadUInt32();
         var logs = new LogData[logCount];
 
@@ -151,6 +154,7 @@ public sealed class ReceiptData
             Success = success,
             ErrorCode = errorCode,
             PostStateRoot = postStateRoot,
+            EffectiveGasPrice = effectiveGasPrice,
             Logs = logs,
         };
     }

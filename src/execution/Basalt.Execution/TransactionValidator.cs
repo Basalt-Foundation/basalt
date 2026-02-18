@@ -17,9 +17,14 @@ public sealed class TransactionValidator
     }
 
     /// <summary>
-    /// Validate a transaction against the current state.
+    /// Validate a transaction against the current state (legacy — no base fee check).
     /// </summary>
-    public BasaltResult Validate(Transaction tx, IStateDatabase stateDb)
+    public BasaltResult Validate(Transaction tx, IStateDatabase stateDb) => Validate(tx, stateDb, UInt256.Zero);
+
+    /// <summary>
+    /// Validate a transaction against the current state with EIP-1559 base fee.
+    /// </summary>
+    public BasaltResult Validate(Transaction tx, IStateDatabase stateDb, UInt256 baseFee)
     {
         // Step 1: Verify signature
         if (!tx.VerifySignature())
@@ -40,19 +45,31 @@ public sealed class TransactionValidator
         if (tx.Nonce != expectedNonce)
             return BasaltResult.Error(BasaltErrorCode.InvalidNonce, $"Expected nonce {expectedNonce}, got {tx.Nonce}.");
 
-        // Step 5: Check balance (value + gas cost)
-        var gasCost = tx.GasPrice * new UInt256(tx.GasLimit);
+        // Step 5: Check balance (value + max gas cost)
+        var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
         var totalCost = tx.Value + gasCost;
         var balance = account?.Balance ?? UInt256.Zero;
         if (balance < totalCost)
             return BasaltResult.Error(BasaltErrorCode.InsufficientBalance, "Insufficient balance for value + gas.");
 
-        // Step 6: Check gas limits
+        // Step 6: Check gas limits and fee constraints
         if (tx.GasLimit > _chainParams.BlockGasLimit)
             return BasaltResult.Error(BasaltErrorCode.GasLimitExceeded, "Transaction gas limit exceeds block gas limit.");
 
-        if (tx.GasPrice < _chainParams.MinGasPrice)
-            return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "Gas price below minimum.");
+        if (tx.IsEip1559)
+        {
+            // EIP-1559: MaxFeePerGas must cover the current base fee
+            if (!baseFee.IsZero && tx.MaxFeePerGas < baseFee)
+                return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "MaxFeePerGas below current base fee.");
+        }
+        else
+        {
+            // Legacy: GasPrice must meet minimum and cover base fee
+            if (tx.GasPrice < _chainParams.MinGasPrice)
+                return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "Gas price below minimum.");
+            if (!baseFee.IsZero && tx.GasPrice < baseFee)
+                return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "Gas price below current base fee.");
+        }
 
         // Step 7: Check data size
         if ((uint)tx.Data.Length > _chainParams.MaxTransactionDataBytes)

@@ -125,6 +125,7 @@ public sealed class ChainManager
             ChainId = chainParams.ChainId,
             GasUsed = 0,
             GasLimit = chainParams.BlockGasLimit,
+            BaseFee = chainParams.InitialBaseFee,
         };
 
         var genesis = new Block

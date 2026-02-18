@@ -22,8 +22,87 @@ public static class RestApiEndpoints
         Mempool mempool,
         TransactionValidator validator,
         Storage.IStateDatabase stateDb,
-        IContractRuntime? contractRuntime = null)
+        IContractRuntime? contractRuntime = null,
+        Storage.RocksDb.ReceiptStore? receiptStore = null)
     {
+        // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
+        Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
+        {
+            if (receiptStore != null)
+            {
+                var stored = receiptStore.GetReceipt(txHash);
+                if (stored != null) return stored;
+            }
+
+            // Fallback: scan recent blocks for in-memory receipts (standalone mode)
+            var latestNum = chainManager.LatestBlockNumber;
+            var scanDepth = Math.Min(latestNum + 1, 1000UL);
+            for (ulong i = 0; i < scanDepth; i++)
+            {
+                var block = chainManager.GetBlockByNumber(latestNum - i);
+                if (block?.Receipts == null) continue;
+                foreach (var r in block.Receipts)
+                {
+                    if (r.TransactionHash == txHash)
+                    {
+                        return new Storage.RocksDb.ReceiptData
+                        {
+                            TransactionHash = r.TransactionHash,
+                            BlockHash = r.BlockHash,
+                            BlockNumber = r.BlockNumber,
+                            TransactionIndex = r.TransactionIndex,
+                            From = r.From,
+                            To = r.To,
+                            GasUsed = r.GasUsed,
+                            Success = r.Success,
+                            ErrorCode = (int)r.ErrorCode,
+                            PostStateRoot = r.PostStateRoot,
+                            EffectiveGasPrice = r.EffectiveGasPrice,
+                            Logs = (r.Logs ?? []).Select(l => new Storage.RocksDb.LogData
+                            {
+                                Contract = l.Contract,
+                                EventSignature = l.EventSignature,
+                                Topics = l.Topics ?? [],
+                                Data = l.Data ?? [],
+                            }).ToArray(),
+                        };
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Helper: get receipt for a tx at a known block index (fast path)
+        Storage.RocksDb.ReceiptData? GetReceiptForTx(Block block, int txIndex, Hash256 txHash)
+        {
+            if (block.Receipts != null && txIndex < block.Receipts.Count)
+            {
+                var r = block.Receipts[txIndex];
+                return new Storage.RocksDb.ReceiptData
+                {
+                    TransactionHash = r.TransactionHash,
+                    BlockHash = r.BlockHash,
+                    BlockNumber = r.BlockNumber,
+                    TransactionIndex = r.TransactionIndex,
+                    From = r.From,
+                    To = r.To,
+                    GasUsed = r.GasUsed,
+                    Success = r.Success,
+                    ErrorCode = (int)r.ErrorCode,
+                    PostStateRoot = r.PostStateRoot,
+                    EffectiveGasPrice = r.EffectiveGasPrice,
+                    Logs = (r.Logs ?? []).Select(l => new Storage.RocksDb.LogData
+                    {
+                        Contract = l.Contract,
+                        EventSignature = l.EventSignature,
+                        Topics = l.Topics ?? [],
+                        Data = l.Data ?? [],
+                    }).ToArray(),
+                };
+            }
+            return receiptStore?.GetReceipt(txHash);
+        }
+
         // POST /v1/transactions
         app.MapPost("/v1/transactions", (TransactionRequest request) =>
         {
@@ -140,7 +219,7 @@ public static class RestApiEndpoints
                 {
                     var tx = block.Transactions[j];
                     if (tx.Sender == addr || tx.To == addr)
-                        transactions.Add(TransactionDetailResponse.FromTransaction(tx, block, j));
+                        transactions.Add(TransactionDetailResponse.FromTransaction(tx, block, j, GetReceiptForTx(block, j, tx.Hash)));
                 }
             }
 
@@ -202,7 +281,7 @@ public static class RestApiEndpoints
                 return Microsoft.AspNetCore.Http.Results.NotFound();
 
             var txs = block.Transactions.Select((tx, i) =>
-                TransactionDetailResponse.FromTransaction(tx, block, i)).ToArray();
+                TransactionDetailResponse.FromTransaction(tx, block, i, GetReceiptForTx(block, i, tx.Hash))).ToArray();
 
             return Microsoft.AspNetCore.Http.Results.Ok(txs);
         });
@@ -219,7 +298,7 @@ public static class RestApiEndpoints
                 var block = chainManager.GetBlockByNumber(latestNum - i);
                 if (block == null) continue;
                 for (int j = 0; j < block.Transactions.Count && transactions.Count < maxTxs; j++)
-                    transactions.Add(TransactionDetailResponse.FromTransaction(block.Transactions[j], block, j));
+                    transactions.Add(TransactionDetailResponse.FromTransaction(block.Transactions[j], block, j, GetReceiptForTx(block, j, block.Transactions[j].Hash)));
             }
 
             return Microsoft.AspNetCore.Http.Results.Ok(transactions.ToArray());
@@ -249,11 +328,29 @@ public static class RestApiEndpoints
                     var tx = block.Transactions[j];
                     if (tx.Hash == targetHash)
                         return Microsoft.AspNetCore.Http.Results.Ok(
-                            TransactionDetailResponse.FromTransaction(tx, block, j));
+                            TransactionDetailResponse.FromTransaction(tx, block, j, GetReceiptForTx(block, j, tx.Hash)));
                 }
             }
 
             return Microsoft.AspNetCore.Http.Results.NotFound();
+        });
+
+        // GET /v1/receipts/{hash}
+        app.MapGet("/v1/receipts/{hash}", (string hash) =>
+        {
+            var normalized = hash.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hash[2..] : hash;
+            if (!Hash256.TryFromHexString(normalized, out var targetHash))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                {
+                    Code = 400,
+                    Message = "Invalid transaction hash.",
+                });
+
+            var receipt = LookupReceipt(targetHash);
+            if (receipt == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            return Microsoft.AspNetCore.Http.Results.Ok(ReceiptResponse.FromReceiptData(receipt));
         });
 
         // POST /v1/call — read-only contract call (eth_call equivalent)
@@ -580,6 +677,8 @@ public sealed class TransactionRequest
     [JsonPropertyName("value")] public string Value { get; set; } = "0";
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
     [JsonPropertyName("gasPrice")] public string GasPrice { get; set; } = "1";
+    [JsonPropertyName("maxFeePerGas")] public string? MaxFeePerGas { get; set; }
+    [JsonPropertyName("maxPriorityFeePerGas")] public string? MaxPriorityFeePerGas { get; set; }
     [JsonPropertyName("data")] public string? Data { get; set; }
     [JsonPropertyName("priority")] public byte Priority { get; set; }
     [JsonPropertyName("chainId")] public uint ChainId { get; set; }
@@ -597,6 +696,8 @@ public sealed class TransactionRequest
             Value = UInt256.Parse(Value),
             GasLimit = GasLimit,
             GasPrice = UInt256.Parse(GasPrice),
+            MaxFeePerGas = string.IsNullOrEmpty(MaxFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxFeePerGas),
+            MaxPriorityFeePerGas = string.IsNullOrEmpty(MaxPriorityFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxPriorityFeePerGas),
             Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x") ? Data[2..] : Data),
             Priority = Priority,
             ChainId = ChainId,
@@ -622,6 +723,7 @@ public sealed class BlockResponse
     [JsonPropertyName("proposer")] public string Proposer { get; set; } = "";
     [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
+    [JsonPropertyName("baseFee")] public string BaseFee { get; set; } = "0";
     [JsonPropertyName("transactionCount")] public int TransactionCount { get; set; }
 
     public static BlockResponse FromBlock(Block block)
@@ -636,6 +738,7 @@ public sealed class BlockResponse
             Proposer = block.Header.Proposer.ToHexString(),
             GasUsed = block.Header.GasUsed,
             GasLimit = block.Header.GasLimit,
+            BaseFee = block.Header.BaseFee.ToString(),
             TransactionCount = block.Transactions.Count,
         };
     }
@@ -673,16 +776,24 @@ public sealed class TransactionDetailResponse
     [JsonPropertyName("value")] public string Value { get; set; } = "0";
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
     [JsonPropertyName("gasPrice")] public string GasPrice { get; set; } = "0";
+    [JsonPropertyName("maxFeePerGas")] public string? MaxFeePerGas { get; set; }
+    [JsonPropertyName("maxPriorityFeePerGas")] public string? MaxPriorityFeePerGas { get; set; }
     [JsonPropertyName("priority")] public byte Priority { get; set; }
     [JsonPropertyName("blockNumber")] public ulong? BlockNumber { get; set; }
     [JsonPropertyName("blockHash")] public string? BlockHash { get; set; }
     [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
     [JsonPropertyName("data")] public string? Data { get; set; }
     [JsonPropertyName("dataSize")] public int DataSize { get; set; }
+    // Receipt fields (populated when receipt is available)
+    [JsonPropertyName("gasUsed")] public ulong? GasUsed { get; set; }
+    [JsonPropertyName("success")] public bool? Success { get; set; }
+    [JsonPropertyName("errorCode")] public string? ErrorCode { get; set; }
+    [JsonPropertyName("effectiveGasPrice")] public string? EffectiveGasPrice { get; set; }
+    [JsonPropertyName("logs")] public LogResponse[]? Logs { get; set; }
 
-    public static TransactionDetailResponse FromTransaction(Transaction tx, Block? block = null, int? index = null)
+    public static TransactionDetailResponse FromTransaction(Transaction tx, Block? block = null, int? index = null, Storage.RocksDb.ReceiptData? receipt = null)
     {
-        return new TransactionDetailResponse
+        var response = new TransactionDetailResponse
         {
             Hash = tx.Hash.ToHexString(),
             Type = tx.Type.ToString(),
@@ -692,6 +803,8 @@ public sealed class TransactionDetailResponse
             Value = tx.Value.ToString(),
             GasLimit = tx.GasLimit,
             GasPrice = tx.GasPrice.ToString(),
+            MaxFeePerGas = tx.IsEip1559 ? tx.MaxFeePerGas.ToString() : null,
+            MaxPriorityFeePerGas = tx.IsEip1559 ? tx.MaxPriorityFeePerGas.ToString() : null,
             Priority = tx.Priority,
             BlockNumber = block?.Number,
             BlockHash = block?.Hash.ToHexString(),
@@ -699,6 +812,23 @@ public sealed class TransactionDetailResponse
             Data = tx.Data.Length > 0 ? Convert.ToHexString(tx.Data) : null,
             DataSize = tx.Data.Length,
         };
+
+        if (receipt != null)
+        {
+            response.GasUsed = receipt.GasUsed;
+            response.Success = receipt.Success;
+            response.ErrorCode = ((BasaltErrorCode)receipt.ErrorCode).ToString();
+            response.EffectiveGasPrice = receipt.EffectiveGasPrice.ToString();
+            response.Logs = receipt.Logs.Select(l => new LogResponse
+            {
+                Contract = l.Contract.ToHexString(),
+                EventSignature = l.EventSignature.ToHexString(),
+                Topics = l.Topics.Select(t => t.ToHexString()).ToArray(),
+                Data = l.Data.Length > 0 ? Convert.ToHexString(l.Data) : null,
+            }).ToArray();
+        }
+
+        return response;
     }
 }
 
@@ -757,6 +887,55 @@ public sealed class StorageReadResponse
     [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
 }
 
+public sealed class ReceiptResponse
+{
+    [JsonPropertyName("transactionHash")] public string TransactionHash { get; set; } = "";
+    [JsonPropertyName("blockHash")] public string BlockHash { get; set; } = "";
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+    [JsonPropertyName("transactionIndex")] public int TransactionIndex { get; set; }
+    [JsonPropertyName("from")] public string From { get; set; } = "";
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("errorCode")] public string ErrorCode { get; set; } = "";
+    [JsonPropertyName("postStateRoot")] public string PostStateRoot { get; set; } = "";
+    [JsonPropertyName("effectiveGasPrice")] public string EffectiveGasPrice { get; set; } = "0";
+    [JsonPropertyName("logs")] public LogResponse[] Logs { get; set; } = [];
+
+    public static ReceiptResponse FromReceiptData(Storage.RocksDb.ReceiptData receipt)
+    {
+        return new ReceiptResponse
+        {
+            TransactionHash = receipt.TransactionHash.ToHexString(),
+            BlockHash = receipt.BlockHash.ToHexString(),
+            BlockNumber = receipt.BlockNumber,
+            TransactionIndex = receipt.TransactionIndex,
+            From = receipt.From.ToHexString(),
+            To = receipt.To.ToHexString(),
+            GasUsed = receipt.GasUsed,
+            Success = receipt.Success,
+            ErrorCode = ((BasaltErrorCode)receipt.ErrorCode).ToString(),
+            PostStateRoot = receipt.PostStateRoot.ToHexString(),
+            EffectiveGasPrice = receipt.EffectiveGasPrice.ToString(),
+            Logs = receipt.Logs.Select(l => new LogResponse
+            {
+                Contract = l.Contract.ToHexString(),
+                EventSignature = l.EventSignature.ToHexString(),
+                Topics = l.Topics.Select(t => t.ToHexString()).ToArray(),
+                Data = l.Data.Length > 0 ? Convert.ToHexString(l.Data) : null,
+            }).ToArray(),
+        };
+    }
+}
+
+public sealed class LogResponse
+{
+    [JsonPropertyName("contract")] public string Contract { get; set; } = "";
+    [JsonPropertyName("eventSignature")] public string EventSignature { get; set; } = "";
+    [JsonPropertyName("topics")] public string[] Topics { get; set; } = [];
+    [JsonPropertyName("data")] public string? Data { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -774,4 +953,7 @@ public sealed class StorageReadResponse
 [JsonSerializable(typeof(CallResponse))]
 [JsonSerializable(typeof(ContractInfoResponse))]
 [JsonSerializable(typeof(StorageReadResponse))]
+[JsonSerializable(typeof(ReceiptResponse))]
+[JsonSerializable(typeof(LogResponse))]
+[JsonSerializable(typeof(LogResponse[]))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

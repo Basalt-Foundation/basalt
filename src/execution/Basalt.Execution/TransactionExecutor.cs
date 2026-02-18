@@ -51,7 +51,8 @@ public sealed class TransactionExecutor
     private TransactionReceipt ExecuteTransfer(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasUsed = _chainParams.TransferGasCost;
-        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
         // Debit sender: value + gas fee
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
@@ -77,12 +78,16 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(tx.To, recipientState);
 
-        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+        // Credit proposer tip (effectiveGasPrice - baseFee) * gasUsed; base fee is burned
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
     }
 
     private TransactionReceipt ExecuteContractDeploy(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasMeter = new GasMeter(tx.GasLimit);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
 
         try
         {
@@ -93,8 +98,8 @@ public sealed class TransactionExecutor
             // Derive contract address from sender + nonce
             var contractAddress = DeriveContractAddress(tx.Sender, tx.Nonce);
 
-            // Debit sender upfront (gas limit * gas price + value)
-            var maxGasFee = tx.GasPrice * new UInt256(tx.GasLimit);
+            // Debit sender upfront (gas limit * effective max fee + value)
+            var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
             var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
             senderState = senderState with
             {
@@ -142,9 +147,9 @@ public sealed class TransactionExecutor
                 stateDb.SetAccount(tx.Sender, senderState);
             }
 
-            // Refund unused gas
+            // Refund unused gas (refund based on effective gas price, not max fee)
             var effectiveGas = gasMeter.EffectiveGasUsed();
-            var actualFee = tx.GasPrice * new UInt256(effectiveGas);
+            var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
             if (refund > UInt256.Zero)
             {
@@ -153,7 +158,10 @@ public sealed class TransactionExecutor
                 stateDb.SetAccount(tx.Sender, senderState);
             }
 
-            var receipt = new TransactionReceipt
+            // Credit proposer with priority tip
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, effectiveGas);
+
+            return new TransactionReceipt
             {
                 TransactionHash = tx.Hash,
                 BlockHash = blockHeader.Hash,
@@ -166,19 +174,19 @@ public sealed class TransactionExecutor
                 ErrorCode = result.Success ? BasaltErrorCode.Success : BasaltErrorCode.ContractDeployFailed,
                 PostStateRoot = stateDb.ComputeStateRoot(),
                 Logs = result.Logs,
+                EffectiveGasPrice = effectiveGasPrice,
             };
-
-            return receipt;
         }
         catch (OutOfGasException)
         {
-            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb, effectiveGasPrice);
         }
     }
 
     private TransactionReceipt ExecuteContractCall(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasMeter = new GasMeter(tx.GasLimit);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
 
         try
         {
@@ -191,11 +199,11 @@ public sealed class TransactionExecutor
             if (contractState == null || contractState.Value.AccountType is not (AccountType.Contract or AccountType.SystemContract))
             {
                 return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
-                    BasaltErrorCode.ContractNotFound, stateDb);
+                    BasaltErrorCode.ContractNotFound, stateDb, effectiveGasPrice);
             }
 
-            // Debit sender (gas limit * gas price + value)
-            var maxGasFee = tx.GasPrice * new UInt256(tx.GasLimit);
+            // Debit sender upfront (gas limit * effective max fee + value)
+            var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
             var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
             senderState = senderState with
             {
@@ -233,9 +241,9 @@ public sealed class TransactionExecutor
 
             var result = _contractRuntime.Execute(code, tx.Data, ctx);
 
-            // Refund unused gas
+            // Refund unused gas (refund based on effective gas price, not max fee)
             var effectiveGas = gasMeter.EffectiveGasUsed();
-            var actualFee = tx.GasPrice * new UInt256(effectiveGas);
+            var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
             if (refund > UInt256.Zero)
             {
@@ -243,6 +251,9 @@ public sealed class TransactionExecutor
                 senderState = senderState with { Balance = senderState.Balance + refund };
                 stateDb.SetAccount(tx.Sender, senderState);
             }
+
+            // Credit proposer with priority tip
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, effectiveGas);
 
             return new TransactionReceipt
             {
@@ -257,36 +268,39 @@ public sealed class TransactionExecutor
                 ErrorCode = result.Success ? BasaltErrorCode.Success : BasaltErrorCode.ContractCallFailed,
                 PostStateRoot = stateDb.ComputeStateRoot(),
                 Logs = result.Logs,
+                EffectiveGasPrice = effectiveGasPrice,
             };
         }
         catch (OutOfGasException)
         {
-            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb, effectiveGasPrice);
         }
     }
 
     private TransactionReceipt ExecuteValidatorRegister(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
-
         var gasUsed = _chainParams.TransferGasCost;
-        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
         var totalDebit = tx.Value + gasFee;
 
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < totalDebit)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
 
         if (tx.Value < _stakingState.MinValidatorStake)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakeBelowMinimum, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakeBelowMinimum, stateDb, effectiveGasPrice);
 
         // Parse optional P2P endpoint from tx.Data (UTF-8 encoded)
         string? p2pEndpoint = tx.Data.Length > 0 ? System.Text.Encoding.UTF8.GetString(tx.Data) : null;
 
         var result = _stakingState.RegisterValidator(tx.Sender, tx.Value, blockHeader.Number, p2pEndpoint);
         if (!result.IsSuccess)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorAlreadyRegistered, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorAlreadyRegistered, stateDb, effectiveGasPrice);
 
         // Debit sender
         senderState = senderState with
@@ -296,29 +310,33 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
-        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
     }
 
     private TransactionReceipt ExecuteValidatorExit(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
-
         var gasUsed = _chainParams.TransferGasCost;
-        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < gasFee)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
 
         var selfStake = _stakingState.GetSelfStake(tx.Sender);
         if (selfStake == null)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
 
         // Unstake the full self-stake — triggers unbonding period
         var result = _stakingState.InitiateUnstake(tx.Sender, selfStake.Value, blockHeader.Number);
         if (!result.IsSuccess)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
 
         // Debit gas fee
         senderState = senderState with
@@ -328,25 +346,29 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
-        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
     }
 
     private TransactionReceipt ExecuteStakeDeposit(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
-
         var gasUsed = _chainParams.TransferGasCost;
-        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
         var totalDebit = tx.Value + gasFee;
 
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < totalDebit)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
 
         var result = _stakingState.AddStake(tx.Sender, tx.Value);
         if (!result.IsSuccess)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
 
         // Debit sender
         senderState = senderState with
@@ -356,24 +378,28 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
-        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
     }
 
     private TransactionReceipt ExecuteStakeWithdraw(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
-
         var gasUsed = _chainParams.TransferGasCost;
-        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < gasFee)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
 
         var result = _stakingState.InitiateUnstake(tx.Sender, tx.Value, blockHeader.Number);
         if (!result.IsSuccess)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
 
         // Debit gas fee only (staked funds enter unbonding queue)
         senderState = senderState with
@@ -383,7 +409,9 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
-        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
     }
 
     /// <summary>
@@ -415,8 +443,28 @@ public sealed class TransactionExecutor
         return CreateReceipt(tx, blockHeader, txIndex, 0, false, errorCode, stateDb);
     }
 
+    /// <summary>
+    /// Credit the block proposer with the priority tip portion of the gas fee.
+    /// The base fee portion is burned (not credited to anyone).
+    /// </summary>
+    private static void CreditProposerTip(IStateDatabase stateDb, BlockHeader blockHeader, UInt256 effectiveGasPrice, ulong gasUsed)
+    {
+        if (blockHeader.BaseFee >= effectiveGasPrice)
+            return; // No tip — entire fee is base fee (burned)
+
+        var tipPerGas = effectiveGasPrice - blockHeader.BaseFee;
+        var totalTip = tipPerGas * new UInt256(gasUsed);
+        if (totalTip.IsZero)
+            return;
+
+        var proposerState = stateDb.GetAccount(blockHeader.Proposer) ?? AccountState.Empty;
+        proposerState = proposerState with { Balance = proposerState.Balance + totalTip };
+        stateDb.SetAccount(blockHeader.Proposer, proposerState);
+    }
+
     private static TransactionReceipt CreateReceipt(Transaction tx, BlockHeader blockHeader, int txIndex,
-        ulong gasUsed, bool success, BasaltErrorCode errorCode, IStateDatabase stateDb)
+        ulong gasUsed, bool success, BasaltErrorCode errorCode, IStateDatabase stateDb,
+        UInt256 effectiveGasPrice = default)
     {
         return new TransactionReceipt
         {
@@ -430,6 +478,7 @@ public sealed class TransactionExecutor
             Success = success,
             ErrorCode = errorCode,
             PostStateRoot = stateDb.ComputeStateRoot(),
+            EffectiveGasPrice = effectiveGasPrice,
         };
     }
 }

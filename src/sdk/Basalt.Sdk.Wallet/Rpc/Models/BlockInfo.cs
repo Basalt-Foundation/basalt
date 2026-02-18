@@ -56,6 +56,12 @@ public sealed class BlockInfo
     public ulong GasLimit { get; set; }
 
     /// <summary>
+    /// The EIP-1559 base fee for this block as a decimal string (UInt256).
+    /// </summary>
+    [JsonPropertyName("baseFee")]
+    public string BaseFee { get; set; } = "0";
+
+    /// <summary>
     /// The number of transactions included in this block.
     /// </summary>
     [JsonPropertyName("transactionCount")]

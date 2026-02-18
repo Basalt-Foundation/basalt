@@ -128,9 +128,13 @@ internal sealed class MempoolEntryComparer : IComparer<MempoolEntry>
 
     public int Compare(MempoolEntry x, MempoolEntry y)
     {
-        // Higher gas price first
-        var gasCmp = y.Transaction.GasPrice.CompareTo(x.Transaction.GasPrice);
-        if (gasCmp != 0) return gasCmp;
+        // Higher effective max fee first (EIP-1559 aware)
+        var feeCmp = y.Transaction.EffectiveMaxFee.CompareTo(x.Transaction.EffectiveMaxFee);
+        if (feeCmp != 0) return feeCmp;
+
+        // Higher priority tip as tiebreaker
+        var tipCmp = y.Transaction.MaxPriorityFeePerGas.CompareTo(x.Transaction.MaxPriorityFeePerGas);
+        if (tipCmp != 0) return tipCmp;
 
         // Lower nonce first
         var nonceCmp = x.Transaction.Nonce.CompareTo(y.Transaction.Nonce);

@@ -147,7 +147,7 @@ try
 
     // Map REST endpoints (with read-only call support via ManagedContractRuntime)
     var contractRuntime = new ManagedContractRuntime();
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime);
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime, receiptStore);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");

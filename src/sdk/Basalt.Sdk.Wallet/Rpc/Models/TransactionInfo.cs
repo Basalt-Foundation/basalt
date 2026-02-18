@@ -56,6 +56,24 @@ public sealed class TransactionInfo
     public string GasPrice { get; set; } = "0";
 
     /// <summary>
+    /// The maximum fee per gas (EIP-1559), or null for legacy transactions.
+    /// </summary>
+    [JsonPropertyName("maxFeePerGas")]
+    public string? MaxFeePerGas { get; set; }
+
+    /// <summary>
+    /// The maximum priority fee per gas (EIP-1559), or null for legacy transactions.
+    /// </summary>
+    [JsonPropertyName("maxPriorityFeePerGas")]
+    public string? MaxPriorityFeePerGas { get; set; }
+
+    /// <summary>
+    /// The effective gas price paid (from receipt), or null if not yet confirmed.
+    /// </summary>
+    [JsonPropertyName("effectiveGasPrice")]
+    public string? EffectiveGasPrice { get; set; }
+
+    /// <summary>
     /// The transaction priority (0 = normal).
     /// </summary>
     [JsonPropertyName("priority")]

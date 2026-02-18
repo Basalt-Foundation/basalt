@@ -29,6 +29,15 @@ public sealed class ChainParameters
     /// <summary>Block gas limit.</summary>
     public ulong BlockGasLimit { get; init; } = 100_000_000;
 
+    /// <summary>Initial base fee for the genesis block (EIP-1559).</summary>
+    public UInt256 InitialBaseFee { get; init; } = new UInt256(1_000_000_000); // 1 gwei
+
+    /// <summary>Denominator for base fee adjustment. 8 = max 12.5% change per block (EIP-1559).</summary>
+    public uint BaseFeeChangeDenominator { get; init; } = 8;
+
+    /// <summary>Elasticity multiplier. Target gas = BlockGasLimit / ElasticityMultiplier (EIP-1559).</summary>
+    public uint ElasticityMultiplier { get; init; } = 2;
+
     /// <summary>Base transfer gas cost.</summary>
     public ulong TransferGasCost { get; init; } = 21_000;
 
@@ -82,6 +91,7 @@ public sealed class ChainParameters
         ValidatorSetSize = 4,
         MinValidatorStake = new UInt256(1000),
         EpochLength = 100,
+        InitialBaseFee = new UInt256(1),
     };
 
     /// <summary>
@@ -98,6 +108,7 @@ public sealed class ChainParameters
             ValidatorSetSize = 4,
             MinValidatorStake = new UInt256(1000),
             EpochLength = 100,
+            InitialBaseFee = new UInt256(1),
         };
     }
 }
