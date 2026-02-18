@@ -51,6 +51,7 @@ var pipeline = new PipelinedConsensus(
 
 pipeline.OnBlockFinalized += (hash, data) => { /* commit block */ };
 pipeline.OnViewChange += (newView) => { /* leader rotation */ };
+pipeline.OnBehindDetected += (blockNumber) => { /* trigger sync */ };
 
 ConsensusProposalMessage? proposal = pipeline.StartRound(blockNumber, blockData, blockHash);
 ConsensusVoteMessage? vote = pipeline.HandleProposal(proposalMsg);
@@ -63,6 +64,9 @@ ulong lastFinalized = pipeline.LastFinalizedBlock;
 ConsensusState? roundState = pipeline.GetRoundState(blockNumber);
 byte[]? aggSig = pipeline.GetAggregateSignature(blockNumber); // BLS aggregate for finalized round
 pipeline.CleanupFinalizedRounds();
+
+// After sync: update pipeline's last finalized block and clear stale rounds
+pipeline.UpdateLastFinalizedBlock(chainManager.LatestBlockNumber);
 ```
 
 Enforces sequential finalization ordering: block N must finalize before N+1 is released. If block N+1 reaches COMMIT quorum before block N, it is buffered and drained once N finalizes.
@@ -70,6 +74,8 @@ Enforces sequential finalization ordering: block N must finalize before N+1 is r
 Self-vote cascade: in single-validator or low-quorum scenarios, after recording a self-vote the engine cascades through PREPARE -> PRE-COMMIT -> COMMIT -> FINALIZED in a single call if quorum is already met at each step.
 
 View change in pipelined mode aborts all non-finalized in-flight rounds.
+
+Behind detection: if a proposal arrives for a block beyond `_lastFinalizedBlock + MaxPipelineDepth + 1`, the engine fires `OnBehindDetected` and rejects the proposal. This prevents creating orphaned rounds that can never finalize and triggers sync instead.
 
 ### ValidatorSet
 

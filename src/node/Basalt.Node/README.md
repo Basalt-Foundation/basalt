@@ -69,7 +69,7 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 - **Block Production**: On-demand by the leader, finalized through BFT (no `BlockProductionLoop` in consensus mode)
 - **Epoch Transitions**: `EpochManager` detects epoch boundaries and rebuilds `ValidatorSet` from `StakingState`. `ApplyEpochTransition` atomically swaps the set, rewires leader selection, and resets tracking state
 - **Staking Transactions**: `TransactionExecutor` receives `StakingState` (via `IStakingState`) to handle `ValidatorRegister`, `ValidatorExit`, `StakeDeposit`, and `StakeWithdraw` transactions
-- **State Sync**: Batch-based sync via `SyncRequestMessage`/`SyncResponseMessage` (batch size: 50 blocks)
+- **State Sync**: Batch-based sync via `SyncRequestMessage`/`SyncResponseMessage` (batch size: 50 blocks). Re-entrancy guard prevents concurrent sync tasks. After sync completes, the consensus round is restarted at the correct block number. Synced blocks that cross epoch boundaries trigger `EpochManager` transitions to keep the `ValidatorSet` consistent
 - **Slashing**: Double-sign detection via `_proposalsByView` dictionary, inactivity tracking via `_lastActiveBlock` per validator
 
 ### Message Types Handled
@@ -108,6 +108,21 @@ Environment variables:
 | `BASALT_USE_PIPELINING` | `false` | Enable pipelined consensus (`true`/`false`) |
 | `BASALT_USE_SANDBOX` | `false` | Enable sandboxed contract execution via AssemblyLoadContext isolation (`true`/`false`) |
 | `ASPNETCORE_URLS` | `http://+:5000` | Listen address |
+
+## Native AOT
+
+`Basalt.Node` is configured with `PublishAot=true` and `InvariantGlobalization=true`. All runtime dependencies are AOT-safe:
+
+- **JSON**: Source-generated via `BasaltApiJsonContext` (17 types), `WsJsonContext` (2 types). Custom `BasaltJsonConverters` for `Hash256`, `Address`, `UInt256`, `Signature`, `PublicKey`, `BlsSignature`, `BlsPublicKey`.
+- **gRPC**: Protobuf uses compile-time code generation (`GrpcServices="Server"`). `MapGrpcService<BasaltNodeService>()` is AOT-compatible.
+- **Cryptography**: All crypto libraries (Blake3, NSec, Nethermind.Crypto.Bls) use P/Invoke, not reflection.
+- **Logging**: Serilog structured logging is AOT-safe.
+
+**Sandbox incompatibility:** `BASALT_USE_SANDBOX=true` requires JIT runtime. `ContractAssemblyContext.LoadFromStream` loads IL dynamically, which Native AOT cannot compile. The default `ManagedContractRuntime` uses selector-based dispatch and is fully AOT-compatible.
+
+The Dockerfile uses `-p:PublishAot=false` (framework-dependent publish) for container builds, enabling both sandbox and non-sandbox modes.
+
+Suppressed warnings: `IL2026` (members annotated with `RequiresUnreferencedCode`), `IL3050` (members annotated with `RequiresDynamicCode`). These cover the gRPC service mapper and are verified safe.
 
 ## Ports
 

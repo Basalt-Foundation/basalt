@@ -200,6 +200,26 @@ The node is configured via environment variables:
 | `BASALT_USE_SANDBOX` | `false` | Enable sandboxed contract execution via AssemblyLoadContext isolation |
 | `ASPNETCORE_URLS` | `http://+:5000` | REST API listen address |
 
+## Native AOT Compatibility
+
+`Basalt.Node` is the primary AOT publication target (`PublishAot=true`). All production dependencies are AOT-safe:
+
+| Layer | AOT Status | Notes |
+|-------|-----------|-------|
+| Core, Crypto, Codec | Safe | Zero reflection, value types, P/Invoke wrappers |
+| Storage (RocksDB, MPT) | Safe | Native interop via P/Invoke |
+| Network, Consensus | Safe | Standard delegate patterns, no dynamic dispatch |
+| Execution (ManagedContractRuntime) | Safe | Selector-based dispatch, no reflection |
+| Execution (SandboxedContractRuntime) | **JIT only** | `AssemblyLoadContext.LoadFromStream` requires JIT |
+| Api.Rest, Api.Grpc | Safe | Source-generated JSON (`BasaltApiJsonContext`), Protobuf codegen |
+| Api.GraphQL (HotChocolate) | **JIT only** | Not referenced by Basalt.Node; isolated in separate library |
+| Sdk.Contracts | Safe | Source-generated dispatch via `IDispatchable` |
+| Sdk.Testing | N/A | Test-only, not in production |
+
+**Key constraint:** `BASALT_USE_SANDBOX=true` is incompatible with Native AOT. The `ContractAssemblyContext` loads IL at runtime via `LoadFromStream`, which requires a JIT compiler. The default `ManagedContractRuntime` (used when sandbox is disabled) is fully AOT-safe. The Docker container build uses framework-dependent publish (`-p:PublishAot=false`) for full runtime support.
+
+JSON serialization uses source-generated `JsonSerializerContext` types throughout — no reflection-based serialization. Custom converters exist for blockchain types (`Hash256`, `Address`, `UInt256`, `Signature`, `PublicKey`, `BlsSignature`, `BlsPublicKey`).
+
 ## Token Economics
 
 | Parameter | Value |

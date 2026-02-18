@@ -214,7 +214,9 @@ Static helper: `ManagedContractRuntime.ComputeSelector(string methodSignature)` 
 
 ### SandboxedContractRuntime
 
-AOT-sandbox-aware runtime that wraps each invocation with:
+**Requires JIT runtime -- incompatible with Native AOT.** Uses `AssemblyLoadContext.LoadFromStream` to load contract IL at runtime, which requires a JIT compiler. Enable via `BASALT_USE_SANDBOX=true`. When publishing with `PublishAot=true`, this mode must be disabled (the default `ManagedContractRuntime` is used instead).
+
+Wraps each invocation with:
 - A `ContractAssemblyContext` (collectible `AssemblyLoadContext` for isolated assembly loading)
 - A `ResourceLimiter` for memory tracking
 - A `CancellationTokenSource` for wall-clock timeout enforcement
@@ -239,6 +241,8 @@ Byte-array-based bridge between isolated contract assemblies and the `HostInterf
 ### ContractAssemblyContext
 
 Collectible `AssemblyLoadContext` for contract isolation. Validates that loaded assemblies only reference an allow-list of assemblies: `Basalt.Core`, `Basalt.Sdk.Contracts`, `Basalt.Codec`, `System.Runtime`, `System.Private.CoreLib`, `netstandard`.
+
+`LoadAndValidate(byte[])` is annotated with `[RequiresUnreferencedCode]` because it loads IL dynamically. This is the only production code path that is incompatible with Native AOT.
 
 ### VmExecutionContext
 
