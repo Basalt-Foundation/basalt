@@ -160,6 +160,28 @@ public sealed class ContractRegistry
         registry.Register(0x0104, "StakingPool", _ =>
             new Basalt.Sdk.Contracts.Standards.StakingPool());
 
+        registry.Register(0x0005, "BST3525Token", args =>
+        {
+            var reader = new Basalt.Codec.BasaltReader(args);
+            var name = reader.ReadString();
+            var symbol = reader.ReadString();
+            var valueDecimals = reader.ReadByte();
+            return new Basalt.Sdk.Contracts.Standards.BST3525Token(name, symbol, valueDecimals);
+        });
+
+        registry.Register(0x0006, "BST4626Vault", args =>
+        {
+            var reader = new Basalt.Codec.BasaltReader(args);
+            var name = reader.ReadString();
+            var symbol = reader.ReadString();
+            var decimals = reader.ReadByte();
+            var assetAddress = reader.ReadBytes().ToArray();
+            return new Basalt.Sdk.Contracts.Standards.BST4626Vault(name, symbol, decimals, assetAddress);
+        });
+
+        registry.Register(0x0007, "BSTVCRegistry", _ =>
+            new Basalt.Sdk.Contracts.Standards.BSTVCRegistry());
+
         // ZK compliance contracts
         registry.Register(0x0105, "SchemaRegistry", _ =>
             new Basalt.Sdk.Contracts.Standards.SchemaRegistry());

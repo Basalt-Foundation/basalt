@@ -439,7 +439,10 @@ public sealed class ContractGenerator : IIncrementalGenerator
             }
 
             sb.AppendLine("            default:");
-            sb.AppendLine("                throw new System.InvalidOperationException($\"Unknown selector: 0x{sel:X8}\");");
+            if (info.HasContractBase)
+                sb.AppendLine("                return base.Dispatch(selector, calldata);");
+            else
+                sb.AppendLine("                throw new System.InvalidOperationException($\"Unknown selector: 0x{sel:X8}\");");
             sb.AppendLine("        }");
         }
 

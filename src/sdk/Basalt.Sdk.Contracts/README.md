@@ -188,6 +188,97 @@ registry.AddAttestation(did, "KYC", issuerHex, expiresAt, data);
 bool valid = registry.HasValidAttestation(did, "KYC");
 ```
 
+### BST-3525 Semi-Fungible Token (ERC-3525 equivalent)
+
+**Interface**: `IBST3525` -- three-component model: (tokenId, slot, value). Tokens in the same slot are fungible by value. Each token has a unique ID (like BST-721) but carries a fungible value (like BST-20) that is transferable within the same slot.
+
+**Implementation**: `BST3525Token` -- reference implementation with auto-incrementing token IDs, per-token value allowances, slot-based URI metadata, and ERC-721-compatible token ownership transfer. Value transfers require matching slots between source and destination.
+
+**Events**: `TransferValueEvent` (FromTokenId, ToTokenId, Value), `SftTransferEvent` (From, To, TokenId), `ApproveValueEvent` (TokenId, Operator, Value), `SftApprovalEvent` (Owner, Approved, TokenId), `SftMintEvent` (To, TokenId, Slot, Value).
+
+```csharp
+var sft = new BST3525Token("Bond Token", "BOND", valueDecimals: 6);
+
+// Mint: create tokens in a slot (slot = maturity date, value = principal)
+ulong bondA = sft.Mint(alice, slot: 20251231, value: 1_000_000);
+ulong bondB = sft.Mint(bob, slot: 20251231, value: 500_000);
+
+// Transfer value between same-slot tokens
+sft.TransferValueToId(bondA, bondB, 200_000);  // alice → bob: 200k
+
+// Transfer value to a new address (creates new token)
+ulong bondC = sft.TransferValueToAddress(bondA, charlie, 100_000);
+
+// Value allowance (operator pattern)
+sft.ApproveValue(bondA, operator, 50_000);
+ulong remaining = sft.ValueAllowance(bondA, operator);
+
+// ERC-721 compatible token transfer
+sft.TransferToken(dave, bondA);
+```
+
+### BST-4626 Tokenized Vault (ERC-4626 equivalent)
+
+**Interface**: `IBST4626` (extends `IBST20`) -- standardized vault pattern. Deposit underlying BST-20 assets, receive vault share tokens. Shares are themselves BST-20 fungible tokens. Exchange rate adjusts as yield accrues.
+
+**Implementation**: `BST4626Vault` (extends `BST20Token`) -- reference implementation with virtual shares/assets offset to prevent inflation attacks, ceiling-division rounding for withdrawal/mint previews (favors the vault), and admin-only yield reporting via `Harvest()`. Uses cross-contract calls to the underlying BST-20 asset.
+
+**Events**: `VaultDepositEvent` (Caller, Assets, Shares), `VaultWithdrawEvent` (Caller, Assets, Shares), `VaultHarvestEvent` (Caller, YieldAmount, NewTotalAssets).
+
+```csharp
+var vault = new BST4626Vault("Vault Shares", "vUND", decimals: 18, assetAddress);
+
+// Deposit underlying assets → receive shares
+ulong shares = vault.Deposit(1000);
+
+// Check exchange rate
+ulong sharesPerAsset = vault.ConvertToShares(100);
+ulong assetsPerShare = vault.ConvertToAssets(100);
+
+// Preview operations (includes rounding)
+ulong sharesToBurn = vault.PreviewWithdraw(500);  // rounds up
+ulong assetsNeeded = vault.PreviewMint(100);      // rounds up
+
+// Withdraw/redeem
+ulong burned = vault.Withdraw(500);    // withdraw exact assets, burn shares
+ulong received = vault.Redeem(shares); // redeem exact shares, receive assets
+
+// Admin: report yield (increases exchange rate)
+vault.Harvest(100);  // totalAssets += 100, shares unchanged → each share worth more
+```
+
+### BST-VC Verifiable Credential Registry (W3C VC + eIDAS 2.0)
+
+**Interface**: `IBSTVC` -- on-chain registry for verifiable credential lifecycle. Full VCs stored off-chain (IPFS), only hashes on-chain. Supports issuance, revocation, suspension, and reinstatement. Only the original issuer can manage a credential's status.
+
+**Implementation**: `BSTVCRegistry` -- reference implementation with status tracking (Active/Revoked/Suspended), issuer-only lifecycle management, per-issuer credential counting, and temporal validity checks. Credential IDs are deterministic: `vc:{issuerHex}:{hexIndex}`.
+
+**Status Transitions**: `(none) → Active → Suspended ↔ Reinstated → Revoked` (terminal).
+
+**Events**: `CredentialIssuedEvent` (CredentialHash, Issuer, Subject, CredentialId), `CredentialRevokedEvent` (CredentialHash, Issuer, Reason), `CredentialSuspendedEvent` (CredentialHash, Issuer, Reason), `CredentialReinstatedEvent` (CredentialHash, Issuer).
+
+```csharp
+var vcRegistry = new BSTVCRegistry();
+
+// Issue a credential (hash stored on-chain, full VC off-chain)
+string credId = vcRegistry.IssueCredential(credentialHash, subjectDid, schemaId,
+    validUntil: 1735689600, metadataUri: "ipfs://Qm...");
+
+// Check status
+byte status = vcRegistry.GetCredentialStatus(credentialHash);  // 1 = Active
+bool valid = vcRegistry.IsCredentialValid(credentialHash);     // true if active + not expired
+
+// Lifecycle management (issuer only)
+vcRegistry.SuspendCredential(credentialHash, "Under review");
+vcRegistry.ReinstateCredential(credentialHash);
+vcRegistry.RevokeCredential(credentialHash, "Fraud detected");
+
+// Query
+ulong count = vcRegistry.GetIssuerCredentialCount(issuerAddr);
+bool issued = vcRegistry.HasIssuerIssuedCredential(issuerAddr, credentialHash);
+bool verified = vcRegistry.VerifyCredentialSet(credentialHash);
+```
+
 ### SchemaRegistry (ZK Compliance)
 
 On-chain registry of credential schema definitions. Anyone can register a schema (permissionless). A schema defines WHAT can be proved via ZK proofs. SchemaId is derived from `BLAKE3(name)`.
@@ -251,4 +342,8 @@ bool supports = issuerRegistry.SupportsSchema(issuerAddr, schemaIdBytes);
 
 ## Dependencies
 
-None -- this is a standalone SDK package with no dependencies on the node.
+| Package | Purpose |
+|---------|---------|
+| `Basalt.Crypto` | BLAKE3 hashing (SchemaRegistry schema ID derivation) |
+
+No dependency on the node or execution engine.
