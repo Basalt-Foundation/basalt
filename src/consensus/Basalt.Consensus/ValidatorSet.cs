@@ -121,6 +121,33 @@ public sealed class ValidatorSet
     public int MaxFaults => (_validators.Count - 1) / 3;
 
     /// <summary>
+    /// Copy PeerId, PublicKey, and BlsPublicKey from a previous ValidatorSet
+    /// for validators that exist in both sets (matched by Address).
+    /// Rebuilds the _byPeerId dictionary after transfer.
+    /// </summary>
+    public void TransferIdentities(ValidatorSet? previous)
+    {
+        if (previous == null) return;
+
+        foreach (var validator in _validators)
+        {
+            var old = previous.GetByAddress(validator.Address);
+            if (old == null) continue;
+
+            // Remove old PeerId mapping
+            _byPeerId.Remove(validator.PeerId);
+
+            // Copy identity
+            validator.PeerId = old.PeerId;
+            validator.PublicKey = old.PublicKey;
+            validator.BlsPublicKey = old.BlsPublicKey;
+
+            // Add new PeerId mapping
+            _byPeerId[validator.PeerId] = validator;
+        }
+    }
+
+    /// <summary>
     /// Select the leader for a given view number.
     /// Phase 1: Equal-weight round-robin.
     /// Phase 2: Weighted by stake * reputation.

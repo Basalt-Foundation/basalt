@@ -9,7 +9,7 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **Ed25519 Signatures** -- Fast signing/verification via libsodium, with batch verification support
 - **BLS12-381 Aggregation** -- BLS signatures via Nethermind.Crypto.Bls for aggregate consensus certificates
 - **Keccak-256** -- Custom software implementation for address derivation (macOS-compatible)
-- **BasaltBFT Consensus** -- Pipelined HotStuff-based BFT with 400ms block time, stake-weighted leader selection, and BLS aggregation
+- **BasaltBFT Consensus** -- Pipelined HotStuff-based BFT with 400ms block time, stake-weighted leader selection, BLS aggregation, and epoch-based dynamic validator sets
 - **Merkle Patricia Trie** -- Cryptographically verifiable state with RocksDB persistence
 - **Smart Contracts** -- C# contracts with gas metering, sandboxed execution, and Roslyn analyzers
 - **Built-in Compliance** -- KYC/AML identity registry, sanctions screening, per-token transfer policies
@@ -54,7 +54,7 @@ dotnet build
 dotnet test
 ```
 
-1,380 tests across 15 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, and end-to-end integration.
+1,698 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -117,7 +117,7 @@ Basalt.sln                              (38 C# projects)
 |   +-- network/
 |   |   +-- Basalt.Network/            # TCP transport, Kademlia DHT, Episub, peer reputation
 |   +-- consensus/
-|   |   +-- Basalt.Consensus/          # BasaltBFT, pipelined consensus, staking, slashing
+|   |   +-- Basalt.Consensus/          # BasaltBFT, pipelined consensus, staking, slashing, epoch manager
 |   +-- execution/
 |   |   +-- Basalt.Execution/          # Transaction executor, BasaltVM, gas metering, sandbox
 |   +-- api/
@@ -142,7 +142,7 @@ Basalt.sln                              (38 C# projects)
 |   |   +-- Basalt.Explorer/           # Blazor WebAssembly block explorer
 |   +-- node/
 |       +-- Basalt.Node/               # Composition root, single binary
-+-- tests/                             # 15 test projects, 1,380 tests
++-- tests/                             # 16 test projects, 1,698 tests
 |   +-- Basalt.Core.Tests/
 |   +-- Basalt.Crypto.Tests/
 |   +-- Basalt.Codec.Tests/
@@ -175,6 +175,7 @@ Basalt.sln                              (38 C# projects)
 | `GET` | `/v1/blocks/latest` | Get the latest block |
 | `GET` | `/v1/blocks/{id}` | Get block by number or hash |
 | `GET` | `/v1/accounts/{address}` | Get account balance and nonce |
+| `GET` | `/v1/validators` | List active validators with stake info |
 | `GET` | `/v1/status` | Node status (block height, mempool, etc.) |
 | `POST` | `/v1/faucet` | Request devnet test tokens |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -210,6 +211,7 @@ The node is configured via environment variables:
 | Max transactions per block | 10,000 |
 | Transfer gas cost | 21,000 |
 | Min validator stake | 100,000 BSLT |
+| Epoch length | 1,000 blocks (100 on devnet) |
 | Unbonding period | ~21 days |
 
 ## License

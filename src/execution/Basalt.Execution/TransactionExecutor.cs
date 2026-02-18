@@ -7,20 +7,27 @@ namespace Basalt.Execution;
 
 /// <summary>
 /// Executes transactions and applies state changes.
-/// Supports Transfer (Type=0), ContractDeploy (Type=1), and ContractCall (Type=2).
+/// Supports Transfer (Type=0), ContractDeploy (Type=1), ContractCall (Type=2),
+/// StakeDeposit (Type=3), StakeWithdraw (Type=4), ValidatorRegister (Type=5),
+/// and ValidatorExit (Type=6).
 /// </summary>
 public sealed class TransactionExecutor
 {
     private readonly ChainParameters _chainParams;
     private readonly IContractRuntime _contractRuntime;
+    private readonly IStakingState? _stakingState;
 
     public TransactionExecutor(ChainParameters chainParams)
-        : this(chainParams, new ManagedContractRuntime()) { }
+        : this(chainParams, new ManagedContractRuntime(), null) { }
 
     public TransactionExecutor(ChainParameters chainParams, IContractRuntime contractRuntime)
+        : this(chainParams, contractRuntime, null) { }
+
+    public TransactionExecutor(ChainParameters chainParams, IContractRuntime contractRuntime, IStakingState? stakingState)
     {
         _chainParams = chainParams;
         _contractRuntime = contractRuntime;
+        _stakingState = stakingState;
     }
 
     /// <summary>
@@ -33,6 +40,10 @@ public sealed class TransactionExecutor
             TransactionType.Transfer => ExecuteTransfer(tx, stateDb, blockHeader, txIndex),
             TransactionType.ContractDeploy => ExecuteContractDeploy(tx, stateDb, blockHeader, txIndex),
             TransactionType.ContractCall => ExecuteContractCall(tx, stateDb, blockHeader, txIndex),
+            TransactionType.StakeDeposit => ExecuteStakeDeposit(tx, stateDb, blockHeader, txIndex),
+            TransactionType.StakeWithdraw => ExecuteStakeWithdraw(tx, stateDb, blockHeader, txIndex),
+            TransactionType.ValidatorRegister => ExecuteValidatorRegister(tx, stateDb, blockHeader, txIndex),
+            TransactionType.ValidatorExit => ExecuteValidatorExit(tx, stateDb, blockHeader, txIndex),
             _ => ExecuteStub(tx, stateDb, blockHeader, txIndex, BasaltErrorCode.InvalidTransactionType),
         };
     }
@@ -252,6 +263,127 @@ public sealed class TransactionExecutor
         {
             return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb);
         }
+    }
+
+    private TransactionReceipt ExecuteValidatorRegister(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
+
+        var gasUsed = _chainParams.TransferGasCost;
+        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var totalDebit = tx.Value + gasFee;
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < totalDebit)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+
+        if (tx.Value < _stakingState.MinValidatorStake)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakeBelowMinimum, stateDb);
+
+        // Parse optional P2P endpoint from tx.Data (UTF-8 encoded)
+        string? p2pEndpoint = tx.Data.Length > 0 ? System.Text.Encoding.UTF8.GetString(tx.Data) : null;
+
+        var result = _stakingState.RegisterValidator(tx.Sender, tx.Value, blockHeader.Number, p2pEndpoint);
+        if (!result.IsSuccess)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorAlreadyRegistered, stateDb);
+
+        // Debit sender
+        senderState = senderState with
+        {
+            Balance = senderState.Balance - totalDebit,
+            Nonce = senderState.Nonce + 1,
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+    }
+
+    private TransactionReceipt ExecuteValidatorExit(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
+
+        var gasUsed = _chainParams.TransferGasCost;
+        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+
+        var selfStake = _stakingState.GetSelfStake(tx.Sender);
+        if (selfStake == null)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+
+        // Unstake the full self-stake — triggers unbonding period
+        var result = _stakingState.InitiateUnstake(tx.Sender, selfStake.Value, blockHeader.Number);
+        if (!result.IsSuccess)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+
+        // Debit gas fee
+        senderState = senderState with
+        {
+            Balance = senderState.Balance - gasFee,
+            Nonce = senderState.Nonce + 1,
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+    }
+
+    private TransactionReceipt ExecuteStakeDeposit(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
+
+        var gasUsed = _chainParams.TransferGasCost;
+        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+        var totalDebit = tx.Value + gasFee;
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < totalDebit)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+
+        var result = _stakingState.AddStake(tx.Sender, tx.Value);
+        if (!result.IsSuccess)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+
+        // Debit sender
+        senderState = senderState with
+        {
+            Balance = senderState.Balance - totalDebit,
+            Nonce = senderState.Nonce + 1,
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
+    }
+
+    private TransactionReceipt ExecuteStakeWithdraw(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        if (_stakingState == null)
+            return CreateReceipt(tx, blockHeader, txIndex, _chainParams.TransferGasCost, false, BasaltErrorCode.StakingNotAvailable, stateDb);
+
+        var gasUsed = _chainParams.TransferGasCost;
+        var gasFee = tx.GasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+
+        var result = _stakingState.InitiateUnstake(tx.Sender, tx.Value, blockHeader.Number);
+        if (!result.IsSuccess)
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb);
+
+        // Debit gas fee only (staked funds enter unbonding queue)
+        senderState = senderState with
+        {
+            Balance = senderState.Balance - gasFee,
+            Nonce = senderState.Nonce + 1,
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb);
     }
 
     /// <summary>

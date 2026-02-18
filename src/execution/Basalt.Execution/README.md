@@ -28,7 +28,7 @@ Hash256 hash = tx.Hash;                // BLAKE3 of the signing payload
 PublicKey senderPubKey = tx.SenderPublicKey;  // Set automatically by Transaction.Sign()
 ```
 
-Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5).
+Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5), `ValidatorExit` (6).
 
 ### TransactionReceipt
 
@@ -64,21 +64,29 @@ if (!result.IsSuccess)
 
 ### TransactionExecutor
 
-Executes validated transactions against state, producing receipts with gas accounting. Supports `Transfer`, `ContractDeploy`, and `ContractCall` types. Other transaction types return an `InvalidTransactionType` error.
+Executes validated transactions against state, producing receipts with gas accounting. Supports all transaction types including transfers, contract operations, and staking.
 
 ```csharp
 var executor = new TransactionExecutor(chainParams);
 // Or with a custom contract runtime:
 var executor = new TransactionExecutor(chainParams, contractRuntime);
+// Or with staking support:
+var executor = new TransactionExecutor(chainParams, contractRuntime, stakingState);
 
 TransactionReceipt receipt = executor.Execute(tx, stateDb, blockHeader, txIndex);
 ```
+
+The third constructor parameter accepts an `IStakingState` (defined in `Basalt.Core`) for staking transaction handling. When null, staking transactions return `StakingNotAvailable`.
 
 Key behaviors:
 
 - **Transfer**: Debits sender (value + gas fee), credits recipient, increments nonce. Gas cost is `ChainParameters.TransferGasCost`.
 - **ContractDeploy**: Derives contract address from `BLAKE3(sender || nonce)` (last 20 bytes). Debits sender for max gas fee + value upfront. Creates the contract account with `AccountType.Contract` and the code hash. Delegates to `IContractRuntime.Deploy()`. Refunds unused gas (capped at 50% via `GasMeter.EffectiveGasUsed()`). Reverts contract creation on failure.
 - **ContractCall**: Loads contract code from storage under the well-known key `0xFF01` (a 32-byte `Hash256` with `[0xFF, 0x01, 0x00, ...]`). Debits sender for max gas fee + value, transfers value to contract, delegates to `IContractRuntime.Execute()`, then refunds unused gas.
+- **ValidatorRegister**: Validates `tx.Value >= MinValidatorStake`, registers the sender as a validator via `IStakingState`, debits sender (value + gas fee). Optional P2P endpoint encoded as UTF-8 in `tx.Data`.
+- **ValidatorExit**: Unstakes the validator's full self-stake, triggering the unbonding period. Debits gas fee only.
+- **StakeDeposit**: Adds `tx.Value` to an existing validator's stake. Debits sender (value + gas fee).
+- **StakeWithdraw**: Initiates unstaking of `tx.Value` from the sender's stake. Debits gas fee only (staked funds enter the unbonding queue).
 
 ### Mempool
 

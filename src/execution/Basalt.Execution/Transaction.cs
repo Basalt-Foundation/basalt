@@ -15,6 +15,7 @@ public enum TransactionType : byte
     StakeDeposit = 3,
     StakeWithdraw = 4,
     ValidatorRegister = 5,
+    ValidatorExit = 6,
 }
 
 /// <summary>

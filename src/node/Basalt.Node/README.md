@@ -49,12 +49,14 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
    - `GossipService` for transaction and consensus message broadcasting
    - `BasaltBft` (sequential) or `PipelinedConsensus` depending on configuration
    - `WeightedLeaderSelector` for stake-weighted leader rotation
+   - `EpochManager` for dynamic validator set transitions at epoch boundaries
 8. Connects to static peers and performs state sync from peers if behind
 9. Runs BFT consensus loop with 200ms tick interval, block-time pacing, and view-change timeouts
 10. Subscribes to mempool events for transaction gossip (peer-received transactions use `raiseEvent: false` to avoid double-gossip)
 11. Tracks validator activity for inactivity slashing (threshold: 100 blocks) and detects double-signing
-12. Persists finalized blocks to RocksDB
-13. Runs a peer reconnection loop (checks every 5 seconds)
+12. Checks for epoch transitions after each finalized block -- rebuilds the validator set from `StakingState` when at an epoch boundary
+13. Persists finalized blocks to RocksDB
+14. Runs a peer reconnection loop (checks every 5 seconds)
 
 ## NodeCoordinator
 
@@ -65,6 +67,8 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 - **Networking**: TCP transport, handshake protocol (Hello/HelloAck), peer manager, Episub gossip
 - **Consensus**: Sequential (`BasaltBft`) or pipelined (`PipelinedConsensus`) mode
 - **Block Production**: On-demand by the leader, finalized through BFT (no `BlockProductionLoop` in consensus mode)
+- **Epoch Transitions**: `EpochManager` detects epoch boundaries and rebuilds `ValidatorSet` from `StakingState`. `ApplyEpochTransition` atomically swaps the set, rewires leader selection, and resets tracking state
+- **Staking Transactions**: `TransactionExecutor` receives `StakingState` (via `IStakingState`) to handle `ValidatorRegister`, `ValidatorExit`, `StakeDeposit`, and `StakeWithdraw` transactions
 - **State Sync**: Batch-based sync via `SyncRequestMessage`/`SyncResponseMessage` (batch size: 50 blocks)
 - **Slashing**: Double-sign detection via `_proposalsByView` dictionary, inactivity tracking via `_lastActiveBlock` per validator
 

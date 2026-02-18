@@ -158,9 +158,33 @@ BasaltResult<Block> blockError = BasaltResult<Block>.Error(BasaltErrorCode.Inval
 Block value = blockResult.Value!;
 ```
 
+### IStakingState
+
+Interface for cross-layer staking access, allowing the execution layer to interact with staking without a direct dependency on the consensus assembly.
+
+```csharp
+public interface IStakingState
+{
+    UInt256 MinValidatorStake { get; }
+    StakingOperationResult RegisterValidator(Address validatorAddress, UInt256 initialStake,
+        ulong blockNumber = 0, string? p2pEndpoint = null);
+    StakingOperationResult AddStake(Address validatorAddress, UInt256 amount);
+    StakingOperationResult InitiateUnstake(Address validatorAddress, UInt256 amount, ulong currentBlock);
+    UInt256? GetSelfStake(Address validatorAddress);
+}
+```
+
+**StakingOperationResult**: `readonly struct` with `IsSuccess`, `ErrorMessage`. Factory: `StakingOperationResult.Ok()`, `StakingOperationResult.Error(message)`.
+
 ### BasaltErrorCode
 
-Categorized error codes: transaction validation (1xxx), block errors (2xxx), consensus (3xxx), execution (4xxx), storage (5xxx), network (6xxx), compliance (7xxx), internal (9xxx).
+Categorized error codes: transaction validation (1xxx), block errors (2xxx), consensus (3xxx), execution (4xxx), storage (5xxx), network (6xxx), compliance (7xxx), staking (8xxx), internal (9xxx).
+
+Staking error codes:
+- `StakeBelowMinimum` (8001) -- Stake amount below minimum validator stake
+- `ValidatorAlreadyRegistered` (8002) -- Validator address already in staking state
+- `ValidatorNotRegistered` (8003) -- Validator address not found in staking state
+- `StakingNotAvailable` (8004) -- Staking state not configured (no `IStakingState` provided)
 
 ### BasaltException
 

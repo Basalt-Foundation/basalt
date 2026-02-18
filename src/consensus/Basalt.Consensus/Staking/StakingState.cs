@@ -6,7 +6,7 @@ namespace Basalt.Consensus.Staking;
 /// In-memory staking state that tracks validator stakes, delegations, and unbonding.
 /// In production, this would be backed by a system contract at 0x0...0001.
 /// </summary>
-public sealed class StakingState
+public sealed class StakingState : IStakingState
 {
     private readonly Dictionary<Address, StakeInfo> _stakes = new();
     private readonly List<UnbondingEntry> _unbondingQueue = new();
@@ -25,7 +25,8 @@ public sealed class StakingState
     /// <summary>
     /// Register a new validator with an initial stake.
     /// </summary>
-    public StakingResult RegisterValidator(Address validatorAddress, UInt256 initialStake)
+    public StakingResult RegisterValidator(Address validatorAddress, UInt256 initialStake,
+        ulong blockNumber = 0, string? p2pEndpoint = null)
     {
         lock (_lock)
         {
@@ -41,7 +42,8 @@ public sealed class StakingState
                 SelfStake = initialStake,
                 TotalStake = initialStake,
                 IsActive = true,
-                RegisteredAtBlock = 0,
+                RegisteredAtBlock = blockNumber,
+                P2PEndpoint = p2pEndpoint ?? "",
             };
 
             return StakingResult.Ok();
@@ -162,6 +164,35 @@ public sealed class StakingState
     }
 
     /// <summary>
+    /// Get the self-stake of a validator.
+    /// </summary>
+    public UInt256? GetSelfStake(Address validatorAddress)
+    {
+        lock (_lock)
+            return _stakes.TryGetValue(validatorAddress, out var info) ? info.SelfStake : null;
+    }
+
+    // Explicit IStakingState implementations that bridge StakingResult → StakingOperationResult
+    StakingOperationResult IStakingState.RegisterValidator(Address validatorAddress, UInt256 initialStake,
+        ulong blockNumber, string? p2pEndpoint)
+    {
+        var result = RegisterValidator(validatorAddress, initialStake, blockNumber, p2pEndpoint);
+        return result.IsSuccess ? StakingOperationResult.Ok() : StakingOperationResult.Error(result.ErrorMessage!);
+    }
+
+    StakingOperationResult IStakingState.AddStake(Address validatorAddress, UInt256 amount)
+    {
+        var result = AddStake(validatorAddress, amount);
+        return result.IsSuccess ? StakingOperationResult.Ok() : StakingOperationResult.Error(result.ErrorMessage!);
+    }
+
+    StakingOperationResult IStakingState.InitiateUnstake(Address validatorAddress, UInt256 amount, ulong currentBlock)
+    {
+        var result = InitiateUnstake(validatorAddress, amount, currentBlock);
+        return result.IsSuccess ? StakingOperationResult.Ok() : StakingOperationResult.Error(result.ErrorMessage!);
+    }
+
+    /// <summary>
     /// Total staked across all validators.
     /// </summary>
     public UInt256 TotalStaked
@@ -190,6 +221,7 @@ public sealed class StakeInfo
     public UInt256 TotalStake { get; set; }
     public bool IsActive { get; set; }
     public ulong RegisteredAtBlock { get; set; }
+    public string P2PEndpoint { get; set; } = "";
     public Dictionary<Address, UInt256> Delegators { get; } = new();
 }
 

@@ -19,7 +19,7 @@ namespace Basalt.Consensus;
 /// </summary>
 public sealed class PipelinedConsensus
 {
-    private readonly ValidatorSet _validatorSet;
+    private ValidatorSet _validatorSet;
     private readonly PeerId _localPeerId;
     private readonly byte[] _privateKey;
     private readonly IBlsSigner _blsSigner;
@@ -59,6 +59,18 @@ public sealed class PipelinedConsensus
         _blsSigner = blsSigner;
         _logger = logger;
         _lastFinalizedBlock = lastFinalizedBlock;
+    }
+
+    /// <summary>
+    /// Atomically replace the validator set (e.g., on epoch transition).
+    /// Clears all in-flight rounds, view change votes, and pending finalizations.
+    /// </summary>
+    public void UpdateValidatorSet(ValidatorSet newSet)
+    {
+        _validatorSet = newSet;
+        _activeRounds.Clear();
+        _viewChangeVotes.Clear();
+        _pendingFinalizations.Clear();
     }
 
     /// <summary>

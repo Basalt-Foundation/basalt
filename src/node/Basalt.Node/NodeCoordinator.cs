@@ -52,6 +52,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private PipelinedConsensus? _pipelinedConsensus;
     private ValidatorSet? _validatorSet;
     private IBlsSigner _blsSigner = new BlsSigner();
+    private EpochManager? _epochManager;
 
     // Block production (consensus-driven — no BlockProductionLoop)
     private BlockBuilder? _blockBuilder;
@@ -305,6 +306,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _leaderSelector = new WeightedLeaderSelector(_validatorSet!, _stakingState);
             _validatorSet!.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
             _logger.LogInformation("Consensus: using stake-weighted leader selection");
+
+            // Setup epoch manager for dynamic validator set transitions
+            _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner);
+            _logger.LogInformation("Epoch manager: epoch length={EpochLength}, validator set size={SetSize}",
+                _chainParams.EpochLength, _chainParams.ValidatorSetSize);
         }
 
         if (_config.UsePipelining)
@@ -416,6 +422,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // Check for inactive validators and slash
                 CheckInactiveValidators(block.Number);
 
+                // Check for epoch transition — rebuild validator set if at boundary
+                var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                if (newSet != null)
+                    ApplyEpochTransition(newSet, block.Number);
+
                 _logger.LogInformation(
                     "Block #{Number} finalized via consensus. Hash: {Hash}, Txs: {TxCount}",
                     block.Number, hash.ToHexString()[..18] + "...", block.Transactions.Count);
@@ -461,7 +472,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             ? new SandboxedContractRuntime(new SandboxConfiguration())
             : new ManagedContractRuntime();
 
-        _txExecutor = new TransactionExecutor(_chainParams, contractRuntime);
+        _txExecutor = new TransactionExecutor(_chainParams, contractRuntime, _stakingState);
 
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
@@ -1373,6 +1384,39 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 _slashingEngine.SlashInactivity(validator.Address, lastActive, currentBlock);
             }
         }
+    }
+
+    /// <summary>
+    /// Apply an epoch transition: swap the validator set, rewire consensus and leader selection.
+    /// </summary>
+    private void ApplyEpochTransition(ValidatorSet newSet, ulong blockNumber)
+    {
+        var oldCount = _validatorSet?.Count ?? 0;
+        _validatorSet = newSet;
+
+        // Rewire leader selector with new set
+        if (_stakingState != null)
+        {
+            _leaderSelector = new WeightedLeaderSelector(_validatorSet, _stakingState);
+            _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
+        }
+
+        // Update consensus engine
+        if (_config.UsePipelining)
+            _pipelinedConsensus?.UpdateValidatorSet(newSet);
+        else
+            _consensus?.UpdateValidatorSet(newSet);
+
+        // Reset activity tracking for new set
+        _lastActiveBlock.Clear();
+        foreach (var v in newSet.Validators)
+            _lastActiveBlock[v.Address] = blockNumber;
+
+        // Clear stale proposal history
+        _proposalsByView.Clear();
+
+        _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",
+            blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
     }
 
     private void PersistBlock(Block block, byte[] serializedBlockData)

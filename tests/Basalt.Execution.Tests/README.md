@@ -1,6 +1,6 @@
 # Basalt.Execution.Tests
 
-Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, and sandboxed contract runtime. **82 tests.**
+Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, sandboxed contract runtime, and staking transactions. **169 tests.**
 
 ## Test Coverage
 
@@ -11,10 +11,12 @@ Unit tests for Basalt transaction processing: validation, execution, mempool, ch
 | Mempool | 14 | Transaction pool: add/remove, capacity limits, nonce ordering, expiry, duplicate rejection, fee prioritization |
 | SandboxedRuntime | 12 | Contract sandboxing: deploy/call, gas metering, memory limits, revert handling, forbidden operations |
 | BlockBuilder | 12 | Block construction, transaction root computation, receipts root, state root updates, gas usage tracking |
+| StakingTransactions | 11 | Validator register/exit, stake deposit/withdraw, balance debits, P2P endpoint, error cases (below minimum, insufficient balance, not registered, no staking state) |
 | VM | 9 | Virtual machine: opcode execution, stack operations, memory access, gas accounting, contract calls |
 | Transaction | 5 | Transaction creation, signing, hash computation, serialization roundtrip |
+| FaucetDiagnostic | Various | Faucet endpoint and SDK contract tests |
 
-**Total: 82 tests**
+**Total: 169 tests**
 
 ## Test Files
 
@@ -23,6 +25,7 @@ Unit tests for Basalt transaction processing: validation, execution, mempool, ch
 - `MempoolTests.cs` -- Transaction pool management: ordering, capacity, expiry, deduplication
 - `Sandbox/SandboxedRuntimeTests.cs` -- Sandboxed contract execution: isolation, gas limits, revert
 - `BlockBuilderTests.cs` -- Block assembly: transaction ordering, Merkle roots, state updates
+- `StakingTransactionTests.cs` -- Staking transaction execution: register, exit, deposit, withdraw, edge cases
 - `VmTests.cs` -- Basalt VM: opcode execution, stack, memory, gas metering
 - `TransactionTests.cs` -- Transaction struct: construction, signing, hashing
 

@@ -89,9 +89,16 @@ int count = validators.Count;
 
 // Custom leader selection (e.g., stake-weighted via WeightedLeaderSelector)
 validators.SetLeaderSelector(viewNumber => selectLeaderByStake(viewNumber));
+
+// Transfer identities from a previous set (used during epoch transitions)
+newSet.TransferIdentities(previousSet);
 ```
 
 Default leader selection is equal-weight round-robin: `viewNumber % validatorCount`.
+
+`TransferIdentities` copies `PeerId`, `PublicKey`, and `BlsPublicKey` from a previous `ValidatorSet` for validators that appear in both sets (matched by `Address`). This preserves network identity across epoch transitions so that established P2P connections remain valid.
+
+Both `BasaltBft` and `PipelinedConsensus` expose `UpdateValidatorSet(ValidatorSet newSet)` for atomic validator set replacement during epoch transitions. This clears all in-flight vote state and resets consensus to `Idle`.
 
 ### ValidatorInfo
 
@@ -128,6 +135,7 @@ In-memory staking state for validator registration, delegation, and unbonding. L
 var staking = new StakingState { MinValidatorStake = minStake, UnbondingPeriod = 4_536_000 };
 
 StakingResult result = staking.RegisterValidator(address, initialStake);
+StakingResult result = staking.RegisterValidator(address, initialStake, blockNumber, p2pEndpoint);
 StakingResult result = staking.AddStake(address, additionalAmount);
 StakingResult result = staking.Delegate(delegatorAddr, validatorAddr, amount);
 StakingResult result = staking.InitiateUnstake(address, amount, currentBlock);
@@ -135,8 +143,11 @@ StakingResult result = staking.InitiateUnstake(address, amount, currentBlock);
 List<UnbondingEntry> completed = staking.ProcessUnbonding(currentBlock);
 List<StakeInfo> active = staking.GetActiveValidators();
 StakeInfo? info = staking.GetStakeInfo(validatorAddr);
+UInt256? selfStake = staking.GetSelfStake(validatorAddr);
 UInt256 total = staking.TotalStaked;  // Sum of all validator stakes
 ```
+
+`StakingState` also implements `IStakingState` (defined in `Basalt.Core`) via explicit interface implementation, allowing the execution layer to interact with staking without a direct dependency on the consensus assembly.
 
 Default `MinValidatorStake` is `100000000000000000000000` (100,000 tokens at 10^18 precision). Default `UnbondingPeriod` is 4,536,000 blocks (~21 days at 400ms blocks).
 
@@ -155,6 +166,7 @@ public sealed class StakeInfo
     public UInt256 TotalStake { get; set; }
     public bool IsActive { get; set; }
     public ulong RegisteredAtBlock { get; set; }
+    public string P2PEndpoint { get; set; }   // Optional, set during ValidatorRegister tx
     public Dictionary<Address, UInt256> Delegators { get; }
 }
 ```
@@ -191,6 +203,40 @@ Slash application: penalty is deducted from self-stake first; any remainder is t
 **SlashingEvent**: `Validator` (Address), `Reason` (SlashingReason), `Penalty` (UInt256), `BlockNumber` (ulong), `Description` (string), `Timestamp` (DateTimeOffset).
 
 **SlashingReason enum**: `DoubleSign`, `Inactivity`, `InvalidBlock`.
+
+### EpochManager
+
+Detects epoch boundaries and rebuilds the `ValidatorSet` from `StakingState`. An epoch transition occurs every `ChainParameters.EpochLength` blocks.
+
+```csharp
+var epochManager = new EpochManager(chainParams, stakingState, initialValidatorSet, blsSigner);
+
+epochManager.OnEpochTransition += (epoch, newSet) => { /* apply new validator set */ };
+
+// Call after each block is finalized
+ValidatorSet? newSet = epochManager.OnBlockFinalized(blockNumber);
+if (newSet != null)
+{
+    // Epoch transition occurred — swap validator set in consensus engine
+    consensus.UpdateValidatorSet(newSet);
+}
+
+// Utility methods
+ulong epoch = EpochManager.ComputeEpoch(blockNumber, epochLength);
+bool isBoundary = epochManager.IsEpochBoundary(blockNumber);
+ValidatorSet built = epochManager.BuildValidatorSetFromStaking();
+
+// Properties
+ulong currentEpoch = epochManager.CurrentEpoch;
+ValidatorSet currentSet = epochManager.CurrentSet;
+```
+
+Rebuild algorithm:
+1. Query `StakingState.GetActiveValidators()` (sorted by `TotalStake` descending)
+2. Cap at `ChainParameters.ValidatorSetSize` (top N by stake)
+3. Sort selected validators by `Address` ascending (deterministic across all nodes)
+4. Assign sequential indices 0..N-1
+5. Call `TransferIdentities(previousSet)` to preserve network identity
 
 **ConsensusState enum**: `Idle`, `Proposing`, `Preparing`, `PreCommitting`, `Committing`, `Finalized`.
 

@@ -19,7 +19,7 @@ namespace Basalt.Consensus;
 /// </summary>
 public sealed class BasaltBft
 {
-    private readonly ValidatorSet _validatorSet;
+    private ValidatorSet _validatorSet;
     private readonly PeerId _localPeerId;
     private readonly byte[] _privateKey;
     private readonly IBlsSigner _blsSigner;
@@ -87,6 +87,19 @@ public sealed class BasaltBft
     /// Current block number being decided.
     /// </summary>
     public ulong CurrentBlockNumber => _currentBlockNumber;
+
+    /// <summary>
+    /// Atomically replace the validator set (e.g., on epoch transition).
+    /// Clears all in-flight vote state and resets consensus to Idle.
+    /// </summary>
+    public void UpdateValidatorSet(ValidatorSet newSet)
+    {
+        _validatorSet = newSet;
+        _votes.Clear();
+        _voteSignatures.Clear();
+        _viewChangeRequestedForView = null;
+        _state = ConsensusState.Idle;
+    }
 
     /// <summary>
     /// Check if this node is the leader for the current view.
