@@ -21,6 +21,7 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 
 RocksDbStore? rocksDbStore = null;
+IStateDatabase? stateDb = null;
 try
 {
     var config = NodeConfiguration.FromEnvironment();
@@ -32,9 +33,6 @@ try
     var chainManager = new ChainManager();
     var mempool = new Mempool();
     var validator = new TransactionValidator(chainParams);
-
-    // Storage initialization — RocksDB if DataDir is set, otherwise in-memory
-    IStateDatabase stateDb;
     BlockStore? blockStore = null;
     ReceiptStore? receiptStore = null;
 
@@ -89,7 +87,10 @@ try
             {
                 var genesisBlock = BlockCodec.DeserializeBlock(genesisRaw);
                 var latestBlock = BlockCodec.DeserializeBlock(latestRaw);
-                stateDb = new TrieStateDb(trieNodeStore, latestBlock.Header.StateRoot);
+                var recoveredTrie = new TrieStateDb(trieNodeStore, latestBlock.Header.StateRoot);
+                var recoveredFlat = new FlatStateDb(recoveredTrie, new RocksDbFlatStatePersistence(rocksDbStore));
+                recoveredFlat.LoadFromPersistence();
+                stateDb = recoveredFlat;
                 chainManager.ResumeFromBlock(genesisBlock, latestBlock);
                 Log.Information("Recovered from persistent storage. Latest block: #{Number}, Hash: {Hash}",
                     latestBlockNumber.Value, latestBlock.Hash.ToHexString()[..18] + "...");
@@ -98,7 +99,7 @@ try
             {
                 // Data corrupted — start fresh
                 Log.Warning("Persistent data corrupted, starting fresh");
-                stateDb = new TrieStateDb(trieNodeStore);
+                stateDb = new FlatStateDb(new TrieStateDb(trieNodeStore), new RocksDbFlatStatePersistence(rocksDbStore));
                 var genesisBlock = chainManager.CreateGenesisBlock(chainParams, genesisBalances, stateDb);
                 PersistBlock(blockStore, genesisBlock);
                 Log.Information("Genesis block created. Hash: {Hash}", genesisBlock.Hash.ToHexString()[..18] + "...");
@@ -107,7 +108,7 @@ try
         else
         {
             // Fresh start with RocksDB
-            stateDb = new TrieStateDb(trieNodeStore);
+            stateDb = new FlatStateDb(new TrieStateDb(trieNodeStore), new RocksDbFlatStatePersistence(rocksDbStore));
             var genesisBlock = chainManager.CreateGenesisBlock(chainParams, genesisBalances, stateDb);
             PersistBlock(blockStore, genesisBlock);
             Log.Information("Genesis block created (persistent). Hash: {Hash}", genesisBlock.Hash.ToHexString()[..18] + "...");
@@ -257,6 +258,8 @@ catch (Exception ex)
 }
 finally
 {
+    if (stateDb is FlatStateDb flatState)
+        flatState.FlushToPersistence();
     rocksDbStore?.Dispose();
     Log.CloseAndFlush();
 }
