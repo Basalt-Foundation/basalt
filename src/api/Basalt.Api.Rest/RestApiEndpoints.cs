@@ -684,6 +684,7 @@ public sealed class TransactionRequest
     [JsonPropertyName("chainId")] public uint ChainId { get; set; }
     [JsonPropertyName("signature")] public string Signature { get; set; } = "";
     [JsonPropertyName("senderPublicKey")] public string SenderPublicKey { get; set; } = "";
+    [JsonPropertyName("complianceProofs")] public ComplianceProofDto[]? ComplianceProofs { get; set; }
 
     public Transaction ToTransaction()
     {
@@ -703,6 +704,7 @@ public sealed class TransactionRequest
             ChainId = ChainId,
             Signature = new Core.Signature(Convert.FromHexString(Signature.StartsWith("0x") ? Signature[2..] : Signature)),
             SenderPublicKey = new PublicKey(Convert.FromHexString(SenderPublicKey.StartsWith("0x") ? SenderPublicKey[2..] : SenderPublicKey)),
+            ComplianceProofs = ComplianceProofs?.Select(p => p.ToComplianceProof()).ToArray() ?? [],
         };
     }
 }
@@ -784,6 +786,7 @@ public sealed class TransactionDetailResponse
     [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
     [JsonPropertyName("data")] public string? Data { get; set; }
     [JsonPropertyName("dataSize")] public int DataSize { get; set; }
+    [JsonPropertyName("complianceProofCount")] public int ComplianceProofCount { get; set; }
     // Receipt fields (populated when receipt is available)
     [JsonPropertyName("gasUsed")] public ulong? GasUsed { get; set; }
     [JsonPropertyName("success")] public bool? Success { get; set; }
@@ -811,6 +814,7 @@ public sealed class TransactionDetailResponse
             TransactionIndex = index,
             Data = tx.Data.Length > 0 ? Convert.ToHexString(tx.Data) : null,
             DataSize = tx.Data.Length,
+            ComplianceProofCount = tx.ComplianceProofs.Length,
         };
 
         if (receipt != null)
@@ -936,6 +940,25 @@ public sealed class LogResponse
     [JsonPropertyName("data")] public string? Data { get; set; }
 }
 
+public sealed class ComplianceProofDto
+{
+    [JsonPropertyName("schemaId")] public string SchemaId { get; set; } = "";
+    [JsonPropertyName("proof")] public string Proof { get; set; } = "";
+    [JsonPropertyName("publicInputs")] public string PublicInputs { get; set; } = "";
+    [JsonPropertyName("nullifier")] public string Nullifier { get; set; } = "";
+
+    public ComplianceProof ToComplianceProof()
+    {
+        return new ComplianceProof
+        {
+            SchemaId = Hash256.FromHexString(SchemaId),
+            Proof = Convert.FromHexString(Proof.StartsWith("0x") ? Proof[2..] : Proof),
+            PublicInputs = Convert.FromHexString(PublicInputs.StartsWith("0x") ? PublicInputs[2..] : PublicInputs),
+            Nullifier = Hash256.FromHexString(Nullifier),
+        };
+    }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -956,4 +979,6 @@ public sealed class LogResponse
 [JsonSerializable(typeof(ReceiptResponse))]
 [JsonSerializable(typeof(LogResponse))]
 [JsonSerializable(typeof(LogResponse[]))]
+[JsonSerializable(typeof(ComplianceProofDto))]
+[JsonSerializable(typeof(ComplianceProofDto[]))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

@@ -38,6 +38,14 @@ public sealed class Transaction
     public Signature Signature { get; init; }
     public PublicKey SenderPublicKey { get; init; }
 
+    /// <summary>
+    /// Optional ZK compliance proofs attached to this transaction.
+    /// Each proof demonstrates the sender satisfies a credential schema requirement
+    /// without revealing identity, issuer, or credential details.
+    /// Not part of the signing payload — proofs are ancillary verification data.
+    /// </summary>
+    public ComplianceProof[] ComplianceProofs { get; init; } = [];
+
     /// <summary>Whether this is an EIP-1559 transaction (has explicit MaxFeePerGas).</summary>
     public bool IsEip1559 => !MaxFeePerGas.IsZero;
 
@@ -129,6 +137,7 @@ public sealed class Transaction
             ChainId = unsignedTx.ChainId,
             Signature = signature,
             SenderPublicKey = publicKey,
+            ComplianceProofs = unsignedTx.ComplianceProofs,
         };
     }
 

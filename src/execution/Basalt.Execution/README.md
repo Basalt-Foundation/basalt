@@ -30,6 +30,27 @@ PublicKey senderPubKey = tx.SenderPublicKey;  // Set automatically by Transactio
 
 Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5), `ValidatorExit` (6).
 
+#### ComplianceProofs
+
+Transactions can carry ZK compliance proofs as ancillary data (not part of the signing payload):
+
+```csharp
+var tx = new Transaction
+{
+    // ... standard fields ...
+    ComplianceProofs = new[]
+    {
+        new ComplianceProof
+        {
+            SchemaId = schemaId,          // BLAKE3 hash of credential schema
+            Proof = groth16ProofBytes,     // 192 bytes (A[48]+B[96]+C[48])
+            PublicInputs = publicInputs,   // N x 32 bytes
+            Nullifier = nullifier,         // Unique per proof (anti-correlation)
+        }
+    },
+};
+```
+
 ### TransactionReceipt
 
 Generated after execution. The `ErrorCode` field is of type `BasaltErrorCode` (not a plain int).
@@ -72,11 +93,15 @@ var executor = new TransactionExecutor(chainParams);
 var executor = new TransactionExecutor(chainParams, contractRuntime);
 // Or with staking support:
 var executor = new TransactionExecutor(chainParams, contractRuntime, stakingState);
+// Or with staking + ZK compliance support:
+var executor = new TransactionExecutor(chainParams, contractRuntime, stakingState, complianceVerifier);
 
 TransactionReceipt receipt = executor.Execute(tx, stateDb, blockHeader, txIndex);
 ```
 
 The third constructor parameter accepts an `IStakingState` (defined in `Basalt.Core`) for staking transaction handling. When null, staking transactions return `StakingNotAvailable`.
+
+The fourth constructor parameter accepts an `IComplianceVerifier` (defined in `Basalt.Core`) for ZK compliance proof verification. When a transaction carries `ComplianceProofs`, the verifier validates them before executing the transfer. When null, compliance proofs are ignored.
 
 Key behaviors:
 

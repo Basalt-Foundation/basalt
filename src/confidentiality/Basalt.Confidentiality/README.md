@@ -19,6 +19,16 @@ Implemented — all core subsystems operational with comprehensive test coverage
 - **Groth16Codec** -- Binary serialization for Groth16 proofs and verification keys
   - `ProofSize = 192` (48 + 96 + 48 bytes: A in G1, B in G2, C in G1)
   - Methods: `EncodeProof`, `DecodeProof`, `EncodeVerificationKey`, `DecodeVerificationKey`
+- **SparseMerkleTree** -- Compact (lazy) Sparse Merkle Tree for credential revocation. Only non-default subtrees are stored in memory. Default hashes at each level are pre-computed so that empty subtrees are represented implicitly without allocating 2^256 nodes
+  - `Insert(Hash256 key)` -- Mark a credential as revoked
+  - `Delete(Hash256 key)` -- Unrevoke a credential
+  - `Contains(Hash256 key)` -- Check if a key is in the tree
+  - `GenerateProof(Hash256 key)` -- Generate membership or non-membership proof
+  - `static VerifyMembership(root, key, proof)` -- Verify a key IS in the tree
+  - `static VerifyNonMembership(root, key, proof)` -- Verify a key is NOT in the tree
+  - Properties: `Root`, `Depth`, `Count`
+  - Uses BLAKE3 hashing; default leaf = `Hash256.Zero`; configurable depth (1-256, default 256)
+- **SparseMerkleProof** -- Proof structure containing sibling hashes along the path and an inclusion flag (`IsIncluded`)
 
 ### Confidential Transfers (`Transactions/`)
 
@@ -67,7 +77,8 @@ Implemented — all core subsystems operational with comprehensive test coverage
 | Primitive | Curve / Algorithm | Use |
 |-----------|-------------------|-----|
 | Pedersen commitments | BLS12-381 G1 | Confidential amounts |
-| Groth16 ZK-SNARKs | BLS12-381 pairings | Range proofs |
+| Groth16 ZK-SNARKs | BLS12-381 pairings | Range proofs, ZK compliance |
+| Sparse Merkle Tree | BLAKE3 | Credential revocation |
 | X25519 ECDH | Curve25519 | Channel key agreement |
 | AES-256-GCM | — | Channel message encryption |
 | Ed25519 | Ed25519 | Channel message signing |

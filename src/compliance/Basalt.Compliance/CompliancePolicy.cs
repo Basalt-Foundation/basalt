@@ -1,8 +1,13 @@
+using Basalt.Core;
+
 namespace Basalt.Compliance;
 
 /// <summary>
 /// Per-token compliance policy configured by the token issuer.
 /// Defines the rules enforced on every transfer of the token.
+/// Supports two compliance paths:
+/// - ZK proofs (privacy-preserving): RequiredProofs defines schema-based requirements
+/// - On-chain attestations (legacy): KYC levels and sanctions checks
 /// </summary>
 public sealed class CompliancePolicy
 {
@@ -41,6 +46,15 @@ public sealed class CompliancePolicy
 
     /// <summary>Whether the token is paused (all transfers blocked).</summary>
     public bool Paused { get; set; }
+
+    /// <summary>
+    /// ZK proof requirements: credential schemas that must be proven
+    /// via Groth16 ZK-SNARKs. Each requirement specifies a schema and
+    /// minimum issuer trust tier. The user chooses their provider.
+    /// When set, transactions can satisfy compliance via ZK proofs
+    /// instead of on-chain attestations (privacy-preserving path).
+    /// </summary>
+    public ProofRequirement[] RequiredProofs { get; init; } = [];
 }
 
 /// <summary>
@@ -79,4 +93,6 @@ public enum ComplianceErrorCode : uint
     Lockup = 0x0024,
     Paused = 0x0025,
     TravelRuleMissing = 0x0026,
+    ComplianceProofInvalid = 0x0027,
+    ComplianceProofMissing = 0x0028,
 }

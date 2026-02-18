@@ -21,6 +21,8 @@ public static class GenesisContractDeployer
         public static readonly Address Governance = MakeSystemAddress(0x1003);
         public static readonly Address Escrow = MakeSystemAddress(0x1004);
         public static readonly Address StakingPool = MakeSystemAddress(0x1005);
+        public static readonly Address SchemaRegistry = MakeSystemAddress(0x1006);
+        public static readonly Address IssuerRegistry = MakeSystemAddress(0x1007);
 
         private static Address MakeSystemAddress(ushort id)
         {
@@ -53,7 +55,13 @@ public static class GenesisContractDeployer
         // Staking Pool (0x0104) — no constructor args
         DeploySystemContract(stateDb, registry, Addresses.StakingPool, 0x0104, [], chainId, logger);
 
-        logger?.LogInformation("Deployed {Count} system contracts at genesis", 5);
+        // Schema Registry (0x0105) — ZK compliance schema definitions
+        DeploySystemContract(stateDb, registry, Addresses.SchemaRegistry, 0x0105, [], chainId, logger);
+
+        // Issuer Registry (0x0106) — ZK compliance issuer management
+        DeploySystemContract(stateDb, registry, Addresses.IssuerRegistry, 0x0106, [], chainId, logger);
+
+        logger?.LogInformation("Deployed {Count} system contracts at genesis", 7);
     }
 
     private static void DeploySystemContract(

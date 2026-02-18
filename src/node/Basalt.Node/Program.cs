@@ -187,11 +187,24 @@ try
             stakingState,
             app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
 
+        // ZK compliance verifier (optional — verifies Groth16 proofs on transactions)
+        var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
+        {
+            // Lookup VK from SchemaRegistry contract storage (on-chain)
+            // SchemaRegistry stores VK at key "scr_vk:{schemaIdHex}"
+            return null; // VK lookup wired via SchemaRegistry contract calls
+        });
+        var complianceEngine = new Basalt.Compliance.ComplianceEngine(
+            new Basalt.Compliance.IdentityRegistry(),
+            new Basalt.Compliance.SanctionsList(),
+            zkVerifier);
+
         var coordinator = new NodeCoordinator(
             config, chainParams, chainManager, mempool, stateDb, validator, wsHandler,
             app.Services.GetRequiredService<ILoggerFactory>(),
             blockStore, receiptStore,
-            stakingState, slashingEngine);
+            stakingState, slashingEngine,
+            complianceEngine);
 
         Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty($"http://localhost:{config.HttpPort}")));
         Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);

@@ -80,6 +80,8 @@ public enum BasaltErrorCode
     LockupPeriodActive = 7005,
     GeoRestricted = 7006,
     AttestationExpired = 7007,
+    ComplianceProofInvalid = 7008,
+    ComplianceProofMissing = 7009,
 
     // Internal errors (9xxx)
     InternalError = 9001,

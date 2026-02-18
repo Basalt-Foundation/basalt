@@ -16,7 +16,7 @@ public static class BlockCodec
     // Type(1) + Nonce(8) + Sender(20) + To(20) + Value(32) + GasLimit(8) + GasPrice(32)
     // + MaxFeePerGas(32) + MaxPriorityFeePerGas(32)
     // + Priority(1) + ChainId(4) + Signature(64) + SenderPublicKey(32) = 286 bytes
-    // Plus variable: varint length prefix + Data bytes
+    // Plus variable: varint length prefix + Data bytes + ComplianceProofs
     private const int TxFixedSize = 286;
 
     // Fixed-size portion of a serialized block header:
@@ -32,7 +32,13 @@ public static class BlockCodec
     public static byte[] SerializeTransaction(Transaction tx)
     {
         int dataLength = tx.Data?.Length ?? 0;
-        int estimatedSize = TxFixedSize + dataLength + 16; // 16 bytes overhead for varint
+        int proofsSize = 0;
+        if (tx.ComplianceProofs.Length > 0)
+        {
+            foreach (var p in tx.ComplianceProofs)
+                proofsSize += 32 + (p.Proof?.Length ?? 0) + 10 + (p.PublicInputs?.Length ?? 0) + 10 + 32;
+        }
+        int estimatedSize = TxFixedSize + dataLength + proofsSize + 32; // overhead for varints
 
         byte[] result;
         if (estimatedSize > 8192)
@@ -158,6 +164,16 @@ public static class BlockCodec
         writer.WriteUInt32(tx.ChainId);          // 10. ChainId
         writer.WriteSignature(tx.Signature);     // 11. Signature
         writer.WritePublicKey(tx.SenderPublicKey); // 12. SenderPublicKey
+
+        // 13. ComplianceProofs (variable-length, optional)
+        writer.WriteVarInt((ulong)tx.ComplianceProofs.Length);
+        foreach (var proof in tx.ComplianceProofs)
+        {
+            writer.WriteHash256(proof.SchemaId);
+            writer.WriteBytes(proof.Proof ?? []);
+            writer.WriteBytes(proof.PublicInputs ?? []);
+            writer.WriteHash256(proof.Nullifier);
+        }
     }
 
     /// <summary>
@@ -180,6 +196,20 @@ public static class BlockCodec
         var signature = reader.ReadSignature();
         var senderPublicKey = reader.ReadPublicKey();
 
+        // Read ComplianceProofs (variable-length, optional)
+        var proofCount = (int)reader.ReadVarInt();
+        var complianceProofs = new ComplianceProof[proofCount];
+        for (int i = 0; i < proofCount; i++)
+        {
+            complianceProofs[i] = new ComplianceProof
+            {
+                SchemaId = reader.ReadHash256(),
+                Proof = reader.ReadBytes().ToArray(),
+                PublicInputs = reader.ReadBytes().ToArray(),
+                Nullifier = reader.ReadHash256(),
+            };
+        }
+
         return new Transaction
         {
             Type = type,
@@ -196,6 +226,7 @@ public static class BlockCodec
             ChainId = chainId,
             Signature = signature,
             SenderPublicKey = senderPublicKey,
+            ComplianceProofs = complianceProofs,
         };
     }
 

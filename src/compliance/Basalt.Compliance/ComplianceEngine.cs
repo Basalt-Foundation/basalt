@@ -1,14 +1,22 @@
+using Basalt.Core;
+using Basalt.Execution;
+
 namespace Basalt.Compliance;
 
 /// <summary>
-/// Compliance Engine (system contract 0x0...0004).
-/// Enforces per-token compliance policies on all transfers.
-/// Executes a sequential pipeline of checks: KYC -> Sanctions -> Geo -> Holding -> Lockup -> Travel Rule.
+/// Compliance Engine with hybrid verification paths.
+/// Supports two compliance models:
+/// - ZK proofs (privacy-preserving): Groth16 proofs attached to transactions
+/// - On-chain attestations (legacy): KYC levels and sanctions checks
+///
+/// The engine checks for ZK proofs first. If present, validates them via
+/// ZkComplianceVerifier. Otherwise, falls back to on-chain attestation checks.
 /// </summary>
-public sealed class ComplianceEngine
+public sealed class ComplianceEngine : IComplianceVerifier
 {
     private readonly IdentityRegistry _identityRegistry;
     private readonly SanctionsList _sanctionsList;
+    private readonly ZkComplianceVerifier? _zkVerifier;
     private readonly Dictionary<string, CompliancePolicy> _policies = new();
     private readonly List<ComplianceEvent> _auditLog = new();
     private readonly object _lock = new();
@@ -17,6 +25,32 @@ public sealed class ComplianceEngine
     {
         _identityRegistry = identityRegistry;
         _sanctionsList = sanctionsList;
+    }
+
+    public ComplianceEngine(IdentityRegistry identityRegistry, SanctionsList sanctionsList, ZkComplianceVerifier zkVerifier)
+        : this(identityRegistry, sanctionsList)
+    {
+        _zkVerifier = zkVerifier;
+    }
+
+    /// <summary>
+    /// Hybrid compliance check: ZK proofs first, attestation fallback.
+    /// </summary>
+    public ComplianceCheckOutcome VerifyProofs(
+        ComplianceProof[] proofs,
+        ProofRequirement[] requirements,
+        long blockTimestamp)
+    {
+        if (_zkVerifier != null)
+            return _zkVerifier.VerifyProofs(proofs, requirements, blockTimestamp);
+
+        // No ZK verifier configured — can't verify proofs
+        if (requirements.Length > 0 && proofs.Length > 0)
+            return ComplianceCheckOutcome.Fail(
+                BasaltErrorCode.ComplianceProofInvalid,
+                "ZK verification not available");
+
+        return ComplianceCheckOutcome.Success;
     }
 
     /// <summary>

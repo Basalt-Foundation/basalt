@@ -23,6 +23,7 @@ public sealed class TransactionBuilder
     private byte[] _data = [];
     private byte _priority;
     private uint _chainId = 1;
+    private readonly List<ComplianceProof> _complianceProofs = new();
 
     /// <summary>
     /// Creates a new builder. Use the static factory methods instead.
@@ -186,6 +187,19 @@ public sealed class TransactionBuilder
     }
 
     /// <summary>
+    /// Attaches a ZK compliance proof to the transaction.
+    /// Compliance proofs are ancillary data (not part of the signing payload)
+    /// that prove the sender satisfies schema requirements without revealing identity.
+    /// </summary>
+    /// <param name="proof">The Groth16 compliance proof to attach.</param>
+    /// <returns>This builder for chaining.</returns>
+    public TransactionBuilder WithComplianceProof(ComplianceProof proof)
+    {
+        _complianceProofs.Add(proof);
+        return this;
+    }
+
+    /// <summary>
     /// Builds an unsigned <see cref="Transaction"/> from the current builder state.
     /// The returned transaction must be signed before submission.
     /// </summary>
@@ -206,6 +220,7 @@ public sealed class TransactionBuilder
             Data = _data,
             Priority = _priority,
             ChainId = _chainId,
+            ComplianceProofs = _complianceProofs.ToArray(),
         };
     }
 }

@@ -16,18 +16,23 @@ public sealed class TransactionExecutor
     private readonly ChainParameters _chainParams;
     private readonly IContractRuntime _contractRuntime;
     private readonly IStakingState? _stakingState;
+    private readonly IComplianceVerifier? _complianceVerifier;
 
     public TransactionExecutor(ChainParameters chainParams)
-        : this(chainParams, new ManagedContractRuntime(), null) { }
+        : this(chainParams, new ManagedContractRuntime(), null, null) { }
 
     public TransactionExecutor(ChainParameters chainParams, IContractRuntime contractRuntime)
-        : this(chainParams, contractRuntime, null) { }
+        : this(chainParams, contractRuntime, null, null) { }
 
     public TransactionExecutor(ChainParameters chainParams, IContractRuntime contractRuntime, IStakingState? stakingState)
+        : this(chainParams, contractRuntime, stakingState, null) { }
+
+    public TransactionExecutor(ChainParameters chainParams, IContractRuntime contractRuntime, IStakingState? stakingState, IComplianceVerifier? complianceVerifier)
     {
         _chainParams = chainParams;
         _contractRuntime = contractRuntime;
         _stakingState = stakingState;
+        _complianceVerifier = complianceVerifier;
     }
 
     /// <summary>
@@ -61,6 +66,14 @@ public sealed class TransactionExecutor
         if (senderState.Balance < totalDebit)
         {
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+        }
+
+        // ZK compliance check (if verifier configured and tx carries proofs)
+        if (_complianceVerifier != null && tx.ComplianceProofs.Length > 0)
+        {
+            var outcome = _complianceVerifier.VerifyProofs(tx.ComplianceProofs, [], blockHeader.Timestamp);
+            if (!outcome.Allowed)
+                return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);
         }
 
         senderState = senderState with

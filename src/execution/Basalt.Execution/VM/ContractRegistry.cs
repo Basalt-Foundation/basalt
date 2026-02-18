@@ -160,6 +160,13 @@ public sealed class ContractRegistry
         registry.Register(0x0104, "StakingPool", _ =>
             new Basalt.Sdk.Contracts.Standards.StakingPool());
 
+        // ZK compliance contracts
+        registry.Register(0x0105, "SchemaRegistry", _ =>
+            new Basalt.Sdk.Contracts.Standards.SchemaRegistry());
+
+        registry.Register(0x0106, "IssuerRegistry", _ =>
+            new Basalt.Sdk.Contracts.Standards.IssuerRegistry());
+
         return registry;
     }
 

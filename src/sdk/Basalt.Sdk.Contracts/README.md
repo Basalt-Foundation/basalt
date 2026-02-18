@@ -188,6 +188,67 @@ registry.AddAttestation(did, "KYC", issuerHex, expiresAt, data);
 bool valid = registry.HasValidAttestation(did, "KYC");
 ```
 
+### SchemaRegistry (ZK Compliance)
+
+On-chain registry of credential schema definitions. Anyone can register a schema (permissionless). A schema defines WHAT can be proved via ZK proofs. SchemaId is derived from `BLAKE3(name)`.
+
+**Type ID**: `0x0105` | **Genesis address**: `0x...1006`
+
+```csharp
+var registry = new SchemaRegistry();
+
+// Register a schema with its Groth16 verification key
+string schemaIdHex = registry.RegisterSchema("KYC_Basic", fieldDefinitionsJson, verificationKeyBytes);
+
+// Update VK (creator only)
+registry.UpdateVerificationKey(schemaIdBytes, newVkBytes);
+
+// Query
+string name = registry.GetSchema(schemaIdBytes);
+string vkHex = registry.GetVerificationKey(schemaIdBytes);
+bool exists = registry.SchemaExists(schemaIdBytes);
+```
+
+**Events**: `SchemaRegisteredEvent` (SchemaId, Creator, Name), `VerificationKeyUpdatedEvent` (SchemaId, UpdatedBy).
+
+### IssuerRegistry (ZK Compliance)
+
+On-chain registry of credential issuers with trust tiers and collateral staking. Issuers maintain their own Sparse Merkle Tree for credential revocation off-chain and publish the root on-chain.
+
+**Type ID**: `0x0106` | **Genesis address**: `0x...1007`
+
+**Issuer Tiers**:
+- Tier 0: Self-attestation (anyone, no collateral)
+- Tier 1: Regulated entity (admin-approved, no collateral)
+- Tier 2: Accredited provider (requires BST collateral stake)
+- Tier 3: Sovereign/eIDAS (admin-approved, no collateral)
+
+```csharp
+var issuerRegistry = new IssuerRegistry();
+
+// Register (Tier 0: anyone, Tier 1/3: admin only, Tier 2: anyone + stake)
+issuerRegistry.RegisterIssuer("Acme KYC Provider", tier: 2);
+issuerRegistry.StakeCollateral();  // sends BST via TxValue
+
+// Manage schemas and revocation
+issuerRegistry.AddSchemaSupport(schemaIdBytes);
+issuerRegistry.UpdateRevocationRoot(newMerkleRootBytes);
+
+// Admin operations
+issuerRegistry.SlashIssuer(issuerAddr, "Fraud detected");
+issuerRegistry.DeactivateIssuer(issuerAddr);
+issuerRegistry.TransferAdmin(newAdminAddr);
+
+// Query
+byte tier = issuerRegistry.GetIssuerTier(issuerAddr);
+bool active = issuerRegistry.IsActiveIssuer(issuerAddr);
+string rootHex = issuerRegistry.GetRevocationRoot(issuerAddr);
+ulong stake = issuerRegistry.GetCollateralStake(issuerAddr);
+bool supports = issuerRegistry.SupportsSchema(issuerAddr, schemaIdBytes);
+```
+
+**Events**: `IssuerRegisteredEvent`, `CollateralStakedEvent`, `RevocationRootUpdatedEvent`, `IssuerSlashedEvent`, `IssuerDeactivatedEvent`, `IssuerReactivatedEvent`, `AdminTransferredEvent`.
+
 ## Dependencies
 
 None -- this is a standalone SDK package with no dependencies on the node.

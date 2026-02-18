@@ -6,5 +6,6 @@
     <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
     <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
     <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../confidentiality/Basalt.Confidentiality/Basalt.Confidentiality.csproj" />
   </ItemGroup>
 </Project>

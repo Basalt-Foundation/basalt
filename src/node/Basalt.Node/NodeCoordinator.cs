@@ -38,6 +38,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Staking / Slashing
     private readonly StakingState? _stakingState;
     private readonly SlashingEngine? _slashingEngine;
+
+    // Compliance
+    private readonly IComplianceVerifier? _complianceVerifier;
     private WeightedLeaderSelector? _leaderSelector;
 
     // Network components
@@ -95,7 +98,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         BlockStore? blockStore = null,
         ReceiptStore? receiptStore = null,
         StakingState? stakingState = null,
-        SlashingEngine? slashingEngine = null)
+        SlashingEngine? slashingEngine = null,
+        IComplianceVerifier? complianceVerifier = null)
     {
         _config = config;
         _chainParams = chainParams;
@@ -110,6 +114,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _receiptStore = receiptStore;
         _stakingState = stakingState;
         _slashingEngine = slashingEngine;
+        _complianceVerifier = complianceVerifier;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -483,7 +488,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             ? new SandboxedContractRuntime(new SandboxConfiguration())
             : new ManagedContractRuntime();
 
-        _txExecutor = new TransactionExecutor(_chainParams, contractRuntime, _stakingState);
+        _txExecutor = new TransactionExecutor(_chainParams, contractRuntime, _stakingState, _complianceVerifier);
 
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
