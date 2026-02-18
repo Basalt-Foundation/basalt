@@ -45,6 +45,12 @@ public sealed class PipelinedConsensus
     public event Action<Hash256, byte[]>? OnBlockFinalized;
     public event Action<ulong>? OnViewChange;
 
+    /// <summary>
+    /// Fired when a proposal arrives for a block far beyond our pipeline,
+    /// indicating this node is behind and needs to sync.
+    /// </summary>
+    public event Action<ulong>? OnBehindDetected;
+
     public PipelinedConsensus(
         ValidatorSet validatorSet,
         PeerId localPeerId,
@@ -70,6 +76,24 @@ public sealed class PipelinedConsensus
         _validatorSet = newSet;
         _activeRounds.Clear();
         _viewChangeVotes.Clear();
+        _pendingFinalizations.Clear();
+    }
+
+    /// <summary>
+    /// Update the last finalized block number after sync.
+    /// Clears all in-flight rounds that are now stale.
+    /// </summary>
+    public void UpdateLastFinalizedBlock(ulong blockNumber)
+    {
+        _lastFinalizedBlock = blockNumber;
+
+        // Remove all rounds for blocks that are already finalized
+        foreach (var key in _activeRounds.Keys)
+        {
+            if (key <= blockNumber)
+                _activeRounds.TryRemove(key, out _);
+        }
+
         _pendingFinalizations.Clear();
     }
 
@@ -155,6 +179,16 @@ public sealed class PipelinedConsensus
     /// </summary>
     public ConsensusVoteMessage? HandleProposal(ConsensusProposalMessage proposal)
     {
+        // Detect if we are too far behind to participate — trigger sync instead
+        // of creating orphaned rounds we can never finalize.
+        if (proposal.BlockNumber > _lastFinalizedBlock + (ulong)MaxPipelineDepth + 1)
+        {
+            _logger.LogWarning("Proposal for block {Block} but last finalized is {Last} — we are behind",
+                proposal.BlockNumber, _lastFinalizedBlock);
+            OnBehindDetected?.Invoke(proposal.BlockNumber);
+            return null;
+        }
+
         var round = _activeRounds.GetOrAdd(proposal.BlockNumber, _ => new ConsensusRound
         {
             BlockNumber = proposal.BlockNumber,

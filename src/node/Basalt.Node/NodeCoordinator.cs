@@ -378,6 +378,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             PruneProposalsByView(view);
         };
 
+        _pipelinedConsensus.OnBehindDetected += (blockNumber) =>
+        {
+            _logger.LogWarning("Pipelined consensus detected we are behind (need block #{Block}). Triggering sync.",
+                blockNumber);
+            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+        };
+
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
     }
 
@@ -880,6 +887,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _mempool.RemoveConfirmed(block.Transactions);
                     PersistBlock(block, blockBytes);
+
+                    // Apply epoch transitions for blocks received via gossip
+                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                    if (newSet != null)
+                        ApplyEpochTransition(newSet, block.Number);
+
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
                 }
             }
@@ -934,7 +947,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var block = BlockCodec.DeserializeBlock(blockBytes);
 
                 if (block.Number != _chainManager.LatestBlockNumber + 1)
+                {
+                    _logger.LogDebug("Skipping synced block #{Number} (expected #{Expected})",
+                        block.Number, _chainManager.LatestBlockNumber + 1);
                     continue;
+                }
 
                 // Execute transactions
                 for (int i = 0; i < block.Transactions.Count; i++)
@@ -948,6 +965,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     _mempool.RemoveConfirmed(block.Transactions);
                     PersistBlock(block, blockBytes);
                     applied++;
+
+                    // Apply epoch transitions for synced blocks — without this,
+                    // nodes that sync across epoch boundaries would have a stale
+                    // ValidatorSet and disagree on leader selection.
+                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                    if (newSet != null)
+                        ApplyEpochTransition(newSet, block.Number);
                 }
                 else
                 {
@@ -1259,6 +1283,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private async Task TrySyncFromPeers(CancellationToken ct)
     {
+        // Prevent concurrent sync attempts — OnBehindDetected fires from the
+        // message handler (not the consensus loop), so multiple proposals for
+        // future blocks can each spawn a sync task.
+        if (_isSyncing) return;
+
         // Find the best block among connected peers
         var bestPeer = GetBestPeer();
         if (bestPeer == null)
@@ -1335,6 +1364,24 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             _isSyncing = false;
             _syncBatchTcs = null;
+
+            // Restart consensus from the correct block — HandleSyncResponse applies
+            // blocks without updating the consensus engine's _currentBlockNumber,
+            // so without this restart, consensus would be stuck trying to decide a
+            // block that was already applied via sync.
+            var nextBlock = _chainManager.LatestBlockNumber + 1;
+            if (!_config.UsePipelining)
+            {
+                _consensus!.StartRound(nextBlock);
+                _logger.LogInformation("Consensus restarted at block #{Block} after sync", nextBlock);
+            }
+            else
+            {
+                // Pipelined consensus tracks _lastFinalizedBlock internally.
+                // Clear stale rounds and let the pipeline restart from current height.
+                _pipelinedConsensus!.UpdateLastFinalizedBlock(_chainManager.LatestBlockNumber);
+                _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
+            }
         }
     }
 
