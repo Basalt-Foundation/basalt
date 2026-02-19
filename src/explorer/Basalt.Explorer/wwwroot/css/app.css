@@ -683,20 +683,27 @@ tr:hover {
 
 /* Theme toggle */
 .theme-toggle {
-    background: none;
+    background: var(--bg-secondary);
     border: 1px solid var(--border);
-    color: var(--text-secondary);
+    color: var(--text-primary);
     cursor: pointer;
-    padding: 0.4rem 0.6rem;
-    border-radius: var(--radius-md);
-    font-size: 1rem;
-    transition: color var(--transition-fast), border-color var(--transition-fast);
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 1.1rem;
+    transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
     flex-shrink: 0;
     line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .theme-toggle:hover {
-    color: var(--text-primary);
+    background: var(--accent);
+    color: #fff;
     border-color: var(--accent);
+    transform: rotate(15deg);
 }
 
 /* ============ Components ============ */

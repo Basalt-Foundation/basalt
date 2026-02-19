@@ -30,6 +30,30 @@
             <div class="value">@FormatHelper.FormatUptime(GetMetric("basalt_uptime_seconds"))</div>
         </div>
     </div>
+
+    @if (_history.Count >= 5)
+    {
+        <div class="stats-grid" style="margin-top: 1.5rem">
+            <div class="card">
+                <div class="card-header">TPS Trend</div>
+                <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                    <MiniChart Data="@GetHistoryValues("basalt_tps")" Width="280" Height="80" Color="#58a6ff" />
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">Gas Utilization</div>
+                <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                    <MiniChart Data="@GetGasUtilHistory()" Width="280" Height="80" Color="#3fb950" />
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">Mempool Size</div>
+                <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                    <MiniChart Data="@GetHistoryValues("basalt_mempool_size")" Width="280" Height="80" Color="#d29922" />
+                </div>
+            </div>
+        </div>
+    }
 }
 else if (_error != null)
 {
@@ -38,30 +62,6 @@ else if (_error != null)
 else
 {
     <div class="loading">Loading network stats...</div>
-}
-
-@if (_history.Count >= 2)
-{
-    <div class="stats-grid" style="margin-top: 1.5rem">
-        <div class="card">
-            <div class="card-header">TPS Trend</div>
-            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
-                <MiniChart Data="@GetHistoryValues("basalt_tps")" Width="280" Height="80" Color="var(--accent)" />
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-header">Gas Utilization</div>
-            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
-                <MiniChart Data="@GetGasUtilHistory()" Width="280" Height="80" Color="var(--success)" />
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-header">Mempool Size</div>
-            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
-                <MiniChart Data="@GetHistoryValues("basalt_mempool_size")" Width="280" Height="80" Color="var(--warning)" />
-            </div>
-        </div>
-    </div>
 }
 
 @code {
@@ -91,8 +91,11 @@ else
 
         _error = null;
         _current = FormatHelper.ParsePrometheusMetrics(raw);
-        _history.Add(new Dictionary<string, double>(_current));
-        if (_history.Count > 30) _history.RemoveAt(0);
+        if (_current.Count > 0)
+        {
+            _history.Add(new Dictionary<string, double>(_current));
+            if (_history.Count > 30) _history.RemoveAt(0);
+        }
     }
 
     private double GetMetric(string key) => _current.GetValueOrDefault(key, 0);

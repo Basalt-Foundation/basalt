@@ -1,15 +1,15 @@
-@if (Data.Count >= 2)
+@if (Data.Count >= 3)
 {
     <svg class="mini-chart" viewBox="0 0 @Width @Height" preserveAspectRatio="none"
-         style="width:@(Width)px;height:@(Height)px">
+         style="width:100%;max-width:@(Width)px;height:@(Height)px">
         <defs>
             <linearGradient id="@_gradientId" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="@Color" stop-opacity="0.3" />
-                <stop offset="100%" stop-color="@Color" stop-opacity="0.02" />
+                <stop offset="0%" style="stop-color:@Color;stop-opacity:0.25" />
+                <stop offset="100%" style="stop-color:@Color;stop-opacity:0.02" />
             </linearGradient>
         </defs>
-        <polyline fill="url(#@_gradientId)" stroke="none" points="@FillPoints" />
-        <polyline fill="none" stroke="@Color" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="@LinePoints" />
+        <polygon fill="url(#@_gradientId)" points="@FillPoints" />
+        <polyline fill="none" stroke="@Color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="@LinePoints" />
     </svg>
 }
 
@@ -17,7 +17,7 @@
     [Parameter] public List<double> Data { get; set; } = new();
     [Parameter] public int Width { get; set; } = 120;
     [Parameter] public int Height { get; set; } = 40;
-    [Parameter] public string Color { get; set; } = "var(--accent)";
+    [Parameter] public string Color { get; set; } = "#58a6ff";
 
     private string _gradientId = "cg" + Guid.NewGuid().ToString("N")[..8];
 
@@ -25,17 +25,18 @@
     {
         get
         {
-            if (Data.Count < 2) return "";
+            if (Data.Count < 3) return "";
             var min = Data.Min();
             var max = Data.Max();
             var range = max - min;
             if (range == 0) range = 1;
 
+            var padding = 4;
             var points = new List<string>();
             for (int i = 0; i < Data.Count; i++)
             {
                 var x = (double)i / (Data.Count - 1) * Width;
-                var y = Height - ((Data[i] - min) / range * (Height - 4) + 2);
+                var y = padding + (1 - (Data[i] - min) / range) * (Height - padding * 2);
                 points.Add($"{x:F1},{y:F1}");
             }
             return string.Join(" ", points);
@@ -46,7 +47,7 @@
     {
         get
         {
-            if (Data.Count < 2) return "";
+            if (Data.Count < 3) return "";
             var line = LinePoints;
             return $"0,{Height} {line} {Width},{Height}";
         }

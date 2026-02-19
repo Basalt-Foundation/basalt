@@ -150,7 +150,6 @@
         {
             if (_status != null)
                 _status.BlockHeight = block.Number;
-            Toasts.Info($"New block #{block.Number}");
             await LoadData();
             StateHasChanged();
         });
