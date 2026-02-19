@@ -1,7 +1,9 @@
 @page "/"
 @inject BasaltApiClient Api
 @inject NavigationManager Nav
-@implements IDisposable
+@inject Services.BlockWebSocketService WsService
+@inject Services.ToastService Toasts
+@implements IAsyncDisposable
 
 <PageTitle>Basalt Explorer - Dashboard</PageTitle>
 
@@ -24,6 +26,14 @@
             <div class="label">Latest Block</div>
             <div class="value truncate hash link" style="font-size:0.9rem"
                  @onclick="NavigateToLatestBlock">@FormatHelper.TruncateHash(_status.LatestBlockHash)</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Status</div>
+            <div class="value">
+                <span class="live-indicator @(WsService.IsConnected ? "connected" : "disconnected")">
+                    @(WsService.IsConnected ? "LIVE" : "POLLING")
+                </span>
+            </div>
         </div>
     </div>
 }
@@ -96,11 +106,11 @@
                     @foreach (var tx in _recentTxs)
                     {
                         <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
-                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
-                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td data-label="Hash" class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td data-label="Type"><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td data-label="From" class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td data-label="To" class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td data-label="Value">@FormatHelper.FormatBslt(tx.Value)</td>
                         </tr>
                     }
                 </tbody>
@@ -119,11 +129,31 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+
+        WsService.OnNewBlock += HandleNewBlock;
+        _ = WsService.ConnectAsync();
+
+        // Increase poll interval as fallback
         _timer = new Timer(async _ =>
         {
+            if (!WsService.IsConnected)
+            {
+                await LoadData();
+                await InvokeAsync(StateHasChanged);
+            }
+        }, null, 10000, 10000);
+    }
+
+    private async void HandleNewBlock(WebSocketBlockEvent block)
+    {
+        await InvokeAsync(async () =>
+        {
+            if (_status != null)
+                _status.BlockHeight = block.Number;
+            Toasts.Info($"New block #{block.Number}");
             await LoadData();
-            await InvokeAsync(StateHasChanged);
-        }, null, 2000, 2000);
+            StateHasChanged();
+        });
     }
 
     private async Task LoadData()
@@ -156,5 +186,10 @@
 
     private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
 
-    public void Dispose() => _timer?.Dispose();
+    public async ValueTask DisposeAsync()
+    {
+        _timer?.Dispose();
+        WsService.OnNewBlock -= HandleNewBlock;
+        await WsService.DisposeAsync();
+    }
 }

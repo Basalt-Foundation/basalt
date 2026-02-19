@@ -1,0 +1,112 @@
+@page "/stats"
+@inject BasaltApiClient Api
+@implements IDisposable
+
+<PageTitle>Basalt Explorer - Network Stats</PageTitle>
+
+<h2 style="margin-bottom: 1.5rem; font-size: 1.5rem;">Network Statistics</h2>
+
+@if (_current.Count > 0)
+{
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="label">Block Height</div>
+            <div class="value">@GetMetric("basalt_block_height").ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">TPS</div>
+            <div class="value">@GetMetric("basalt_tps").ToString("F2")</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Total Transactions</div>
+            <div class="value">@GetMetric("basalt_transactions_total").ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Mempool</div>
+            <div class="value">@GetMetric("basalt_mempool_size").ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Uptime</div>
+            <div class="value">@FormatHelper.FormatUptime(GetMetric("basalt_uptime_seconds"))</div>
+        </div>
+    </div>
+}
+else if (_error != null)
+{
+    <div class="error-message">@_error</div>
+}
+else
+{
+    <div class="loading">Loading network stats...</div>
+}
+
+@if (_history.Count >= 2)
+{
+    <div class="stats-grid" style="margin-top: 1.5rem">
+        <div class="card">
+            <div class="card-header">TPS Trend</div>
+            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                <MiniChart Data="@GetHistoryValues("basalt_tps")" Width="280" Height="80" Color="var(--accent)" />
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">Gas Utilization</div>
+            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                <MiniChart Data="@GetGasUtilHistory()" Width="280" Height="80" Color="var(--success)" />
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">Mempool Size</div>
+            <div class="card-body" style="display:flex;justify-content:center;padding:1.5rem">
+                <MiniChart Data="@GetHistoryValues("basalt_mempool_size")" Width="280" Height="80" Color="var(--warning)" />
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private Dictionary<string, double> _current = new();
+    private readonly List<Dictionary<string, double>> _history = new();
+    private string? _error;
+    private Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMetrics();
+        _timer = new Timer(async _ =>
+        {
+            await LoadMetrics();
+            await InvokeAsync(StateHasChanged);
+        }, null, 5000, 5000);
+    }
+
+    private async Task LoadMetrics()
+    {
+        var raw = await Api.GetMetricsRawAsync();
+        if (raw == null)
+        {
+            _error = "Cannot connect to metrics endpoint.";
+            return;
+        }
+
+        _error = null;
+        _current = FormatHelper.ParsePrometheusMetrics(raw);
+        _history.Add(new Dictionary<string, double>(_current));
+        if (_history.Count > 30) _history.RemoveAt(0);
+    }
+
+    private double GetMetric(string key) => _current.GetValueOrDefault(key, 0);
+
+    private List<double> GetHistoryValues(string key) =>
+        _history.Select(h => h.GetValueOrDefault(key, 0)).ToList();
+
+    private List<double> GetGasUtilHistory() =>
+        _history.Select(h =>
+        {
+            var used = h.GetValueOrDefault("basalt_block_gas_used", 0);
+            var limit = h.GetValueOrDefault("basalt_block_gas_limit", 1);
+            return limit > 0 ? used / limit * 100 : 0;
+        }).ToList();
+
+    public void Dispose() => _timer?.Dispose();
+}

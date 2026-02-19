@@ -116,4 +116,40 @@ public static class FormatHelper
         < 1048576 => $"{bytes / 1024.0:F1} KB",
         _ => $"{bytes / 1048576.0:F1} MB",
     };
+
+    public static string FormatUptime(double seconds)
+    {
+        var ts = TimeSpan.FromSeconds(seconds);
+        if (ts.TotalDays >= 1) return $"{ts.Days}d {ts.Hours}h";
+        if (ts.TotalHours >= 1) return $"{ts.Hours}h {ts.Minutes}m";
+        return $"{ts.Minutes}m {ts.Seconds}s";
+    }
+
+    public static string GetReceiptStatusBadgeClass(bool? success) => success switch
+    {
+        true => "badge-success",
+        false => "badge-danger",
+        _ => "badge-default",
+    };
+
+    public static string GetReceiptStatusLabel(bool? success) => success switch
+    {
+        true => "Success",
+        false => "Failed",
+        _ => "Unknown",
+    };
+
+    public static Dictionary<string, double> ParsePrometheusMetrics(string? raw)
+    {
+        var result = new Dictionary<string, double>();
+        if (string.IsNullOrEmpty(raw)) return result;
+        foreach (var line in raw.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
+            var parts = line.Split(' ', 2);
+            if (parts.Length == 2 && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var val))
+                result[parts[0]] = val;
+        }
+        return result;
+    }
 }

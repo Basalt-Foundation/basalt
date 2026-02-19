@@ -162,6 +162,7 @@
                         <th>Direction</th>
                         <th>Counterparty</th>
                         <th>Value</th>
+                        <th>Status</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -169,19 +170,19 @@
                     {
                         var isOutgoing = IsOutgoing(tx);
                         <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
-                            <td>
+                            <td data-label="Hash" class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td data-label="Block">
                                 @if (tx.BlockNumber.HasValue)
                                 {
                                     <span class="hash" @onclick="() => NavigateToBlock(tx.BlockNumber.Value)" @onclick:stopPropagation="true">@tx.BlockNumber</span>
                                 }
                             </td>
-                            <td>
+                            <td data-label="Type">
                                 <span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span>
                             </td>
                             @if (_isContract)
                             {
-                                <td>
+                                <td data-label="Method">
                                     @if (tx.Type == "ContractCall" || tx.Type == "ContractDeploy")
                                     {
                                         <span class="method-badge">@FormatHelper.FormatMethodBadge(tx.Data)</span>
@@ -192,7 +193,7 @@
                                     }
                                 </td>
                             }
-                            <td>
+                            <td data-label="Direction">
                                 @if (isOutgoing)
                                 {
                                     <span class="direction-badge outgoing">OUT</span>
@@ -202,7 +203,7 @@
                                     <span class="direction-badge incoming">IN</span>
                                 }
                             </td>
-                            <td>
+                            <td data-label="Counterparty">
                                 @if (isOutgoing)
                                 {
                                     <span class="hash truncate" @onclick="() => NavigateToAccount(tx.To)" @onclick:stopPropagation="true">@FormatHelper.TruncateHash(tx.To)</span>
@@ -212,7 +213,17 @@
                                     <span class="hash truncate" @onclick="() => NavigateToAccount(tx.Sender)" @onclick:stopPropagation="true">@FormatHelper.TruncateHash(tx.Sender)</span>
                                 }
                             </td>
-                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td data-label="Value">@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td data-label="Status">
+                                @if (tx.Success.HasValue)
+                                {
+                                    <span class="badge @FormatHelper.GetReceiptStatusBadgeClass(tx.Success)">@FormatHelper.GetReceiptStatusLabel(tx.Success)</span>
+                                }
+                                else
+                                {
+                                    <span class="badge badge-default">--</span>
+                                }
+                            </td>
                         </tr>
                     }
                 </tbody>

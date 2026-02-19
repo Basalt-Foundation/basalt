@@ -1,22 +1,63 @@
 @inherits LayoutComponentBase
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 
 <div class="layout">
     <nav class="navbar">
+        <button class="hamburger" @onclick="ToggleMenu">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
         <a class="navbar-brand" href="">Basalt Explorer</a>
-        <ul class="navbar-nav">
-            <li><NavLink href="" Match="NavLinkMatch.All">Dashboard</NavLink></li>
-            <li><NavLink href="blocks">Blocks</NavLink></li>
-            <li><NavLink href="transactions">Transactions</NavLink></li>
-            <li><NavLink href="validators">Validators</NavLink></li>
-            <li><NavLink href="pools">Pools</NavLink></li>
-            <li><NavLink href="mempool">Mempool</NavLink></li>
+        <ul class="navbar-nav @(_menuOpen ? "open" : "")">
+            <li><NavLink href="" Match="NavLinkMatch.All" @onclick="CloseMenu">Dashboard</NavLink></li>
+            <li><NavLink href="blocks" @onclick="CloseMenu">Blocks</NavLink></li>
+            <li><NavLink href="transactions" @onclick="CloseMenu">Transactions</NavLink></li>
+            <li><NavLink href="validators" @onclick="CloseMenu">Validators</NavLink></li>
+            <li><NavLink href="pools" @onclick="CloseMenu">Pools</NavLink></li>
+            <li><NavLink href="mempool" @onclick="CloseMenu">Mempool</NavLink></li>
+            <li><NavLink href="faucet" @onclick="CloseMenu">Faucet</NavLink></li>
+            <li><NavLink href="stats" @onclick="CloseMenu">Stats</NavLink></li>
         </ul>
-        <div class="search-bar">
-            <input type="text" placeholder="Search by block number, hash, or address..."
-                   @bind="SearchQuery" @onkeydown="HandleSearchKey" />
-            <button @onclick="DoSearch">Search</button>
+        <div class="search-container">
+            <div class="search-bar">
+                <input type="text" placeholder="Search block, tx hash, or address..."
+                       @bind="SearchQuery" @bind:event="oninput"
+                       @onkeydown="HandleSearchKey"
+                       @onfocus="() => _searchFocused = true"
+                       @onblur="HandleSearchBlur" />
+                <button @onclick="DoSearch">Search</button>
+            </div>
+            @if (_searchFocused && (_suggestions.Count > 0 || (_recentSearches.Count > 0 && string.IsNullOrEmpty(SearchQuery))))
+            {
+                <div class="search-suggestions">
+                    @if (!string.IsNullOrEmpty(SearchQuery) && _suggestions.Count > 0)
+                    {
+                        @foreach (var s in _suggestions)
+                        {
+                            <div class="search-suggestion-item" @onmousedown="() => ApplySuggestion(s.Value)">
+                                <span class="search-suggestion-label">@s.Label</span>
+                                <span class="hash" style="font-size:0.8rem">@FormatHelper.TruncateHash(s.Value)</span>
+                            </div>
+                        }
+                    }
+                    else if (string.IsNullOrEmpty(SearchQuery) && _recentSearches.Count > 0)
+                    {
+                        <div class="search-suggestion-header">Recent Searches</div>
+                        @foreach (var recent in _recentSearches)
+                        {
+                            <div class="search-suggestion-item" @onmousedown="() => ApplySuggestion(recent)">
+                                <span class="hash" style="font-size:0.8rem">@FormatHelper.TruncateHash(recent)</span>
+                            </div>
+                        }
+                    }
+                </div>
+            }
         </div>
+        <button class="theme-toggle" @onclick="ToggleTheme" title="Toggle theme">
+            @(_isDark ? "\u2600\ufe0f" : "\ud83c\udf19")
+        </button>
     </nav>
 
     <main class="content">
@@ -28,8 +69,53 @@
     </footer>
 </div>
 
+<ToastContainer />
+
 @code {
-    private string SearchQuery { get; set; } = "";
+    private string _searchQuery = "";
+    private string SearchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            _searchQuery = value;
+            UpdateSuggestions();
+        }
+    }
+    private bool _menuOpen;
+    private bool _isDark = true;
+    private bool _searchFocused;
+    private List<SearchSuggestion> _suggestions = new();
+    private List<string> _recentSearches = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var theme = await JS.InvokeAsync<string?>("localStorage.getItem", "theme");
+            _isDark = theme != "light";
+
+            var stored = await JS.InvokeAsync<string?>("localStorage.getItem", "basalt_recent_searches");
+            if (!string.IsNullOrEmpty(stored))
+            {
+                try { _recentSearches = System.Text.Json.JsonSerializer.Deserialize<List<string>>(stored) ?? new(); }
+                catch { _recentSearches = new(); }
+            }
+
+            StateHasChanged();
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDark = !_isDark;
+        var theme = _isDark ? "dark" : "light";
+        await JS.InvokeVoidAsync("localStorage.setItem", "theme", theme);
+        await JS.InvokeVoidAsync("eval", $"document.documentElement.setAttribute('data-theme','{theme}')");
+    }
+
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+    private void CloseMenu() => _menuOpen = false;
 
     private void HandleSearchKey(KeyboardEventArgs e)
     {
@@ -41,6 +127,8 @@
         var q = SearchQuery.Trim();
         if (string.IsNullOrEmpty(q)) return;
 
+        _ = SaveSearch(q);
+
         if (ulong.TryParse(q, out _))
             Nav.NavigateTo("/block/" + q);
         else if (q.Length == 40 || (q.StartsWith("0x") && q.Length == 42))
@@ -51,5 +139,47 @@
             Nav.NavigateTo("/block/" + q);
 
         SearchQuery = "";
+        _searchFocused = false;
+        _menuOpen = false;
     }
+
+    private void UpdateSuggestions()
+    {
+        _suggestions.Clear();
+        var q = SearchQuery.Trim();
+        if (string.IsNullOrEmpty(q)) return;
+
+        if (ulong.TryParse(q, out var blockNum))
+            _suggestions.Add(new("Block", q));
+        else if (q.Length >= 4 && q.Length <= 42 && (q.Length == 40 || (q.StartsWith("0x") && q.Length == 42) || q.Length < 40))
+            _suggestions.Add(new("Account", q));
+        else if (q.Length >= 4 && q.Length <= 66 && (q.Length == 64 || (q.StartsWith("0x") && q.Length == 66) || q.Length > 42))
+            _suggestions.Add(new("Transaction", q));
+        else
+            _suggestions.Add(new("Search", q));
+    }
+
+    private async Task SaveSearch(string query)
+    {
+        _recentSearches.Remove(query);
+        _recentSearches.Insert(0, query);
+        if (_recentSearches.Count > 10) _recentSearches.RemoveAt(10);
+        await JS.InvokeVoidAsync("localStorage.setItem", "basalt_recent_searches",
+            System.Text.Json.JsonSerializer.Serialize(_recentSearches));
+    }
+
+    private void ApplySuggestion(string value)
+    {
+        SearchQuery = value;
+        DoSearch();
+    }
+
+    private async void HandleSearchBlur()
+    {
+        await Task.Delay(200);
+        _searchFocused = false;
+        StateHasChanged();
+    }
+
+    private record SearchSuggestion(string Label, string Value);
 }

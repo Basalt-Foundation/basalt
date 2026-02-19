@@ -39,17 +39,17 @@
                     @foreach (var tx in _transactions)
                     {
                         <tr @onclick="() => NavigateToTx(tx.Hash)" style="cursor:pointer">
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
-                            <td>
+                            <td data-label="Hash" class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td data-label="Block">
                                 @if (tx.BlockNumber.HasValue)
                                 {
                                     <span class="hash link" @onclick="() => NavigateToBlock(tx.BlockNumber.Value)" @onclick:stopPropagation="true">@tx.BlockNumber</span>
                                 }
                             </td>
-                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
-                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td data-label="Type"><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td data-label="From" class="hash truncate">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td data-label="To" class="hash truncate">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td data-label="Value">@FormatHelper.FormatBslt(tx.Value)</td>
                         </tr>
                     }
                 </tbody>

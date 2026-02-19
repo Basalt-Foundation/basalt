@@ -99,6 +99,39 @@ public sealed class BasaltApiClient
         try { return await _http.GetFromJsonAsync($"v1/contracts/{address}/storage?key={Uri.EscapeDataString(key)}", ExplorerJsonContext.Default.StorageReadResponseDto); }
         catch { return null; }
     }
+
+    public async Task<ReceiptDto?> GetReceiptAsync(string hash)
+    {
+        try { return await _http.GetFromJsonAsync($"v1/receipts/{hash}", ExplorerJsonContext.Default.ReceiptDto); }
+        catch { return null; }
+    }
+
+    public async Task<FaucetResponseDto?> RequestFaucetAsync(string address)
+    {
+        try
+        {
+            var request = new FaucetRequestDto { Address = address };
+            var response = await _http.PostAsJsonAsync("v1/faucet", request, ExplorerJsonContext.Default.FaucetRequestDto);
+            return await response.Content.ReadFromJsonAsync(ExplorerJsonContext.Default.FaucetResponseDto);
+        }
+        catch { return null; }
+    }
+
+    public async Task<ContractCallResponseDto?> CallContractAsync(ContractCallRequestDto request)
+    {
+        try
+        {
+            var response = await _http.PostAsJsonAsync("v1/call", request, ExplorerJsonContext.Default.ContractCallRequestDto);
+            return await response.Content.ReadFromJsonAsync(ExplorerJsonContext.Default.ContractCallResponseDto);
+        }
+        catch { return null; }
+    }
+
+    public async Task<string?> GetMetricsRawAsync()
+    {
+        try { return await _http.GetStringAsync("metrics"); }
+        catch { return null; }
+    }
 }
 
 public sealed class NodeStatusDto
@@ -120,6 +153,7 @@ public sealed class BlockDto
     [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
     [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
     [JsonPropertyName("transactionCount")] public int TransactionCount { get; set; }
+    [JsonPropertyName("baseFee")] public string BaseFee { get; set; } = "0";
 
     public string FormattedTime => DateTimeOffset.FromUnixTimeMilliseconds(Timestamp).ToString("u");
     public double GasPercent => GasLimit > 0 ? (double)GasUsed / GasLimit * 100 : 0;
@@ -157,6 +191,14 @@ public sealed class TransactionDto
     [JsonPropertyName("transactionIndex")] public int? TransactionIndex { get; set; }
     [JsonPropertyName("data")] public string? Data { get; set; }
     [JsonPropertyName("dataSize")] public int DataSize { get; set; }
+    [JsonPropertyName("maxFeePerGas")] public string? MaxFeePerGas { get; set; }
+    [JsonPropertyName("maxPriorityFeePerGas")] public string? MaxPriorityFeePerGas { get; set; }
+    [JsonPropertyName("gasUsed")] public ulong? GasUsed { get; set; }
+    [JsonPropertyName("success")] public bool? Success { get; set; }
+    [JsonPropertyName("errorCode")] public string? ErrorCode { get; set; }
+    [JsonPropertyName("effectiveGasPrice")] public string? EffectiveGasPrice { get; set; }
+    [JsonPropertyName("logs")] public LogDto[]? Logs { get; set; }
+    [JsonPropertyName("complianceProofCount")] public int ComplianceProofCount { get; set; }
 }
 
 public sealed class ValidatorDto
@@ -231,6 +273,77 @@ public sealed class StorageReadResponseDto
     [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
 }
 
+public sealed class LogDto
+{
+    [JsonPropertyName("contract")] public string Contract { get; set; } = "";
+    [JsonPropertyName("eventSignature")] public string EventSignature { get; set; } = "";
+    [JsonPropertyName("topics")] public string[] Topics { get; set; } = [];
+    [JsonPropertyName("data")] public string? Data { get; set; }
+}
+
+public sealed class ReceiptDto
+{
+    [JsonPropertyName("transactionHash")] public string TransactionHash { get; set; } = "";
+    [JsonPropertyName("blockHash")] public string BlockHash { get; set; } = "";
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+    [JsonPropertyName("transactionIndex")] public int TransactionIndex { get; set; }
+    [JsonPropertyName("from")] public string From { get; set; } = "";
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("errorCode")] public string ErrorCode { get; set; } = "";
+    [JsonPropertyName("postStateRoot")] public string PostStateRoot { get; set; } = "";
+    [JsonPropertyName("effectiveGasPrice")] public string EffectiveGasPrice { get; set; } = "0";
+    [JsonPropertyName("logs")] public LogDto[] Logs { get; set; } = [];
+}
+
+public sealed class FaucetRequestDto
+{
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+}
+
+public sealed class FaucetResponseDto
+{
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+    [JsonPropertyName("txHash")] public string? TxHash { get; set; }
+}
+
+public sealed class ContractCallRequestDto
+{
+    [JsonPropertyName("to")] public string To { get; set; } = "";
+    [JsonPropertyName("data")] public string Data { get; set; } = "";
+    [JsonPropertyName("from")] public string? From { get; set; }
+    [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; } = 1_000_000;
+}
+
+public sealed class ContractCallResponseDto
+{
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("returnData")] public string? ReturnData { get; set; }
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+    [JsonPropertyName("error")] public string? Error { get; set; }
+}
+
+public sealed class WebSocketEnvelopeDto
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("block")] public WebSocketBlockEvent? Block { get; set; }
+}
+
+public sealed class WebSocketBlockEvent
+{
+    [JsonPropertyName("number")] public ulong Number { get; set; }
+    [JsonPropertyName("hash")] public string Hash { get; set; } = "";
+    [JsonPropertyName("proposer")] public string Proposer { get; set; } = "";
+    [JsonPropertyName("gasUsed")] public ulong GasUsed { get; set; }
+    [JsonPropertyName("gasLimit")] public ulong GasLimit { get; set; }
+    [JsonPropertyName("transactionCount")] public int TransactionCount { get; set; }
+    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
+}
+
+[JsonSerializable(typeof(WebSocketEnvelopeDto))]
+[JsonSerializable(typeof(WebSocketBlockEvent))]
 [JsonSerializable(typeof(NodeStatusDto))]
 [JsonSerializable(typeof(BlockDto))]
 [JsonSerializable(typeof(BlockDto[]))]
@@ -248,4 +361,11 @@ public sealed class StorageReadResponseDto
 [JsonSerializable(typeof(FaucetStatusDto))]
 [JsonSerializable(typeof(ContractInfoDto))]
 [JsonSerializable(typeof(StorageReadResponseDto))]
+[JsonSerializable(typeof(LogDto))]
+[JsonSerializable(typeof(LogDto[]))]
+[JsonSerializable(typeof(ReceiptDto))]
+[JsonSerializable(typeof(FaucetRequestDto))]
+[JsonSerializable(typeof(FaucetResponseDto))]
+[JsonSerializable(typeof(ContractCallRequestDto))]
+[JsonSerializable(typeof(ContractCallResponseDto))]
 internal partial class ExplorerJsonContext : JsonSerializerContext;

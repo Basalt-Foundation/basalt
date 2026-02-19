@@ -9,6 +9,9 @@
 </head>
 <body>
     <div id="app">Loading...</div>
+    <script>
+        (function(){var t=localStorage.getItem('theme');if(!t)t=window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark';document.documentElement.setAttribute('data-theme',t)})();
+    </script>
     <script src="_framework/blazor.webassembly.js"></script>
 </body>
 </html>

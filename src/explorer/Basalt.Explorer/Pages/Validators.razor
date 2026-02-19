@@ -12,22 +12,22 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Address</th>
-                        <th>Total Stake</th>
+                        <th style="cursor:pointer" @onclick='() => Sort("address")'>Address @SortIcon("address")</th>
+                        <th style="cursor:pointer" @onclick='() => Sort("stake")'>Total Stake @SortIcon("stake")</th>
                         <th>Self Stake</th>
                         <th>Delegated</th>
-                        <th>Status</th>
+                        <th style="cursor:pointer" @onclick='() => Sort("status")'>Status @SortIcon("status")</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var v in _validators)
+                    @foreach (var v in SortedValidators)
                     {
                         <tr>
-                            <td class="hash" style="cursor:pointer" @onclick="() => NavigateToAccount(v.Address)">@FormatHelper.TruncateHash(v.Address)</td>
-                            <td>@FormatHelper.FormatBslt(v.Stake)</td>
-                            <td>@FormatHelper.FormatBslt(v.SelfStake)</td>
-                            <td>@FormatHelper.FormatBslt(v.DelegatedStake)</td>
-                            <td><span class="status-badge @v.Status.ToLowerInvariant()">@v.Status</span></td>
+                            <td data-label="Address" class="hash" style="cursor:pointer" @onclick="() => NavigateToAccount(v.Address)">@FormatHelper.TruncateHash(v.Address)</td>
+                            <td data-label="Total Stake">@FormatHelper.FormatBslt(v.Stake)</td>
+                            <td data-label="Self Stake">@FormatHelper.FormatBslt(v.SelfStake)</td>
+                            <td data-label="Delegated">@FormatHelper.FormatBslt(v.DelegatedStake)</td>
+                            <td data-label="Status"><span class="status-badge @v.Status.ToLowerInvariant()">@v.Status</span></td>
                         </tr>
                     }
                 </tbody>
@@ -47,6 +47,28 @@
 @code {
     private ValidatorDto[]? _validators;
     private bool _loading = true;
+    private string _sortBy = "stake";
+    private bool _sortDesc = true;
+
+    private ValidatorDto[] SortedValidators => _validators == null ? [] : _sortBy switch
+    {
+        "address" => (_sortDesc ? _validators.OrderByDescending(v => v.Address) : _validators.OrderBy(v => v.Address)).ToArray(),
+        "status" => (_sortDesc ? _validators.OrderByDescending(v => v.Status) : _validators.OrderBy(v => v.Status)).ToArray(),
+        _ => (_sortDesc ? _validators.OrderByDescending(v => decimal.TryParse(v.Stake, out var s) ? s : 0) : _validators.OrderBy(v => decimal.TryParse(v.Stake, out var s) ? s : 0)).ToArray(),
+    };
+
+    private void Sort(string column)
+    {
+        if (_sortBy == column)
+            _sortDesc = !_sortDesc;
+        else
+        {
+            _sortBy = column;
+            _sortDesc = true;
+        }
+    }
+
+    private string SortIcon(string column) => _sortBy == column ? (_sortDesc ? "\u25bc" : "\u25b2") : "";
 
     protected override async Task OnInitializedAsync()
     {

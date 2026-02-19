@@ -36,19 +36,19 @@
                     @foreach (var tx in _mempool.Transactions)
                     {
                         <tr>
-                            <td class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
-                            <td><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
-                            <td class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.Sender)">@FormatHelper.TruncateHash(tx.Sender)</td>
-                            <td class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.To)">@FormatHelper.TruncateHash(tx.To)</td>
-                            <td>@FormatHelper.FormatBslt(tx.Value)</td>
-                            <td>
+                            <td data-label="Hash" class="hash truncate">@FormatHelper.TruncateHash(tx.Hash)</td>
+                            <td data-label="Type"><span class="badge @FormatHelper.GetTxTypeBadgeClass(tx.Type)">@FormatHelper.GetTxTypeLabel(tx.Type)</span></td>
+                            <td data-label="From" class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.Sender)">@FormatHelper.TruncateHash(tx.Sender)</td>
+                            <td data-label="To" class="hash truncate" style="cursor:pointer" @onclick="() => NavigateToAccount(tx.To)">@FormatHelper.TruncateHash(tx.To)</td>
+                            <td data-label="Value">@FormatHelper.FormatBslt(tx.Value)</td>
+                            <td data-label="Nonce">
                                 @tx.Nonce
                                 @if (tx.SenderNonce != tx.Nonce)
                                 {
                                     <span class="badge badge-warning" title="Nonce gap detected">gap</span>
                                 }
                             </td>
-                            <td>
+                            <td data-label="Valid">
                                 @if (tx.ValidationOk)
                                 {
                                     <span class="status-badge active">Valid</span>

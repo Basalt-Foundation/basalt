@@ -27,16 +27,14 @@
                     @foreach (var block in _blocks)
                     {
                         <tr @onclick="() => NavigateToBlock(block.Number)" style="cursor: pointer">
-                            <td>@block.Number</td>
-                            <td class="truncate hash">@TruncateHash(block.Hash)</td>
-                            <td>@block.FormattedTime</td>
-                            <td class="truncate hash">@TruncateHash(block.Proposer)</td>
-                            <td>@block.TransactionCount</td>
-                            <td>
+                            <td data-label="Block">@block.Number</td>
+                            <td data-label="Hash" class="truncate hash">@TruncateHash(block.Hash)</td>
+                            <td data-label="Time">@block.FormattedTime</td>
+                            <td data-label="Proposer" class="truncate hash">@TruncateHash(block.Proposer)</td>
+                            <td data-label="Txs">@block.TransactionCount</td>
+                            <td data-label="Gas Used">
                                 @block.GasUsed
-                                <span class="gas-bar">
-                                    <span class="gas-bar-fill" style="width: @(block.GasPercent.ToString("F1"))%"></span>
-                                </span>
+                                <span class="gas-bar"><span class="gas-bar-fill" style="width: @(block.GasPercent.ToString("F1"))%"></span></span>
                             </td>
                         </tr>
                     }

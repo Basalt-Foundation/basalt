@@ -1,0 +1,65 @@
+@inject Services.ToastService Toasts
+@implements IDisposable
+
+<div class="toast-container">
+    @foreach (var toast in _toasts)
+    {
+        <div class="toast toast-@toast.Type.ToString().ToLowerInvariant() @(toast.Removing ? "toast-exit" : "")">
+            <span class="toast-message">@toast.Message</span>
+            <button class="toast-close" @onclick="() => Remove(toast)">&times;</button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly List<ToastState> _toasts = new();
+
+    protected override void OnInitialized()
+    {
+        Toasts.OnToast += HandleToast;
+    }
+
+    private async void HandleToast(Services.ToastMessage msg)
+    {
+        var state = new ToastState { Message = msg.Message, Type = msg.Type };
+        await InvokeAsync(() =>
+        {
+            _toasts.Add(state);
+            StateHasChanged();
+        });
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(msg.DurationMs);
+            await InvokeAsync(() => Remove(state));
+        });
+    }
+
+    private void Remove(ToastState toast)
+    {
+        toast.Removing = true;
+        StateHasChanged();
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(300); // exit animation duration
+            await InvokeAsync(() =>
+            {
+                _toasts.Remove(toast);
+                StateHasChanged();
+            });
+        });
+    }
+
+    public void Dispose()
+    {
+        Toasts.OnToast -= HandleToast;
+    }
+
+    private sealed class ToastState
+    {
+        public string Message { get; init; } = "";
+        public Services.ToastType Type { get; init; }
+        public bool Removing { get; set; }
+    }
+}

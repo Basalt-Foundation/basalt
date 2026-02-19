@@ -1,0 +1,139 @@
+@page "/faucet"
+@inject BasaltApiClient Api
+@inject Services.ToastService Toasts
+
+<PageTitle>Basalt Explorer - Faucet</PageTitle>
+
+<h2 style="margin-bottom: 1.5rem; font-size: 1.5rem;">Testnet Faucet</h2>
+
+@if (_faucetStatus != null)
+{
+    <div class="stats-grid" style="margin-bottom: 1.5rem">
+        <div class="stat-card">
+            <div class="label">Faucet Balance</div>
+            <div class="value">@FormatHelper.FormatBslt(_faucetStatus.Balance)</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Faucet Address</div>
+            <div class="value truncate hash" style="font-size: 0.8rem">@FormatHelper.TruncateHash(_faucetStatus.FaucetAddress)</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Pending Nonce</div>
+            <div class="value">@_faucetStatus.PendingNonce</div>
+        </div>
+    </div>
+}
+
+<div class="card">
+    <div class="card-header">Request Test Tokens</div>
+    <div class="card-body">
+        <div class="storage-input-row">
+            <input type="text" placeholder="Enter your address (0x...)..."
+                   @bind="_requestAddress" @onkeydown="HandleKey" disabled="@_requesting" />
+            <button @onclick="RequestTokens" disabled="@(_requesting || _cooldown > 0)">
+                @if (_requesting)
+                {
+                    <span>Requesting...</span>
+                }
+                else if (_cooldown > 0)
+                {
+                    <span>Wait @(_cooldown)s</span>
+                }
+                else
+                {
+                    <span>Request BSLT</span>
+                }
+            </button>
+        </div>
+
+        @if (_lastResult != null)
+        {
+            <div style="margin-top: 1rem">
+                @if (_lastResult.Success)
+                {
+                    <div style="color: var(--success); margin-bottom: 0.5rem">@_lastResult.Message</div>
+                    @if (!string.IsNullOrEmpty(_lastResult.TxHash))
+                    {
+                        <div class="detail-row">
+                            <span class="detail-label">Transaction</span>
+                            <span class="detail-value hash" style="cursor:pointer" @onclick="() => NavigateToTx(_lastResult.TxHash)">@_lastResult.TxHash</span>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div style="color: var(--danger)">@_lastResult.Message</div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+
+    private FaucetStatusDto? _faucetStatus;
+    private string _requestAddress = "";
+    private bool _requesting;
+    private int _cooldown;
+    private FaucetResponseDto? _lastResult;
+    private Timer? _cooldownTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _faucetStatus = await Api.GetFaucetStatusAsync();
+    }
+
+    private async Task HandleKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await RequestTokens();
+    }
+
+    private async Task RequestTokens()
+    {
+        var addr = _requestAddress.Trim();
+        if (string.IsNullOrEmpty(addr) || _requesting || _cooldown > 0) return;
+
+        _requesting = true;
+        _lastResult = null;
+        StateHasChanged();
+
+        _lastResult = await Api.RequestFaucetAsync(addr);
+
+        if (_lastResult == null)
+        {
+            _lastResult = new FaucetResponseDto { Success = false, Message = "Failed to connect to faucet." };
+            Toasts.Error("Faucet request failed");
+        }
+        else if (_lastResult.Success)
+        {
+            Toasts.Success("Tokens sent!");
+            _faucetStatus = await Api.GetFaucetStatusAsync();
+            StartCooldown();
+        }
+        else
+        {
+            Toasts.Warning(_lastResult.Message);
+        }
+
+        _requesting = false;
+    }
+
+    private void StartCooldown()
+    {
+        _cooldown = 60;
+        _cooldownTimer?.Dispose();
+        _cooldownTimer = new Timer(async _ =>
+        {
+            _cooldown--;
+            if (_cooldown <= 0)
+            {
+                _cooldownTimer?.Dispose();
+                _cooldownTimer = null;
+            }
+            await InvokeAsync(StateHasChanged);
+        }, null, 1000, 1000);
+    }
+
+    private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
+}

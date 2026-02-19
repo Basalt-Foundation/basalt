@@ -177,12 +177,92 @@ else
                 <span class="detail-label">Gas Price</span>
                 <span class="detail-value">@FormatHelper.FormatBslt(_tx.GasPrice)</span>
             </div>
+            @if (!string.IsNullOrEmpty(_tx.MaxFeePerGas))
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Max Fee Per Gas</span>
+                    <span class="detail-value">@FormatHelper.FormatBslt(_tx.MaxFeePerGas)</span>
+                </div>
+            }
+            @if (!string.IsNullOrEmpty(_tx.MaxPriorityFeePerGas))
+            {
+                <div class="detail-row">
+                    <span class="detail-label">Max Priority Fee</span>
+                    <span class="detail-value">@FormatHelper.FormatBslt(_tx.MaxPriorityFeePerGas)</span>
+                </div>
+            }
             <div class="detail-row">
                 <span class="detail-label">Priority</span>
                 <span class="detail-value">@_tx.Priority</span>
             </div>
         </div>
     </div>
+
+    @* Card 4: Execution Receipt *@
+    @if (_tx.Success.HasValue)
+    {
+        <div class="card">
+            <div class="card-header">Execution Receipt</div>
+            <div class="card-body">
+                <div class="detail-row">
+                    <span class="detail-label">Status</span>
+                    <span class="detail-value">
+                        <span class="badge @FormatHelper.GetReceiptStatusBadgeClass(_tx.Success)">
+                            @FormatHelper.GetReceiptStatusLabel(_tx.Success)
+                        </span>
+                    </span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Gas Used</span>
+                    <span class="detail-value">
+                        @_tx.GasUsed / @_tx.GasLimit
+                        @if (_tx.GasUsed.HasValue && _tx.GasLimit > 0)
+                        {
+                            <span> (@(((double)_tx.GasUsed.Value / _tx.GasLimit * 100).ToString("F1"))%)</span>
+                            <span class="gas-bar">
+                                <span class="gas-bar-fill" style="width: @(((double)_tx.GasUsed.Value / _tx.GasLimit * 100).ToString("F1"))%"></span>
+                            </span>
+                        }
+                    </span>
+                </div>
+                @if (!string.IsNullOrEmpty(_tx.EffectiveGasPrice) && _tx.EffectiveGasPrice != "0")
+                {
+                    <div class="detail-row">
+                        <span class="detail-label">Effective Gas Price</span>
+                        <span class="detail-value">@FormatHelper.FormatBslt(_tx.EffectiveGasPrice)</span>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(_tx.ErrorCode) && _tx.ErrorCode != "None" && _tx.ErrorCode != "Success")
+                {
+                    <div class="detail-row">
+                        <span class="detail-label">Error Code</span>
+                        <span class="detail-value" style="color:var(--danger)">@_tx.ErrorCode</span>
+                    </div>
+                }
+                @if (_tx.Logs != null && _tx.Logs.Length > 0)
+                {
+                    <div style="margin-top: 0.75rem">
+                        <span class="detail-label" style="display:block; margin-bottom: 0.5rem">Event Logs (@_tx.Logs.Length)</span>
+                        @foreach (var log in _tx.Logs)
+                        {
+                            <div class="log-entry">
+                                <div><strong>Contract:</strong> @FormatHelper.TruncateHash(log.Contract)</div>
+                                <div><strong>Event:</strong> @FormatHelper.TruncateHash(log.EventSignature)</div>
+                                @if (log.Topics.Length > 0)
+                                {
+                                    <div><strong>Topics:</strong> @string.Join(", ", log.Topics.Select(t => FormatHelper.TruncateHash(t)))</div>
+                                }
+                                @if (!string.IsNullOrEmpty(log.Data))
+                                {
+                                    <div><strong>Data:</strong> @FormatHelper.TruncateData(log.Data, 80)</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
 }
 
 @code {
