@@ -6,6 +6,11 @@
 
 -
 
+## Component
+
+<!-- Which areas does this PR touch? -->
+<!-- Core | Crypto | Storage | Network | Consensus | Execution | Compliance | Confidentiality | API | SDK | Generators | Node | Explorer | CLI | DevNet | Bridge -->
+
 ## Testing
 
 - [ ] All existing tests pass (`dotnet test`)

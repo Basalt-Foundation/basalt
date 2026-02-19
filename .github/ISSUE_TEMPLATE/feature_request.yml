@@ -36,9 +36,15 @@ body:
         - Network
         - Consensus
         - Execution
+        - Compliance (ZK / Attestations)
+        - Confidentiality (Pedersen / Channels)
         - API (gRPC/GraphQL/REST)
-        - SDK
+        - SDK (Contracts / Analyzers / Testing)
+        - SDK Wallet
+        - Generators (Contracts / Codec / JSON)
+        - Node
         - Explorer
         - CLI
+        - DevNet
         - Bridge
         - Other

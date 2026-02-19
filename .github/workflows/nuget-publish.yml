@@ -44,6 +44,9 @@ jobs:
       - name: Pack SDK Analyzers
         run: dotnet pack src/sdk/Basalt.Sdk.Analyzers/Basalt.Sdk.Analyzers.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
 
+      - name: Pack SDK Wallet
+        run: dotnet pack src/sdk/Basalt.Sdk.Wallet/Basalt.Sdk.Wallet.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
       - name: Pack Generators.Contracts
         run: dotnet pack src/generators/Basalt.Generators.Contracts/Basalt.Generators.Contracts.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
 
