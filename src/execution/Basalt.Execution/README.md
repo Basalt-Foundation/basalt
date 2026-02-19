@@ -18,6 +18,8 @@ var tx = Transaction.Sign(new Transaction
     Value = new UInt256(1000),
     GasLimit = 21_000,
     GasPrice = new UInt256(1),
+    MaxFeePerGas = new UInt256(2),        // EIP-1559: max total fee per gas
+    MaxPriorityFeePerGas = new UInt256(1), // EIP-1559: max tip per gas
     Data = [],            // byte[]: calldata or deploy code
     Priority = 0,         // byte: transaction priority
     ChainId = 31337,
@@ -27,6 +29,8 @@ bool valid = tx.VerifySignature();
 Hash256 hash = tx.Hash;                // BLAKE3 of the signing payload
 PublicKey senderPubKey = tx.SenderPublicKey;  // Set automatically by Transaction.Sign()
 ```
+
+EIP-1559 transactions set `MaxFeePerGas` and `MaxPriorityFeePerGas` instead of (or in addition to) `GasPrice`. When `MaxFeePerGas` is non-zero, the transaction uses EIP-1559 pricing: `EffectiveGasPrice = min(MaxFeePerGas, BaseFee + MaxPriorityFeePerGas)`. The base fee portion is burned, and the tip (effectiveGasPrice - baseFee) goes to the block proposer.
 
 Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5), `ValidatorExit` (6).
 
@@ -69,6 +73,7 @@ public sealed class TransactionReceipt
     public BasaltErrorCode ErrorCode { get; init; }
     public Hash256 PostStateRoot { get; init; }
     public List<EventLog> Logs { get; init; }
+    public UInt256 EffectiveGasPrice { get; init; }  // EIP-1559: actual gas price paid
 }
 ```
 
@@ -117,6 +122,8 @@ Key behaviors:
 
 Priority queue of pending transactions ordered by gas price (highest first), then nonce (lowest first), with deterministic hash-based tiebreaking. Rejects duplicates and enforces a configurable size limit (default 10,000). Thread-safe via internal locking.
 
+The mempool sorts by `EffectiveMaxFee` (highest first) for EIP-1559 compatibility. `EffectiveMaxFee` equals `MaxFeePerGas` when set, otherwise `GasPrice`.
+
 ```csharp
 var mempool = new Mempool(maxSize: 10_000);
 mempool.OnTransactionAdded += (tx) => { /* trigger gossip */ };
@@ -145,6 +152,17 @@ Internally creates a `TransactionValidator` and `TransactionExecutor`. Skips tra
 
 Static helpers: `BlockBuilder.ComputeTransactionsRoot(txList)` and `BlockBuilder.ComputeReceiptsRoot(receiptList)`.
 
+### BaseFeeCalculator
+
+Computes the EIP-1559 dynamic base fee for the next block.
+
+```csharp
+UInt256 nextBaseFee = BaseFeeCalculator.Calculate(
+    parentBaseFee, parentGasUsed, parentGasLimit, chainParams);
+```
+
+The algorithm targets 50% block gas utilization (elasticity multiplier = 2). When gas usage exceeds the target, the base fee increases (up to 12.5% per block). When below target, it decreases. Maximum change per block is bounded by the `BaseFeeChangeDenominator` (default 8).
+
 ### Block / BlockHeader
 
 ```csharp
@@ -160,6 +178,7 @@ public sealed class BlockHeader
     public uint ChainId { get; init; }
     public ulong GasUsed { get; init; }
     public ulong GasLimit { get; init; }
+    public UInt256 BaseFee { get; init; }     // EIP-1559 dynamic base fee
     public uint ProtocolVersion { get; init; }  // default 1
     public byte[] ExtraData { get; init; }      // default []
     public Hash256 Hash { get; }                // BLAKE3 of serialized header

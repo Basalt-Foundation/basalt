@@ -6,7 +6,7 @@ EVM bridge for cross-chain asset transfers between Basalt and Ethereum. Implemen
 
 ### BridgeState
 
-Bridge system contract (address `0x0...0010`) managing deposits and withdrawals.
+Low-level bridge state contract managing deposits and withdrawals. This is the internal state layer; the SDK contract counterpart is `BridgeETH` at `0x...1008`.
 
 #### Properties
 
@@ -36,8 +36,8 @@ bridge.Unlock(withdrawal, multisigRelayer);
 // Query state
 BridgeDeposit? d = bridge.GetDeposit(nonce);
 IReadOnlyList<BridgeDeposit> pending = bridge.GetPendingDeposits(); // Pending + Confirmed deposits
-ulong locked = bridge.GetLockedBalance();           // Native token locked balance
-ulong tokenLocked = bridge.GetLockedBalance(tokenAddr); // Specific token locked balance
+UInt256 locked = bridge.GetLockedBalance();           // Native token locked balance
+UInt256 tokenLocked = bridge.GetLockedBalance(tokenAddr); // Specific token locked balance
 bool processed = bridge.IsWithdrawalProcessed(nonce);
 ```
 
@@ -86,6 +86,19 @@ var (proofRoot, proof) = BridgeProofVerifier.BuildMerkleProof(leaves, leafIndex)
 // Verify proof
 bool valid = BridgeProofVerifier.VerifyMerkleProof(leaf, proof, leafIndex, root);
 ```
+
+### BridgeETH (SDK Contract)
+
+On-chain EVM bridge contract at genesis address `0x0...1008` (type ID `0x0107`). Provides lock/unlock for native BST with M-of-N Ed25519 multisig relayer verification, admin pattern, pause/unpause, and deposit lifecycle management. This is the SDK contract counterpart to the low-level `BridgeState`.
+
+Features:
+- **Lock**: Users lock BST by calling with a TxValue. Deposit is created in `Pending` state
+- **Confirm/Finalize**: Relayers confirm deposits with target chain block height, then finalize
+- **Unlock**: Relayers submit signatures; M-of-N threshold verification releases BST
+- **Admin**: Add/remove relayers, set threshold, pause/unpause, transfer admin
+- **Replay Protection**: Each deposit has a unique nonce; processed withdrawals are tracked
+
+Deposit lifecycle: `Pending -> Confirmed -> Finalized`
 
 ### Bridge Flow
 

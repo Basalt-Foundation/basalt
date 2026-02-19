@@ -10,18 +10,18 @@ using Basalt.Sdk.Contracts;
 [BasaltContract]
 public class MyToken
 {
-    private readonly StorageMap<byte[], ulong> _balances = new("balances");
-    private readonly StorageValue<ulong> _totalSupply = new("totalSupply");
+    private readonly StorageMap<byte[], UInt256> _balances = new("balances");
+    private readonly StorageValue<UInt256> _totalSupply = new("totalSupply");
 
     [BasaltConstructor]
-    public void Initialize(ulong initialSupply)
+    public void Initialize(UInt256 initialSupply)
     {
         _balances.Set(Context.Caller, initialSupply);
         _totalSupply.Set(initialSupply);
     }
 
     [BasaltEntrypoint]
-    public void Transfer(byte[] to, ulong amount)
+    public void Transfer(byte[] to, UInt256 amount)
     {
         var sender = Context.Caller;
         var senderBalance = _balances.Get(sender);
@@ -34,14 +34,14 @@ public class MyToken
     }
 
     [BasaltView]
-    public ulong BalanceOf(byte[] account) => _balances.Get(account);
+    public UInt256 BalanceOf(byte[] account) => _balances.Get(account);
 
     [BasaltEvent]
     public class TransferEvent
     {
         [Indexed] public byte[] From { get; set; }
         [Indexed] public byte[] To { get; set; }
-        public ulong Amount { get; set; }
+        public UInt256 Amount { get; set; }
     }
 }
 ```
@@ -66,9 +66,9 @@ public class MyToken
 Single value with a fixed storage key. The type parameter `T` is constrained to `struct` (value types only).
 
 ```csharp
-var totalSupply = new StorageValue<ulong>("totalSupply");
+var totalSupply = new StorageValue<UInt256>("totalSupply");
 totalSupply.Set(1_000_000);
-ulong current = totalSupply.Get();
+UInt256 current = totalSupply.Get();
 ```
 
 ### StorageMap\<TKey, TValue\>
@@ -76,9 +76,9 @@ ulong current = totalSupply.Get();
 Key-value mapping. `TKey` is constrained to `notnull`, but `TValue` is unconstrained -- it allows both value types and reference types (including `string`).
 
 ```csharp
-var balances = new StorageMap<byte[], ulong>("balances");
+var balances = new StorageMap<byte[], UInt256>("balances");
 balances.Set(account, 1000);
-ulong balance = balances.Get(account);
+UInt256 balance = balances.Get(account);
 bool exists = balances.ContainsKey(account);
 balances.Delete(account);
 
@@ -106,7 +106,7 @@ Access blockchain state from within contracts via `Context`:
 |----------|------|-------------|
 | `Context.Caller` | `byte[]` | Address of the caller |
 | `Context.Self` | `byte[]` | Address of the current contract |
-| `Context.TxValue` | `ulong` | Value sent with the call |
+| `Context.TxValue` | `UInt256` | Value sent with the call |
 | `Context.BlockTimestamp` | `long` | Current block timestamp (Unix seconds) |
 | `Context.BlockHeight` | `ulong` | Current block number |
 | `Context.ChainId` | `uint` | Chain identifier |
@@ -135,11 +135,11 @@ The SDK includes interfaces and reference implementations for common token stand
 
 ### BST-20 Fungible Token (ERC-20 equivalent)
 
-**Interface**: `IBST20` -- defines `Name()`, `Symbol()`, `Decimals()`, `TotalSupply()`, `BalanceOf(byte[])`, `Transfer(byte[], ulong)`, `Allowance(byte[], byte[])`, `Approve(byte[], ulong)`, `TransferFrom(byte[], byte[], ulong)`.
+**Interface**: `IBST20` -- defines `Name()`, `Symbol()`, `Decimals()`, `TotalSupply()` returns `UInt256`, `BalanceOf(byte[])` returns `UInt256`, `Transfer(byte[], UInt256)`, `Allowance(byte[], byte[])` returns `UInt256`, `Approve(byte[], UInt256)`, `TransferFrom(byte[], byte[], UInt256)`.
 
-**Implementation**: `BST20Token` -- reference implementation with full allowance mechanics, `Mint(byte[], ulong)` and `Burn(byte[], ulong)` protected methods for derived contracts. Uses hex-encoded address strings as internal storage keys.
+**Implementation**: `BST20Token` -- reference implementation with full allowance mechanics, `Mint(byte[], UInt256)` and `Burn(byte[], UInt256)` protected methods for derived contracts. Uses hex-encoded address strings as internal storage keys.
 
-**Events**: `TransferEvent` (From, To, Amount), `ApprovalEvent` (Owner, Spender, Amount).
+**Events**: `TransferEvent` (From, To, Amount: `UInt256`), `ApprovalEvent` (Owner, Spender, Amount: `UInt256`).
 
 ```csharp
 var token = new BST20Token("MyToken", "MTK", decimals: 18);
@@ -147,28 +147,28 @@ var token = new BST20Token("MyToken", "MTK", decimals: 18);
 
 ### BST-721 Non-Fungible Token (ERC-721 equivalent)
 
-**Interface**: `IBST721` -- defines `Name()`, `Symbol()`, `OwnerOf(ulong)`, `BalanceOf(byte[])`, `Transfer(byte[], ulong)`, `Approve(byte[], ulong)`, `GetApproved(ulong)`, `TokenURI(ulong)`.
+**Interface**: `IBST721` -- defines `Name()`, `Symbol()`, `OwnerOf(UInt256)`, `BalanceOf(byte[])` returns `UInt256`, `Transfer(byte[], UInt256)`, `Approve(byte[], UInt256)`, `GetApproved(UInt256)`, `TokenURI(UInt256)`.
 
-**Implementation**: `BST721Token` -- reference implementation with auto-incrementing token IDs, per-token approval, and metadata URI storage. Includes a public `Mint(byte[], string)` entrypoint that returns the new token ID.
+**Implementation**: `BST721Token` -- reference implementation with auto-incrementing token IDs (`UInt256`), per-token approval, and metadata URI storage. Includes a public `Mint(byte[], string)` entrypoint that returns the new token ID as `UInt256`.
 
-**Events**: `NftTransferEvent` (From, To, TokenId), `NftApprovalEvent` (Owner, Approved, TokenId).
+**Events**: `NftTransferEvent` (From, To, TokenId: `UInt256`), `NftApprovalEvent` (Owner, Approved, TokenId: `UInt256`).
 
 ```csharp
 var nft = new BST721Token("MyNFT", "MNFT");
-ulong tokenId = nft.Mint(recipient, "https://example.com/metadata/0");
+UInt256 tokenId = nft.Mint(recipient, "https://example.com/metadata/0");
 ```
 
 ### BST-1155 Multi-Token (ERC-1155 equivalent)
 
-**Interface**: `IBST1155` -- defines `BalanceOf(byte[], ulong)`, `BalanceOfBatch(byte[][], ulong[])`, `SafeTransferFrom(byte[], byte[], ulong, ulong)`, `SafeBatchTransferFrom(byte[], byte[], ulong[], ulong[])`, `SetApprovalForAll(byte[], bool)`, `IsApprovedForAll(byte[], byte[])`, `Uri(ulong)`.
+**Interface**: `IBST1155` -- defines `BalanceOf(byte[], UInt256)` returns `UInt256`, `BalanceOfBatch(byte[][], UInt256[])`, `SafeTransferFrom(byte[], byte[], UInt256, UInt256)`, `SafeBatchTransferFrom(byte[], byte[], UInt256[], UInt256[])`, `SetApprovalForAll(byte[], bool)`, `IsApprovedForAll(byte[], byte[])`, `Uri(UInt256)`.
 
-**Implementation**: `BST1155Token` -- reference implementation supporting both fungible and non-fungible tokens in a single contract. Includes `Mint(byte[], ulong, ulong, string)` and `Create(byte[], ulong, string)` for creating new token types with optional initial supply.
+**Implementation**: `BST1155Token` -- reference implementation supporting both fungible and non-fungible tokens in a single contract. Includes `Mint(byte[], UInt256, UInt256, string)` and `Create(byte[], UInt256, string)` for creating new token types with optional initial supply.
 
-**Events**: `TransferSingleEvent` (Operator, From, To, TokenId, Amount), `TransferBatchEvent` (Operator, From, To, TokenIds, Amounts), `ApprovalForAllEvent` (Owner, Operator, Approved).
+**Events**: `TransferSingleEvent` (Operator, From, To, TokenId: `UInt256`, Amount: `UInt256`), `TransferBatchEvent` (Operator, From, To, TokenIds, Amounts), `ApprovalForAllEvent` (Owner, Operator, Approved).
 
 ```csharp
 var multi = new BST1155Token("https://example.com/tokens/");
-ulong tokenId = multi.Create(recipient, initialSupply: 1000, "https://example.com/tokens/0");
+UInt256 tokenId = multi.Create(recipient, initialSupply: 1000, "https://example.com/tokens/0");
 ```
 
 ### BST-DID Decentralized Identity
@@ -200,18 +200,18 @@ bool valid = registry.HasValidAttestation(did, "KYC");
 var sft = new BST3525Token("Bond Token", "BOND", valueDecimals: 6);
 
 // Mint: create tokens in a slot (slot = maturity date, value = principal)
-ulong bondA = sft.Mint(alice, slot: 20251231, value: 1_000_000);
-ulong bondB = sft.Mint(bob, slot: 20251231, value: 500_000);
+UInt256 bondA = sft.Mint(alice, slot: 20251231, value: 1_000_000);
+UInt256 bondB = sft.Mint(bob, slot: 20251231, value: 500_000);
 
 // Transfer value between same-slot tokens
 sft.TransferValueToId(bondA, bondB, 200_000);  // alice → bob: 200k
 
 // Transfer value to a new address (creates new token)
-ulong bondC = sft.TransferValueToAddress(bondA, charlie, 100_000);
+UInt256 bondC = sft.TransferValueToAddress(bondA, charlie, 100_000);
 
 // Value allowance (operator pattern)
 sft.ApproveValue(bondA, operator, 50_000);
-ulong remaining = sft.ValueAllowance(bondA, operator);
+UInt256 remaining = sft.ValueAllowance(bondA, operator);
 
 // ERC-721 compatible token transfer
 sft.TransferToken(dave, bondA);
@@ -229,19 +229,19 @@ sft.TransferToken(dave, bondA);
 var vault = new BST4626Vault("Vault Shares", "vUND", decimals: 18, assetAddress);
 
 // Deposit underlying assets → receive shares
-ulong shares = vault.Deposit(1000);
+UInt256 shares = vault.Deposit(1000);
 
 // Check exchange rate
-ulong sharesPerAsset = vault.ConvertToShares(100);
-ulong assetsPerShare = vault.ConvertToAssets(100);
+UInt256 sharesPerAsset = vault.ConvertToShares(100);
+UInt256 assetsPerShare = vault.ConvertToAssets(100);
 
 // Preview operations (includes rounding)
-ulong sharesToBurn = vault.PreviewWithdraw(500);  // rounds up
-ulong assetsNeeded = vault.PreviewMint(100);      // rounds up
+UInt256 sharesToBurn = vault.PreviewWithdraw(500);  // rounds up
+UInt256 assetsNeeded = vault.PreviewMint(100);      // rounds up
 
 // Withdraw/redeem
-ulong burned = vault.Withdraw(500);    // withdraw exact assets, burn shares
-ulong received = vault.Redeem(shares); // redeem exact shares, receive assets
+UInt256 burned = vault.Withdraw(500);    // withdraw exact assets, burn shares
+UInt256 received = vault.Redeem(shares); // redeem exact shares, receive assets
 
 // Admin: report yield (increases exchange rate)
 vault.Harvest(100);  // totalAssets += 100, shares unchanged → each share worth more
@@ -274,9 +274,71 @@ vcRegistry.ReinstateCredential(credentialHash);
 vcRegistry.RevokeCredential(credentialHash, "Fraud detected");
 
 // Query
-ulong count = vcRegistry.GetIssuerCredentialCount(issuerAddr);
+UInt256 count = vcRegistry.GetIssuerCredentialCount(issuerAddr);
 bool issued = vcRegistry.HasIssuerIssuedCredential(issuerAddr, credentialHash);
 bool verified = vcRegistry.VerifyCredentialSet(credentialHash);
+```
+
+### Governance (System Contract)
+
+On-chain governance with stake-weighted quadratic voting, single-hop delegation, timelock, and executable proposals. Integrates with StakingPool for vote weight derivation.
+
+**Type ID**: `0x0102` | **Genesis address**: `0x...1003`
+
+```csharp
+var gov = new Governance();
+
+// Create a proposal
+string proposalId = gov.CreateProposal("Upgrade block gas limit", "technical",
+    targetContract, callData, votingPeriod: 604800);
+
+// Vote (weight derived from StakingPool stake via cross-contract call)
+gov.Vote(proposalIdBytes, voteYes: true);
+
+// Delegate voting power
+gov.DelegateVote(delegateAddr);
+gov.UndelegateVote();
+
+// Execute after timelock
+gov.ExecuteProposal(proposalIdBytes);
+
+// Query
+UInt256 weight = gov.GetVotingWeight(voterAddr);
+byte status = gov.GetProposalStatus(proposalIdBytes);  // 0=Active, 1=Passed, 2=Failed, 3=Executed, 4=Expired
+```
+
+### BridgeETH (System Contract)
+
+EVM bridge contract for locking/unlocking native BST with M-of-N Ed25519 multisig relayer verification, admin controls, pause/unpause, and deposit lifecycle management.
+
+**Type ID**: `0x0107` | **Genesis address**: `0x...1008`
+
+```csharp
+var bridge = new BridgeETH();
+
+// Lock BST (call with TxValue)
+bridge.Lock(ethRecipientAddr);
+
+// Admin: add relayer, set threshold
+bridge.AddRelayer(relayerAddr);
+bridge.SetThreshold(3);
+
+// Relayer: confirm and finalize deposits
+bridge.ConfirmDeposit(depositId, 42);
+bridge.FinalizeDeposit(depositId);
+
+// Unlock (with relayer signatures)
+bridge.Unlock(bstRecipientAddr, amount, depositId, signatures);
+
+// Admin controls
+bridge.Pause();
+bridge.Unpause();
+bridge.TransferAdmin(newAdminAddr);
+
+// Query
+UInt256 locked = bridge.GetLockedBalance();
+byte status = bridge.GetDepositStatus(depositId);
+bool paused = bridge.IsPaused();
 ```
 
 ### SchemaRegistry (ZK Compliance)
@@ -334,11 +396,40 @@ issuerRegistry.TransferAdmin(newAdminAddr);
 byte tier = issuerRegistry.GetIssuerTier(issuerAddr);
 bool active = issuerRegistry.IsActiveIssuer(issuerAddr);
 string rootHex = issuerRegistry.GetRevocationRoot(issuerAddr);
-ulong stake = issuerRegistry.GetCollateralStake(issuerAddr);
+UInt256 stake = issuerRegistry.GetCollateralStake(issuerAddr);
 bool supports = issuerRegistry.SupportsSchema(issuerAddr, schemaIdBytes);
 ```
 
 **Events**: `IssuerRegisteredEvent`, `CollateralStakedEvent`, `RevocationRootUpdatedEvent`, `IssuerSlashedEvent`, `IssuerDeactivatedEvent`, `IssuerReactivatedEvent`, `AdminTransferredEvent`.
+
+## ContractRegistry Type IDs
+
+All contract types are registered with `ContractRegistry.CreateDefault()` and identified by a 2-byte type ID in the deployment manifest (`[0xBA, 0x5A][typeId BE][ctor args]`).
+
+### Token Standards
+
+| Type ID | Contract | Description |
+|---------|----------|-------------|
+| `0x0001` | `BST20Token` | Fungible token (ERC-20) |
+| `0x0002` | `BST721Token` | Non-fungible token (ERC-721) |
+| `0x0003` | `BST1155Token` | Multi-token (ERC-1155) |
+| `0x0004` | `BSTDIDRegistry` | Decentralized identity |
+| `0x0005` | `BST3525Token` | Semi-fungible token (ERC-3525) |
+| `0x0006` | `BST4626Vault` | Tokenized vault (ERC-4626) |
+| `0x0007` | `BSTVCRegistry` | Verifiable credentials (W3C VC) |
+
+### System Contracts
+
+| Type ID | Contract | Genesis Address |
+|---------|----------|-----------------|
+| `0x0100` | `WBSLT` | `0x...1001` |
+| `0x0101` | `BNS` | `0x...1002` |
+| `0x0102` | `Governance` | `0x...1003` |
+| `0x0103` | `Escrow` | `0x...1004` |
+| `0x0104` | `StakingPool` | `0x...1005` |
+| `0x0105` | `SchemaRegistry` | `0x...1006` |
+| `0x0106` | `IssuerRegistry` | `0x...1007` |
+| `0x0107` | `BridgeETH` | `0x...1008` |
 
 ## Dependencies
 

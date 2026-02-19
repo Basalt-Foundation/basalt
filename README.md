@@ -12,8 +12,13 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **BasaltBFT Consensus** -- Pipelined HotStuff-based BFT with 400ms block time, stake-weighted leader selection, BLS aggregation, and epoch-based dynamic validator sets
 - **Merkle Patricia Trie** -- Cryptographically verifiable state with RocksDB persistence
 - **Smart Contracts** -- C# contracts with gas metering, sandboxed execution, and Roslyn analyzers
+- **Token Standards** -- BST-20 (ERC-20), BST-721 (ERC-721), BST-1155 (ERC-1155), BST-3525 (ERC-3525 SFT), BST-4626 (ERC-4626 Vault), BST-VC (W3C Verifiable Credentials), BST-DID
+- **EIP-1559 Gas Pricing** -- Dynamic base fee with elastic block gas, tip/burn fee split, MaxFeePerGas/MaxPriorityFeePerGas
+- **On-Chain Governance** -- Stake-weighted quadratic voting, single-hop delegation, timelock, executable proposals
+- **Block Explorer** -- Blazor WASM explorer with responsive design, dark/light theme, live WebSocket updates, Faucet, and Network Stats
 - **Built-in Compliance** -- KYC/AML identity registry, sanctions screening, per-token transfer policies
-- **EVM Bridge** -- Lock/unlock bridge with multisig relayer and Merkle proof verification
+- **ZK Privacy Compliance** -- Groth16 zero-knowledge proofs for privacy-preserving regulatory compliance (schema/issuer registries, sparse Merkle tree revocation)
+- **EVM Bridge** -- Lock/unlock bridge with M-of-N Ed25519 multisig relayer verification, pause/unpause, and deposit lifecycle management
 - **Confidentiality** -- Pedersen commitments, Groth16 proofs, private channels, selective disclosure
 - **P2P Networking** -- TCP transport with length-prefixed framing, Kademlia DHT, Episub gossip, peer reputation scoring
 
@@ -54,7 +59,7 @@ dotnet build
 dotnet test
 ```
 
-1,698 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, and end-to-end integration.
+1,998 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -106,7 +111,7 @@ dotnet run --project tools/Basalt.Cli -- init MyToken
 ## Project Structure
 
 ```
-Basalt.sln                              (38 C# projects)
+Basalt.sln                              (41 C# projects)
 +-- src/
 |   +-- core/
 |   |   +-- Basalt.Core/               # Hash256, Address, UInt256, chain parameters
@@ -133,16 +138,17 @@ Basalt.sln                              (38 C# projects)
 |   +-- sdk/
 |   |   +-- Basalt.Sdk.Contracts/      # Contract attributes, storage primitives, BST20Token base
 |   |   +-- Basalt.Sdk.Analyzers/      # Roslyn analyzers for contract safety
+|   |   +-- Basalt.Sdk.Wallet/         # Wallet SDK (HD wallets, tx builders, RPC client, block subscriptions)
 |   |   +-- Basalt.Sdk.Testing/        # BasaltTestHost in-process emulator
 |   +-- generators/
 |   |   +-- Basalt.Generators.Codec/   # Codec source generator (planned)
 |   |   +-- Basalt.Generators.Json/    # JSON source generator (planned)
 |   |   +-- Basalt.Generators.Contracts/ # ABI dispatch source generator (planned)
 |   +-- explorer/
-|   |   +-- Basalt.Explorer/           # Blazor WebAssembly block explorer
+|   |   +-- Basalt.Explorer/           # Blazor WASM block explorer (responsive, dark/light theme, WebSocket live updates)
 |   +-- node/
 |       +-- Basalt.Node/               # Composition root, single binary
-+-- tests/                             # 16 test projects, 1,698 tests
++-- tests/                             # 16 test projects, 1,998 tests
 |   +-- Basalt.Core.Tests/
 |   +-- Basalt.Crypto.Tests/
 |   +-- Basalt.Codec.Tests/
@@ -156,6 +162,7 @@ Basalt.sln                              (38 C# projects)
 |   +-- Basalt.Confidentiality.Tests/
 |   +-- Basalt.Sdk.Tests/
 |   +-- Basalt.Sdk.Analyzers.Tests/
+|   +-- Basalt.Sdk.Wallet.Tests/
 |   +-- Basalt.Node.Tests/
 |   +-- Basalt.Integration.Tests/
 +-- benchmarks/
@@ -178,6 +185,18 @@ Basalt.sln                              (38 C# projects)
 | `GET` | `/v1/validators` | List active validators with stake info |
 | `GET` | `/v1/status` | Node status (block height, mempool, etc.) |
 | `POST` | `/v1/faucet` | Request devnet test tokens |
+| `GET` | `/v1/blocks?page=&pageSize=` | Paginated block list |
+| `GET` | `/v1/blocks/{number}/transactions` | Transactions in a block |
+| `GET` | `/v1/transactions/recent?count=` | Recent transactions |
+| `GET` | `/v1/transactions/{hash}` | Get transaction by hash |
+| `GET` | `/v1/accounts/{address}/transactions` | Account transaction history |
+| `GET` | `/v1/receipts/{hash}` | Get transaction receipt |
+| `POST` | `/v1/call` | Read-only contract call |
+| `GET` | `/v1/contracts/{address}` | Contract metadata |
+| `GET` | `/v1/contracts/{address}/storage?key=` | Read contract storage |
+| `GET` | `/v1/faucet/status` | Faucet status |
+| `GET` | `/v1/pools` | Staking pools list |
+| `GET` | `/v1/debug/mempool` | Mempool diagnostic dump |
 | `GET` | `/metrics` | Prometheus metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 

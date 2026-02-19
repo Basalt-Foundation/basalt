@@ -142,6 +142,9 @@ Key properties:
 | `TokenDecimals` | `byte` | 18 | Token decimals |
 | `TokenSymbol` | `string` | "BSLT" | Token symbol |
 | `ProtocolVersion` | `uint` | 1 | Protocol version |
+| `InitialBaseFee` | `UInt256` | 1 | Genesis block base fee |
+| `BaseFeeChangeDenominator` | `uint` | 8 | Max base fee change rate (12.5%) |
+| `ElasticityMultiplier` | `uint` | 2 | Target gas = gasLimit / multiplier |
 
 ### BasaltResult
 
@@ -175,6 +178,19 @@ public interface IStakingState
 ```
 
 **StakingOperationResult**: `readonly struct` with `IsSuccess`, `ErrorMessage`. Factory: `StakingOperationResult.Ok()`, `StakingOperationResult.Error(message)`.
+
+### IComplianceVerifier
+
+Interface for ZK compliance proof verification, allowing the execution layer to verify transaction compliance proofs without a direct dependency on the compliance assembly.
+
+```csharp
+public interface IComplianceVerifier
+{
+    ComplianceCheckResult VerifyProofs(ComplianceProof[] proofs,
+        ProofRequirement[] requirements, long blockTimestamp);
+    void ResetNullifiers();
+}
+```
 
 ### BasaltErrorCode
 

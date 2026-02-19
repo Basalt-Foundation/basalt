@@ -28,7 +28,7 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 3. Configures chain parameters (devnet by default)
 4. Creates genesis block with initial account balances
 5. Registers genesis validators in StakingState
-6. Starts the REST API, gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
+6. Starts the REST API (including receipt queries), gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
 7. Creates a `BlockProductionLoop` for timer-based block production (400ms block time)
 8. Wires metrics and WebSocket notifications to the block production loop
 9. Handles graceful shutdown on SIGINT/SIGTERM
@@ -40,7 +40,7 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 3. Recovers chain state from persistent storage if available (deserializes genesis and latest block, rebuilds state from `TrieStateDb`)
 4. Registers genesis validators with `StakingState` (4 validators, 200,000 BSLT each)
 5. Creates `SlashingEngine` for double-sign and inactivity penalties
-6. Starts the REST API, gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
+6. Starts the REST API (including receipt queries), gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
 7. Launches `NodeCoordinator`, which wires:
    - `TcpTransport` for P2P connections (length-prefixed framing, 4-byte big-endian length header)
    - `HandshakeProtocol` with chain ID validation and 5s timeout
@@ -56,7 +56,8 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 11. Tracks validator activity for inactivity slashing (threshold: 100 blocks) and detects double-signing
 12. Checks for epoch transitions after each finalized block -- rebuilds the validator set from `StakingState` when at an epoch boundary
 13. Persists finalized blocks to RocksDB
-14. Runs a peer reconnection loop (checks every 5 seconds)
+14. Persists transaction receipts to `ReceiptStore` for each finalized block
+15. Runs a peer reconnection loop (checks every 5 seconds)
 
 ## NodeCoordinator
 
@@ -138,6 +139,7 @@ References the following Basalt modules:
 - `Basalt.Core`, `Basalt.Crypto`, `Basalt.Codec`
 - `Basalt.Storage`, `Basalt.Network`, `Basalt.Consensus`
 - `Basalt.Execution`, `Basalt.Compliance`
+- `Basalt.Bridge`, `Basalt.Confidentiality`
 - `Basalt.Api.Rest`, `Basalt.Api.Grpc`
 
 External packages:

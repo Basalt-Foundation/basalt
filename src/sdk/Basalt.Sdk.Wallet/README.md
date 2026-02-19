@@ -137,6 +137,16 @@ var tx = TransactionBuilder.Transfer()
     .WithChainId(4242)
     .Build();
 
+// EIP-1559 transaction
+var tx = TransactionBuilder.Transfer()
+    .WithTo(recipient)
+    .WithValue(new UInt256(1_000))
+    .WithMaxFeePerGas(new UInt256(2))
+    .WithMaxPriorityFeePerGas(new UInt256(1))
+    .WithGasLimit(21_000)
+    .WithChainId(4242)
+    .Build();
+
 // Or use the convenience builder
 var tx = new TransferBuilder(recipient, amount)
     .WithChainId(4242)
