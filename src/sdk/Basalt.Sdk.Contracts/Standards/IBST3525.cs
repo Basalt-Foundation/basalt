@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -11,18 +13,18 @@ public interface IBST3525
     string Name();
     string Symbol();
     byte ValueDecimals();
-    ulong BalanceOf(ulong tokenId);
+    UInt256 BalanceOf(ulong tokenId);
     ulong TokenOwnerBalance(byte[] owner);
     ulong SlotOf(ulong tokenId);
     byte[] OwnerOf(ulong tokenId);
-    ulong ValueAllowance(ulong tokenId, byte[] operatorAddr);
+    UInt256 ValueAllowance(ulong tokenId, byte[] operatorAddr);
     byte[] GetApproved(ulong tokenId);
     string SlotUri(ulong slot);
     string TokenUri(ulong tokenId);
-    ulong Mint(byte[] to, ulong slot, ulong value);
-    void TransferValueToId(ulong fromId, ulong toId, ulong value);
-    ulong TransferValueToAddress(ulong fromId, byte[] to, ulong value);
-    void ApproveValue(ulong tokenId, byte[] operatorAddr, ulong value);
+    ulong Mint(byte[] to, ulong slot, UInt256 value);
+    void TransferValueToId(ulong fromId, ulong toId, UInt256 value);
+    ulong TransferValueToAddress(ulong fromId, byte[] to, UInt256 value);
+    void ApproveValue(ulong tokenId, byte[] operatorAddr, UInt256 value);
     void TransferToken(byte[] to, ulong tokenId);
     void ApproveToken(byte[] to, ulong tokenId);
     void SetSlotUri(ulong slot, string uri);
@@ -34,7 +36,7 @@ public sealed class TransferValueEvent
 {
     [Indexed] public ulong FromTokenId { get; init; }
     [Indexed] public ulong ToTokenId { get; init; }
-    public ulong Value { get; init; }
+    public UInt256 Value { get; init; }
 }
 
 [BasaltEvent]
@@ -50,7 +52,7 @@ public sealed class ApproveValueEvent
 {
     [Indexed] public ulong TokenId { get; init; }
     [Indexed] public byte[] Operator { get; init; } = [];
-    public ulong Value { get; init; }
+    public UInt256 Value { get; init; }
 }
 
 [BasaltEvent]
@@ -67,5 +69,5 @@ public sealed class SftMintEvent
     [Indexed] public byte[] To { get; init; } = [];
     public ulong TokenId { get; init; }
     public ulong Slot { get; init; }
-    public ulong Value { get; init; }
+    public UInt256 Value { get; init; }
 }

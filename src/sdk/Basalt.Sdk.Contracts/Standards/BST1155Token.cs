@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -6,7 +8,7 @@ namespace Basalt.Sdk.Contracts.Standards;
 [BasaltContract]
 public partial class BST1155Token : IBST1155
 {
-    private readonly StorageMap<string, ulong> _balances;       // "account:tokenId" -> balance
+    private readonly StorageMap<string, UInt256> _balances;       // "account:tokenId" -> balance
     private readonly StorageMap<string, string> _approvals;      // "owner:operator" -> "1"/"0"
     private readonly StorageMap<string, string> _tokenURIs;      // tokenId -> uri
     private readonly StorageValue<ulong> _nextTokenId;
@@ -15,14 +17,14 @@ public partial class BST1155Token : IBST1155
     public BST1155Token(string baseUri)
     {
         _baseUri = baseUri;
-        _balances = new StorageMap<string, ulong>("m_balances");
+        _balances = new StorageMap<string, UInt256>("m_balances");
         _approvals = new StorageMap<string, string>("m_approvals");
         _tokenURIs = new StorageMap<string, string>("m_uris");
         _nextTokenId = new StorageValue<ulong>("m_next_id");
     }
 
     [BasaltView]
-    public ulong BalanceOf(byte[] account, ulong tokenId)
+    public UInt256 BalanceOf(byte[] account, ulong tokenId)
     {
         return _balances.Get(BalanceKey(account, tokenId));
     }
@@ -33,12 +35,12 @@ public partial class BST1155Token : IBST1155
         Context.Require(accounts.Length == tokenIds.Length, "BST1155: length mismatch");
         var result = new ulong[accounts.Length];
         for (int i = 0; i < accounts.Length; i++)
-            result[i] = _balances.Get(BalanceKey(accounts[i], tokenIds[i]));
+            result[i] = (ulong)_balances.Get(BalanceKey(accounts[i], tokenIds[i]));
         return result;
     }
 
     [BasaltEntrypoint]
-    public void SafeTransferFrom(byte[] from, byte[] to, ulong tokenId, ulong amount)
+    public void SafeTransferFrom(byte[] from, byte[] to, ulong tokenId, UInt256 amount)
     {
         var caller = Context.Caller;
         Context.Require(
@@ -73,12 +75,13 @@ public partial class BST1155Token : IBST1155
 
         for (int i = 0; i < tokenIds.Length; i++)
         {
+            UInt256 amount = amounts[i];
             var fromBal = _balances.Get(BalanceKey(from, tokenIds[i]));
-            Context.Require(fromBal >= amounts[i], $"BST1155: insufficient balance for token {tokenIds[i]}");
-            _balances.Set(BalanceKey(from, tokenIds[i]), fromBal - amounts[i]);
+            Context.Require(fromBal >= amount, $"BST1155: insufficient balance for token {tokenIds[i]}");
+            _balances.Set(BalanceKey(from, tokenIds[i]), fromBal - amount);
 
             var toBal = _balances.Get(BalanceKey(to, tokenIds[i]));
-            _balances.Set(BalanceKey(to, tokenIds[i]), toBal + amounts[i]);
+            _balances.Set(BalanceKey(to, tokenIds[i]), toBal + amount);
         }
 
         Context.Emit(new TransferBatchEvent
@@ -122,7 +125,7 @@ public partial class BST1155Token : IBST1155
     /// Mint tokens of a specific ID.
     /// </summary>
     [BasaltEntrypoint]
-    public void Mint(byte[] to, ulong tokenId, ulong amount, string uri)
+    public void Mint(byte[] to, ulong tokenId, UInt256 amount, string uri)
     {
         var balance = _balances.Get(BalanceKey(to, tokenId));
         _balances.Set(BalanceKey(to, tokenId), balance + amount);
@@ -144,7 +147,7 @@ public partial class BST1155Token : IBST1155
     /// Create a new token type and mint initial supply.
     /// </summary>
     [BasaltEntrypoint]
-    public ulong Create(byte[] to, ulong initialSupply, string uri)
+    public ulong Create(byte[] to, UInt256 initialSupply, string uri)
     {
         var tokenId = _nextTokenId.Get();
         _nextTokenId.Set(tokenId + 1);

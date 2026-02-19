@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -10,14 +12,15 @@ public partial class BasaltNameService
     private readonly StorageMap<string, string> _owners;      // name -> owner hex
     private readonly StorageMap<string, string> _addresses;   // name -> target hex
     private readonly StorageMap<string, string> _reverse;     // address hex -> name
-    private readonly StorageValue<ulong> _registrationFee;
+    private readonly StorageValue<UInt256> _registrationFee;
 
-    public BasaltNameService(ulong registrationFee = 1_000_000_000)
+    public BasaltNameService(UInt256 registrationFee = default)
     {
+        if (registrationFee.IsZero) registrationFee = new UInt256(1_000_000_000);
         _owners = new StorageMap<string, string>("bns_owners");
         _addresses = new StorageMap<string, string>("bns_addrs");
         _reverse = new StorageMap<string, string>("bns_rev");
-        _registrationFee = new StorageValue<ulong>("bns_fee");
+        _registrationFee = new StorageValue<UInt256>("bns_fee");
         _registrationFee.Set(registrationFee);
     }
 

@@ -1,3 +1,4 @@
+using Basalt.Core;
 using Basalt.Sdk.Contracts;
 using Basalt.Sdk.Contracts.Standards;
 using Basalt.Sdk.Testing;
@@ -25,7 +26,7 @@ public class GovernanceTests : IDisposable
     private readonly byte[] _targetContract;
 
     // Pre-configured stakes for cross-contract call mock
-    private readonly Dictionary<string, ulong> _stakes = new();
+    private readonly Dictionary<string, UInt256> _stakes = new();
 
     // Track executable proposal cross-contract calls
     private readonly List<(string TargetHex, string Method)> _executedCalls = new();
@@ -59,10 +60,11 @@ public class GovernanceTests : IDisposable
     /// </summary>
     private Governance CreateGov(
         ulong quorumBps = 400,
-        ulong proposalThreshold = 1000,
+        UInt256 proposalThreshold = default,
         ulong votingPeriod = 10,
         ulong timelockDelay = 5)
     {
+        if (proposalThreshold.IsZero) proposalThreshold = new UInt256(1000);
         var gov = new Governance(quorumBps, proposalThreshold, votingPeriod, timelockDelay);
         WireMock();
         return gov;
@@ -83,7 +85,7 @@ public class GovernanceTests : IDisposable
             {
                 var delegator = (byte[])args[1]!;
                 var key = Convert.ToHexString(delegator);
-                return _stakes.TryGetValue(key, out var stake) ? stake : 0UL;
+                return _stakes.TryGetValue(key, out var stake) ? stake : UInt256.Zero;
             }
 
             // Track executable proposal calls
@@ -95,7 +97,7 @@ public class GovernanceTests : IDisposable
     /// <summary>
     /// Set stake for a given address in the mock.
     /// </summary>
-    private void SetStake(byte[] addr, ulong amount)
+    private void SetStake(byte[] addr, UInt256 amount)
     {
         _stakes[Convert.ToHexString(addr)] = amount;
     }
@@ -115,7 +117,7 @@ public class GovernanceTests : IDisposable
     public void Constructor_ProposalThreshold_DefaultValue()
     {
         var gov = CreateGov();
-        gov.GetProposalThreshold().Should().Be(1000);
+        gov.GetProposalThreshold().Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -269,8 +271,8 @@ public class GovernanceTests : IDisposable
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
         // isqrt(10000) = 100
-        gov.GetVotesFor(id).Should().Be(100);
-        gov.GetVotesAgainst(id).Should().Be(0);
+        gov.GetVotesFor(id).Should().Be((UInt256)100);
+        gov.GetVotesAgainst(id).Should().Be((UInt256)0);
     }
 
     [Fact]
@@ -286,9 +288,9 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(15);
         _host.Call(() => gov.Vote(id, false, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(0);
+        gov.GetVotesFor(id).Should().Be((UInt256)0);
         // isqrt(10000) = 100
-        gov.GetVotesAgainst(id).Should().Be(100);
+        gov.GetVotesAgainst(id).Should().Be((UInt256)100);
     }
 
     [Fact]
@@ -305,7 +307,7 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(15);
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(1000);
+        gov.GetVotesFor(id).Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -327,7 +329,7 @@ public class GovernanceTests : IDisposable
         events[0].ProposalId.Should().Be(id);
         events[0].Voter.Should().BeEquivalentTo(_alice);
         events[0].Support.Should().BeTrue();
-        events[0].Weight.Should().Be(100); // isqrt(10000)
+        events[0].Weight.Should().Be((UInt256)100); // isqrt(10000)
     }
 
     [Fact]
@@ -377,7 +379,7 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(20); // Exactly at endBlock
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(100);
+        gov.GetVotesFor(id).Should().Be((UInt256)100);
     }
 
     [Fact]
@@ -427,7 +429,7 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(15);
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
-        gov.GetVoterWeight(id, _alice).Should().Be(100);
+        gov.GetVoterWeight(id, _alice).Should().Be((UInt256)100);
     }
 
     // ====================================================================
@@ -455,7 +457,7 @@ public class GovernanceTests : IDisposable
 
         _host.Call(() => gov.DelegateVote(_bob, DefaultPoolId));
 
-        gov.GetDelegatedPower(_bob).Should().Be(5000);
+        gov.GetDelegatedPower(_bob).Should().Be((UInt256)5000);
     }
 
     [Fact]
@@ -478,7 +480,7 @@ public class GovernanceTests : IDisposable
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
         // isqrt(10000) = 100
-        gov.GetVotesFor(id).Should().Be(100);
+        gov.GetVotesFor(id).Should().Be((UInt256)100);
     }
 
     [Fact]
@@ -489,10 +491,10 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_alice);
 
         _host.Call(() => gov.DelegateVote(_bob, DefaultPoolId));
-        gov.GetDelegatedPower(_bob).Should().Be(5000);
+        gov.GetDelegatedPower(_bob).Should().Be((UInt256)5000);
 
         _host.Call(() => gov.Undelegate());
-        gov.GetDelegatedPower(_bob).Should().Be(0);
+        gov.GetDelegatedPower(_bob).Should().Be((UInt256)0);
         gov.GetDelegate(_alice).Should().BeEmpty();
     }
 
@@ -533,13 +535,13 @@ public class GovernanceTests : IDisposable
         // Alice delegates to Bob
         _host.SetCaller(_alice);
         _host.Call(() => gov.DelegateVote(_bob, DefaultPoolId));
-        gov.GetDelegatedPower(_bob).Should().Be(5000);
-        gov.GetDelegatedPower(_charlie).Should().Be(0);
+        gov.GetDelegatedPower(_bob).Should().Be((UInt256)5000);
+        gov.GetDelegatedPower(_charlie).Should().Be((UInt256)0);
 
         // Alice re-delegates to Charlie (should remove from Bob, add to Charlie)
         _host.Call(() => gov.DelegateVote(_charlie, DefaultPoolId));
-        gov.GetDelegatedPower(_bob).Should().Be(0);
-        gov.GetDelegatedPower(_charlie).Should().Be(5000);
+        gov.GetDelegatedPower(_bob).Should().Be((UInt256)0);
+        gov.GetDelegatedPower(_charlie).Should().Be((UInt256)5000);
         gov.GetDelegate(_alice).Should().Be(Convert.ToHexString(_charlie));
     }
 
@@ -926,8 +928,8 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(15);
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(1000);
-        gov.GetVoterWeight(id, _alice).Should().Be(1000);
+        gov.GetVotesFor(id).Should().Be((UInt256)1000);
+        gov.GetVoterWeight(id, _alice).Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -943,8 +945,8 @@ public class GovernanceTests : IDisposable
         _host.SetBlockHeight(15);
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(10);
-        gov.GetVoterWeight(id, _alice).Should().Be(10);
+        gov.GetVotesFor(id).Should().Be((UInt256)10);
+        gov.GetVoterWeight(id, _alice).Should().Be((UInt256)10);
     }
 
     // ====================================================================
@@ -975,8 +977,8 @@ public class GovernanceTests : IDisposable
         _host.Call(() => gov.Vote(id, true, DefaultPoolId));
 
         // isqrt(10000) = 100, isqrt(20000) = 141
-        gov.GetVotesFor(id).Should().Be(100 + 141);
-        gov.GetVotesAgainst(id).Should().Be(0);
+        gov.GetVotesFor(id).Should().Be((UInt256)(100 + 141));
+        gov.GetVotesAgainst(id).Should().Be((UInt256)0);
 
         // Step 3: Queue after voting ends
         _host.SetBlockHeight(21);
@@ -1013,8 +1015,8 @@ public class GovernanceTests : IDisposable
         _host.Call(() => gov.Vote(id, false, DefaultPoolId));
 
         // isqrt(10000) = 100 for, isqrt(40000) = 200 against
-        gov.GetVotesFor(id).Should().Be(100);
-        gov.GetVotesAgainst(id).Should().Be(200);
+        gov.GetVotesFor(id).Should().Be((UInt256)100);
+        gov.GetVotesAgainst(id).Should().Be((UInt256)200);
 
         // Step 3: Queue -> rejected
         _host.SetBlockHeight(21);
@@ -1151,9 +1153,9 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_charlie);
         _host.Call(() => gov.Vote(id, false, DefaultPoolId));
 
-        gov.GetVotesFor(id).Should().Be(100 + 200);
+        gov.GetVotesFor(id).Should().Be((UInt256)(100 + 200));
         // isqrt(90000) = 300
-        gov.GetVotesAgainst(id).Should().Be(300);
+        gov.GetVotesAgainst(id).Should().Be((UInt256)300);
     }
 
     [Fact]

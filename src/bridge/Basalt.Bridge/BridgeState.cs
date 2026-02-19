@@ -11,7 +11,7 @@ public sealed class BridgeState
 {
     private readonly Dictionary<ulong, BridgeDeposit> _deposits = new();
     private readonly HashSet<ulong> _processedWithdrawals = new();
-    private readonly Dictionary<string, ulong> _lockedBalances = new(); // tokenAddr -> locked amount
+    private readonly Dictionary<string, UInt256> _lockedBalances = new(); // tokenAddr -> locked amount
     private ulong _nextNonce;
     private readonly object _lock = new();
 
@@ -25,9 +25,9 @@ public sealed class BridgeState
     /// Lock tokens on Basalt for bridging to Ethereum.
     /// Returns the deposit with assigned nonce.
     /// </summary>
-    public BridgeDeposit Lock(byte[] sender, byte[] recipient, ulong amount, byte[]? tokenAddress = null)
+    public BridgeDeposit Lock(byte[] sender, byte[] recipient, UInt256 amount, byte[]? tokenAddress = null)
     {
-        if (amount == 0)
+        if (amount.IsZero)
             throw new BridgeException("Cannot bridge zero amount");
 
         lock (_lock)
@@ -141,7 +141,7 @@ public sealed class BridgeState
     }
 
     /// <summary>Get the total locked balance for a token.</summary>
-    public ulong GetLockedBalance(byte[]? tokenAddress = null)
+    public UInt256 GetLockedBalance(byte[]? tokenAddress = null)
     {
         lock (_lock)
         {
@@ -163,11 +163,11 @@ public sealed class BridgeState
     public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal)
     {
         // Deterministic encoding: nonce || recipient || amount || stateRoot
-        var data = new byte[8 + withdrawal.Recipient.Length + 8 + withdrawal.StateRoot.Length];
+        var data = new byte[8 + withdrawal.Recipient.Length + 32 + withdrawal.StateRoot.Length];
         BitConverter.TryWriteBytes(data.AsSpan(0, 8), withdrawal.DepositNonce);
         withdrawal.Recipient.CopyTo(data, 8);
-        BitConverter.TryWriteBytes(data.AsSpan(8 + withdrawal.Recipient.Length, 8), withdrawal.Amount);
-        withdrawal.StateRoot.CopyTo(data, 8 + withdrawal.Recipient.Length + 8);
+        withdrawal.Amount.WriteTo(data.AsSpan(8 + withdrawal.Recipient.Length, 32));
+        withdrawal.StateRoot.CopyTo(data, 8 + withdrawal.Recipient.Length + 32);
         return Blake3Hasher.Hash(data).ToArray();
     }
 }

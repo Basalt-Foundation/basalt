@@ -1,3 +1,4 @@
+using Basalt.Core;
 using Basalt.Sdk.Contracts;
 using Basalt.Sdk.Contracts.Standards;
 using Basalt.Sdk.Testing;
@@ -24,8 +25,8 @@ public class CrossContractCallTests : IDisposable
         _host.Call(() => token.MintPublic(alice, 1000));
 
         // Call BalanceOf via cross-contract call
-        var balance = Context.CallContract<ulong>(tokenAddr, "BalanceOf", alice);
-        balance.Should().Be(1000);
+        var balance = Context.CallContract<UInt256>(tokenAddr, "BalanceOf", alice);
+        balance.Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -74,7 +75,7 @@ public class CrossContractCallTests : IDisposable
         var originalCaller = Context.Caller;
         var originalSelf = Context.Self;
 
-        Context.CallContract<ulong>(tokenAddr, "TotalSupply");
+        Context.CallContract<UInt256>(tokenAddr, "TotalSupply");
 
         // Context should be restored after the call
         Context.Caller.Should().BeEquivalentTo(originalCaller);

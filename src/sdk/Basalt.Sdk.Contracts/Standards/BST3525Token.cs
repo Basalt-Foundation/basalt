@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -13,12 +15,12 @@ public partial class BST3525Token : IBST3525
     private readonly string _symbol;
     private readonly byte _valueDecimals;
     private readonly StorageValue<ulong> _nextTokenId;
-    private readonly StorageMap<string, ulong> _tokenValues;
+    private readonly StorageMap<string, UInt256> _tokenValues;
     private readonly StorageMap<string, ulong> _tokenSlots;
     private readonly StorageMap<string, string> _tokenOwners;
     private readonly StorageMap<string, ulong> _ownerBalances;
     private readonly StorageMap<string, string> _tokenApprovals;
-    private readonly StorageMap<string, ulong> _valueAllowances;
+    private readonly StorageMap<string, UInt256> _valueAllowances;
     private readonly StorageMap<string, string> _slotUris;
     private readonly StorageMap<string, string> _tokenUris;
 
@@ -28,12 +30,12 @@ public partial class BST3525Token : IBST3525
         _symbol = symbol;
         _valueDecimals = valueDecimals;
         _nextTokenId = new StorageValue<ulong>("sft_next_id");
-        _tokenValues = new StorageMap<string, ulong>("sft_values");
+        _tokenValues = new StorageMap<string, UInt256>("sft_values");
         _tokenSlots = new StorageMap<string, ulong>("sft_slots");
         _tokenOwners = new StorageMap<string, string>("sft_owners");
         _ownerBalances = new StorageMap<string, ulong>("sft_obal");
         _tokenApprovals = new StorageMap<string, string>("sft_tappr");
-        _valueAllowances = new StorageMap<string, ulong>("sft_vallw");
+        _valueAllowances = new StorageMap<string, UInt256>("sft_vallw");
         _slotUris = new StorageMap<string, string>("sft_suri");
         _tokenUris = new StorageMap<string, string>("sft_turi");
     }
@@ -50,7 +52,7 @@ public partial class BST3525Token : IBST3525
     public byte ValueDecimals() => _valueDecimals;
 
     [BasaltView]
-    public ulong BalanceOf(ulong tokenId)
+    public UInt256 BalanceOf(ulong tokenId)
         => _tokenValues.Get(TokenKey(tokenId));
 
     [BasaltView]
@@ -73,7 +75,7 @@ public partial class BST3525Token : IBST3525
     }
 
     [BasaltView]
-    public ulong ValueAllowance(ulong tokenId, byte[] operatorAddr)
+    public UInt256 ValueAllowance(ulong tokenId, byte[] operatorAddr)
         => _valueAllowances.Get(ValueAllowanceKey(tokenId, operatorAddr));
 
     [BasaltView]
@@ -94,14 +96,14 @@ public partial class BST3525Token : IBST3525
     // --- Entrypoints ---
 
     [BasaltEntrypoint]
-    public ulong Mint(byte[] to, ulong slot, ulong value)
+    public ulong Mint(byte[] to, ulong slot, UInt256 value)
     {
         Context.Require(to.Length > 0, "SFT: mint to zero address");
         return MintInternal(to, slot, value);
     }
 
     [BasaltEntrypoint]
-    public void TransferValueToId(ulong fromId, ulong toId, ulong value)
+    public void TransferValueToId(ulong fromId, ulong toId, UInt256 value)
     {
         Context.Require(value > 0, "SFT: zero value");
         RequireTokenExists(fromId);
@@ -129,7 +131,7 @@ public partial class BST3525Token : IBST3525
     }
 
     [BasaltEntrypoint]
-    public ulong TransferValueToAddress(ulong fromId, byte[] to, ulong value)
+    public ulong TransferValueToAddress(ulong fromId, byte[] to, UInt256 value)
     {
         Context.Require(value > 0, "SFT: zero value");
         Context.Require(to.Length > 0, "SFT: transfer to zero address");
@@ -140,7 +142,7 @@ public partial class BST3525Token : IBST3525
         Context.Require(fromVal >= value, "SFT: insufficient value");
 
         var slot = _tokenSlots.Get(TokenKey(fromId));
-        var newId = MintInternal(to, slot, 0);
+        var newId = MintInternal(to, slot, UInt256.Zero);
 
         _tokenValues.Set(TokenKey(fromId), fromVal - value);
         _tokenValues.Set(TokenKey(newId), value);
@@ -156,7 +158,7 @@ public partial class BST3525Token : IBST3525
     }
 
     [BasaltEntrypoint]
-    public void ApproveValue(ulong tokenId, byte[] operatorAddr, ulong value)
+    public void ApproveValue(ulong tokenId, byte[] operatorAddr, UInt256 value)
     {
         RequireTokenOwner(tokenId);
         _valueAllowances.Set(ValueAllowanceKey(tokenId, operatorAddr), value);
@@ -233,7 +235,7 @@ public partial class BST3525Token : IBST3525
 
     // --- Internal helpers ---
 
-    private ulong MintInternal(byte[] to, ulong slot, ulong value)
+    private ulong MintInternal(byte[] to, ulong slot, UInt256 value)
     {
         var id = _nextTokenId.Get() + 1;
         _nextTokenId.Set(id);
@@ -268,7 +270,7 @@ public partial class BST3525Token : IBST3525
         Context.Require(AddrKey(Context.Caller) == ownerHex, "SFT: not owner");
     }
 
-    private void RequireValueAuthorized(ulong tokenId, ulong value)
+    private void RequireValueAuthorized(ulong tokenId, UInt256 value)
     {
         var ownerHex = _tokenOwners.Get(TokenKey(tokenId));
         var callerHex = AddrKey(Context.Caller);

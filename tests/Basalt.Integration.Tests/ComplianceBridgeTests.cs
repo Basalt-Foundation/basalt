@@ -140,14 +140,14 @@ public class ComplianceBridgeTests
             var recipient = new byte[20];
             recipient[19] = (byte)(i + 10);
 
-            var deposit = bridgeState.Lock(sender, recipient, (ulong)(100 * (i + 1)));
+            var deposit = bridgeState.Lock(sender, recipient, new UInt256((ulong)(100 * (i + 1))));
 
             // Serialize deposit as leaf data
-            var leafData = new byte[8 + 20 + 20 + 8];
+            var leafData = new byte[8 + 20 + 20 + 32];
             BitConverter.TryWriteBytes(leafData.AsSpan(0, 8), deposit.Nonce);
             deposit.Sender.CopyTo(leafData, 8);
             deposit.Recipient.CopyTo(leafData, 28);
-            BitConverter.TryWriteBytes(leafData.AsSpan(36, 8), deposit.Amount);
+            deposit.Amount.WriteTo(leafData.AsSpan(48, 32));
             deposits.Add(leafData);
         }
 

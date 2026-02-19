@@ -1,3 +1,4 @@
+using Basalt.Core;
 using Basalt.Sdk.Contracts;
 using Basalt.Sdk.Contracts.Standards;
 using Basalt.Sdk.Testing;
@@ -29,8 +30,8 @@ public class BST4626VaultTests : IDisposable
     private readonly byte[] _vaultAddress;
 
     // Separate ledger to simulate asset token state without ContractStorage collision
-    private readonly Dictionary<string, ulong> _assetBalances = new();
-    private readonly Dictionary<string, ulong> _assetAllowances = new();
+    private readonly Dictionary<string, UInt256> _assetBalances = new();
+    private readonly Dictionary<string, UInt256> _assetAllowances = new();
 
     public BST4626VaultTests()
     {
@@ -66,40 +67,40 @@ public class BST4626VaultTests : IDisposable
             {
                 var from = (byte[])args[0]!;
                 var to = (byte[])args[1]!;
-                var amount = (ulong)args[2]!;
+                var amount = (UInt256)args[2]!;
                 var fromHex = Convert.ToHexString(from);
                 var toHex = Convert.ToHexString(to);
 
                 // Check allowance (spender is Context.Caller which was set to vault Self by CallContract)
                 var spenderHex = Convert.ToHexString(Context.Caller);
                 var allowanceKey = $"{fromHex}:{spenderHex}";
-                var currentAllowance = _assetAllowances.GetValueOrDefault(allowanceKey, 0UL);
+                var currentAllowance = _assetAllowances.GetValueOrDefault(allowanceKey, UInt256.Zero);
                 if (currentAllowance < amount)
                     throw new ContractRevertException("BST20: insufficient allowance");
                 _assetAllowances[allowanceKey] = currentAllowance - amount;
 
                 // Check balance
-                var fromBalance = _assetBalances.GetValueOrDefault(fromHex, 0UL);
+                var fromBalance = _assetBalances.GetValueOrDefault(fromHex, UInt256.Zero);
                 if (fromBalance < amount)
                     throw new ContractRevertException("BST20: insufficient balance");
 
                 _assetBalances[fromHex] = fromBalance - amount;
-                _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, 0UL) + amount;
+                _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, UInt256.Zero) + amount;
                 return true;
             }
 
             if (method == "Transfer")
             {
                 var to = (byte[])args[0]!;
-                var amount = (ulong)args[1]!;
+                var amount = (UInt256)args[1]!;
                 var toHex = Convert.ToHexString(to);
                 // Sender is Context.Caller which is the vault
                 var senderHex = Convert.ToHexString(Context.Caller);
-                var senderBalance = _assetBalances.GetValueOrDefault(senderHex, 0UL);
+                var senderBalance = _assetBalances.GetValueOrDefault(senderHex, UInt256.Zero);
                 if (senderBalance < amount)
                     throw new ContractRevertException("BST20: insufficient balance");
                 _assetBalances[senderHex] = senderBalance - amount;
-                _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, 0UL) + amount;
+                _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, UInt256.Zero) + amount;
                 return true;
             }
 
@@ -112,22 +113,22 @@ public class BST4626VaultTests : IDisposable
     /// <summary>
     /// Give asset tokens to a user and approve the vault to spend them.
     /// </summary>
-    private void MintAssetTokens(byte[] to, ulong amount)
+    private void MintAssetTokens(byte[] to, UInt256 amount)
     {
         var toHex = Convert.ToHexString(to);
-        _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, 0UL) + amount;
+        _assetBalances[toHex] = _assetBalances.GetValueOrDefault(toHex, UInt256.Zero) + amount;
     }
 
-    private void ApproveVaultForAssets(byte[] owner, ulong amount)
+    private void ApproveVaultForAssets(byte[] owner, UInt256 amount)
     {
         var ownerHex = Convert.ToHexString(owner);
         var vaultHex = Convert.ToHexString(_vaultAddress);
         _assetAllowances[$"{ownerHex}:{vaultHex}"] = amount;
     }
 
-    private ulong GetAssetBalance(byte[] account)
+    private UInt256 GetAssetBalance(byte[] account)
     {
-        return _assetBalances.GetValueOrDefault(Convert.ToHexString(account), 0UL);
+        return _assetBalances.GetValueOrDefault(Convert.ToHexString(account), UInt256.Zero);
     }
 
     // ============================================================
@@ -145,7 +146,7 @@ public class BST4626VaultTests : IDisposable
     public void Constructor_TotalAssets_StartsAtZero()
     {
         var vault = CreateVault();
-        vault.TotalAssets().Should().Be(0);
+        vault.TotalAssets().Should().Be((UInt256)0);
     }
 
     // ============================================================
@@ -172,7 +173,7 @@ public class BST4626VaultTests : IDisposable
 
         // With VirtualShares=1, VirtualAssets=1, TotalSupply=0, TotalAssets=0:
         // ConvertToShares(1000) = 1000 * (0 + 1) / (0 + 1) = 1000
-        vault.ConvertToShares(1000).Should().Be(1000);
+        vault.ConvertToShares(1000).Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -181,7 +182,7 @@ public class BST4626VaultTests : IDisposable
         var vault = CreateVault();
 
         // ConvertToAssets(1000) = 1000 * (0 + 1) / (0 + 1) = 1000
-        vault.ConvertToAssets(1000).Should().Be(1000);
+        vault.ConvertToAssets(1000).Should().Be((UInt256)1000);
     }
 
     [Fact]
@@ -191,7 +192,7 @@ public class BST4626VaultTests : IDisposable
 
         var shares = vault.ConvertToShares(5000);
         var roundTrip = vault.ConvertToAssets(shares);
-        roundTrip.Should().Be(5000);
+        roundTrip.Should().Be((UInt256)5000);
     }
 
     // ============================================================
@@ -213,10 +214,10 @@ public class BST4626VaultTests : IDisposable
         var shares = _host.Call(() => vault.Deposit(5000));
 
         // At initial state: shares = 5000 * (0 + 1) / (0 + 1) = 5000
-        shares.Should().Be(5000);
-        vault.TotalAssets().Should().Be(5000);
-        vault.BalanceOf(_alice).Should().Be(5000);
-        vault.TotalSupply().Should().Be(5000);
+        shares.Should().Be((UInt256)5000);
+        vault.TotalAssets().Should().Be((UInt256)5000);
+        vault.BalanceOf(_alice).Should().Be((UInt256)5000);
+        vault.TotalSupply().Should().Be((UInt256)5000);
     }
 
     [Fact]
@@ -236,7 +237,7 @@ public class BST4626VaultTests : IDisposable
         var events = _host.GetEvents<VaultDepositEvent>().ToList();
         events.Should().HaveCount(1);
         events[0].Caller.Should().BeEquivalentTo(_alice);
-        events[0].Assets.Should().Be(2000);
+        events[0].Assets.Should().Be((UInt256)2000);
         events[0].Shares.Should().Be(shares);
     }
 
@@ -254,9 +255,9 @@ public class BST4626VaultTests : IDisposable
         _host.Call(() => vault.Deposit(3000));
 
         // Alice's asset balance should decrease by 3000
-        GetAssetBalance(_alice).Should().Be(7000);
+        GetAssetBalance(_alice).Should().Be((UInt256)7000);
         // Vault should hold the 3000 assets
-        GetAssetBalance(_vaultAddress).Should().Be(3000);
+        GetAssetBalance(_vaultAddress).Should().Be((UInt256)3000);
     }
 
     // ============================================================
@@ -297,9 +298,9 @@ public class BST4626VaultTests : IDisposable
         // Now withdraw 2000 assets
         var sharesBurned = _host.Call(() => vault.Withdraw(2000));
 
-        vault.TotalAssets().Should().Be(3000);
+        vault.TotalAssets().Should().Be((UInt256)3000);
         // Alice should have gotten her assets back
-        GetAssetBalance(_alice).Should().Be(5000 + 2000); // 5000 remaining + 2000 withdrawn
+        GetAssetBalance(_alice).Should().Be((UInt256)(5000 + 2000)); // 5000 remaining + 2000 withdrawn
     }
 
     [Fact]
@@ -319,7 +320,7 @@ public class BST4626VaultTests : IDisposable
         var events = _host.GetEvents<VaultWithdrawEvent>().ToList();
         events.Should().HaveCount(1);
         events[0].Caller.Should().BeEquivalentTo(_alice);
-        events[0].Assets.Should().Be(2000);
+        events[0].Assets.Should().Be((UInt256)2000);
         events[0].Shares.Should().Be(sharesBurned);
     }
 
@@ -354,9 +355,9 @@ public class BST4626VaultTests : IDisposable
         var assetsReturned = _host.Call(() => vault.Redeem(3000));
 
         // ConvertToAssets(3000) = 3000 * (6000 + 1) / (6000 + 1) = 3000
-        assetsReturned.Should().Be(3000);
-        vault.TotalAssets().Should().Be(3000);
-        vault.BalanceOf(_alice).Should().Be(3000); // 6000 - 3000 shares burned
+        assetsReturned.Should().Be((UInt256)3000);
+        vault.TotalAssets().Should().Be((UInt256)3000);
+        vault.BalanceOf(_alice).Should().Be((UInt256)3000); // 6000 - 3000 shares burned
     }
 
     [Fact]
@@ -392,7 +393,7 @@ public class BST4626VaultTests : IDisposable
         Context.Self = _vaultAddress;
         _host.Call(() => vault.Harvest(1000));
 
-        vault.TotalAssets().Should().Be(6000); // 5000 + 1000 yield
+        vault.TotalAssets().Should().Be((UInt256)6000); // 5000 + 1000 yield
     }
 
     [Fact]
@@ -414,8 +415,8 @@ public class BST4626VaultTests : IDisposable
         var events = _host.GetEvents<VaultHarvestEvent>().ToList();
         events.Should().HaveCount(1);
         events[0].Caller.Should().BeEquivalentTo(_admin);
-        events[0].YieldAmount.Should().Be(2000);
-        events[0].NewTotalAssets.Should().Be(7000);
+        events[0].YieldAmount.Should().Be((UInt256)2000);
+        events[0].NewTotalAssets.Should().Be((UInt256)7000);
     }
 
     // ============================================================
@@ -526,12 +527,13 @@ public class BST4626VaultTests : IDisposable
         // PreviewMint(S) rounds up:  S * (4000+1) + (3000+1) - 1) / (3000+1)
         // For any shares S, PreviewMint(S) >= the exact inverse of ConvertToShares
         // Verify: if you deposit PreviewMint(S) assets, you get >= S shares
-        for (ulong shares = 1; shares <= 100; shares++)
+        for (ulong s = 1; s <= 100; s++)
         {
+            UInt256 shares = s;
             var assetsNeeded = vault.PreviewMint(shares);
             var sharesGot = vault.ConvertToShares(assetsNeeded);
             sharesGot.Should().BeGreaterThanOrEqualTo(shares,
-                $"PreviewMint({shares}) should return enough assets to mint at least {shares} shares");
+                $"PreviewMint({s}) should return enough assets to mint at least {s} shares");
         }
     }
 
@@ -558,12 +560,13 @@ public class BST4626VaultTests : IDisposable
         // ConvertToAssets(S) rounds down: S * (4000+1) / (3000+1)
         // PreviewWithdraw(A) rounds up: A * (3000+1) + (4000+1) - 1) / (4000+1)
         // PreviewWithdraw(assets) should return enough shares to cover the withdrawal
-        for (ulong assets = 1; assets <= 100; assets++)
+        for (ulong a = 1; a <= 100; a++)
         {
+            UInt256 assets = a;
             var sharesNeeded = vault.PreviewWithdraw(assets);
             var assetsGot = vault.ConvertToAssets(sharesNeeded);
             assetsGot.Should().BeGreaterThanOrEqualTo(assets,
-                $"PreviewWithdraw({assets}) should burn enough shares to cover withdrawal of {assets} assets");
+                $"PreviewWithdraw({a}) should burn enough shares to cover withdrawal of {a} assets");
         }
     }
 
@@ -590,7 +593,7 @@ public class BST4626VaultTests : IDisposable
         Context.Self = _vaultAddress;
         var bobShares = _host.Call(() => vault.Deposit(6000));
 
-        vault.TotalAssets().Should().Be(10_000);
+        vault.TotalAssets().Should().Be((UInt256)10_000);
         vault.TotalSupply().Should().Be(aliceShares + bobShares);
 
         // Yield of 5000 reported. In production, yield would come from external
@@ -601,7 +604,7 @@ public class BST4626VaultTests : IDisposable
         Context.Self = _vaultAddress;
         _host.Call(() => vault.Harvest(5000));
 
-        vault.TotalAssets().Should().Be(15_000);
+        vault.TotalAssets().Should().Be((UInt256)15_000);
 
         // Alice redeems all her shares
         _host.SetCaller(_alice);
@@ -616,12 +619,15 @@ public class BST4626VaultTests : IDisposable
         // Alice had 40% of shares -> ~40% of 15000 = ~6000
         // Bob had 60% of shares -> ~60% of 15000 = ~9000
         // Due to integer rounding, allow +/- 1
-        aliceAssets.Should().BeInRange(5999, 6001);
-        bobAssets.Should().BeInRange(8999, 9001);
+        aliceAssets.Should().BeGreaterThanOrEqualTo((UInt256)5999);
+        aliceAssets.Should().BeLessThanOrEqualTo((UInt256)6001);
+        bobAssets.Should().BeGreaterThanOrEqualTo((UInt256)8999);
+        bobAssets.Should().BeLessThanOrEqualTo((UInt256)9001);
 
         // After both redeem, vault should have ~0 assets and 0 shares
-        vault.TotalSupply().Should().Be(0);
-        vault.TotalAssets().Should().BeInRange(0, 2); // rounding dust
+        vault.TotalSupply().Should().Be((UInt256)0);
+        vault.TotalAssets().Should().BeGreaterThanOrEqualTo((UInt256)0);
+        vault.TotalAssets().Should().BeLessThanOrEqualTo((UInt256)2); // rounding dust
     }
 
     // ============================================================
@@ -641,7 +647,7 @@ public class BST4626VaultTests : IDisposable
         _host.Call(() => vault.Deposit(5000));
 
         var aliceShares = vault.BalanceOf(_alice);
-        aliceShares.Should().BeGreaterThan(0);
+        aliceShares.Should().BeGreaterThan((UInt256)0);
 
         // Alice transfers half her shares to Bob
         _host.SetCaller(_alice);
@@ -753,8 +759,8 @@ public class BST4626VaultTests : IDisposable
         // With virtual offset, even small deposits get a reasonable share count.
         // If totalSupply=0 and totalAssets=0:
         // ConvertToShares(1) = 1 * (0+1)/(0+1) = 1  (not zero!)
-        vault.ConvertToShares(1).Should().Be(1);
-        vault.ConvertToAssets(1).Should().Be(1);
+        vault.ConvertToShares(1).Should().Be((UInt256)1);
+        vault.ConvertToAssets(1).Should().Be((UInt256)1);
     }
 
     public void Dispose() => _host.Dispose();
@@ -769,6 +775,6 @@ public class TestableVault : BST4626Vault
     public TestableVault(string name, string symbol, byte decimals, byte[] assetAddress)
         : base(name, symbol, decimals, assetAddress) { }
 
-    public void MintPublic(byte[] to, ulong amount) => Mint(to, amount);
-    public void BurnPublic(byte[] from, ulong amount) => Burn(from, amount);
+    public void MintPublic(byte[] to, UInt256 amount) => Mint(to, amount);
+    public void BurnPublic(byte[] from, UInt256 amount) => Burn(from, amount);
 }

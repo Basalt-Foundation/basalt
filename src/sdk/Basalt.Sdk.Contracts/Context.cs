@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts;
 
 /// <summary>
@@ -19,7 +21,7 @@ public static class Context
     /// <summary>
     /// Value (in base units) sent with the current call.
     /// </summary>
-    public static ulong TxValue { get; set; }
+    public static UInt256 TxValue { get; set; }
 
     /// <summary>
     /// Current block timestamp (Unix seconds).
@@ -77,12 +79,12 @@ public static class Context
     /// Delegate for sending native tokens from the contract. Set by the runtime.
     /// Parameters: (recipient address, amount in base units).
     /// </summary>
-    public static Action<byte[], ulong>? NativeTransferHandler { get; set; }
+    public static Action<byte[], UInt256>? NativeTransferHandler { get; set; }
 
     /// <summary>
     /// Transfer native tokens from the current contract to a recipient.
     /// </summary>
-    public static void TransferNative(byte[] to, ulong amount)
+    public static void TransferNative(byte[] to, UInt256 amount)
     {
         Require(NativeTransferHandler != null, "Native transfers not available");
         NativeTransferHandler!(to, amount);
@@ -162,7 +164,7 @@ public static class Context
     {
         Caller = new byte[20];
         Self = new byte[20];
-        TxValue = 0;
+        TxValue = UInt256.Zero;
         BlockTimestamp = 0;
         BlockHeight = 0;
         ChainId = 0;

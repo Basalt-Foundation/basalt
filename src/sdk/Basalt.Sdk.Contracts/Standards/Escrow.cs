@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -10,7 +12,7 @@ public partial class Escrow
     private readonly StorageValue<ulong> _nextEscrowId;
     private readonly StorageMap<string, string> _depositors;     // id -> depositor hex
     private readonly StorageMap<string, string> _recipients;     // id -> recipient hex
-    private readonly StorageMap<string, ulong> _amounts;         // id -> amount
+    private readonly StorageMap<string, UInt256> _amounts;         // id -> amount
     private readonly StorageMap<string, ulong> _releaseBlocks;   // id -> release block
     private readonly StorageMap<string, string> _status;         // id -> "locked"/"released"/"refunded"
 
@@ -19,7 +21,7 @@ public partial class Escrow
         _nextEscrowId = new StorageValue<ulong>("esc_next");
         _depositors = new StorageMap<string, string>("esc_dep");
         _recipients = new StorageMap<string, string>("esc_rec");
-        _amounts = new StorageMap<string, ulong>("esc_amt");
+        _amounts = new StorageMap<string, UInt256>("esc_amt");
         _releaseBlocks = new StorageMap<string, ulong>("esc_rel");
         _status = new StorageMap<string, string>("esc_status");
     }
@@ -31,7 +33,7 @@ public partial class Escrow
     [BasaltEntrypoint]
     public ulong Create(byte[] recipient, ulong releaseBlock)
     {
-        Context.Require(Context.TxValue > 0, "ESCROW: must send value");
+        Context.Require(!Context.TxValue.IsZero, "ESCROW: must send value");
         Context.Require(releaseBlock > Context.BlockHeight, "ESCROW: release must be in future");
 
         var id = _nextEscrowId.Get();
@@ -110,7 +112,7 @@ public partial class Escrow
     }
 
     [BasaltView]
-    public ulong GetAmount(ulong escrowId)
+    public UInt256 GetAmount(ulong escrowId)
     {
         return _amounts.Get(escrowId.ToString());
     }
@@ -122,7 +124,7 @@ public class EscrowCreatedEvent
     [Indexed] public ulong EscrowId { get; set; }
     [Indexed] public byte[] Depositor { get; set; } = null!;
     public byte[] Recipient { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
     public ulong ReleaseBlock { get; set; }
 }
 
@@ -130,12 +132,12 @@ public class EscrowCreatedEvent
 public class EscrowReleasedEvent
 {
     [Indexed] public ulong EscrowId { get; set; }
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }
 
 [BasaltEvent]
 public class EscrowRefundedEvent
 {
     [Indexed] public ulong EscrowId { get; set; }
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }

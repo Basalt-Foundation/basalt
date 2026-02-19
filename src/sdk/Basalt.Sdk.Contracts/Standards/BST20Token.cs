@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -7,9 +9,9 @@ namespace Basalt.Sdk.Contracts.Standards;
 public partial class BST20Token : IBST20
 {
     // Storage fields
-    private readonly StorageValue<ulong> _totalSupply;
-    private readonly StorageMap<string, ulong> _balances;
-    private readonly StorageMap<string, ulong> _allowances;
+    private readonly StorageValue<UInt256> _totalSupply;
+    private readonly StorageMap<string, UInt256> _balances;
+    private readonly StorageMap<string, UInt256> _allowances;
     private readonly string _name;
     private readonly string _symbol;
     private readonly byte _decimals;
@@ -19,9 +21,9 @@ public partial class BST20Token : IBST20
         _name = name;
         _symbol = symbol;
         _decimals = decimals;
-        _totalSupply = new StorageValue<ulong>("total_supply");
-        _balances = new StorageMap<string, ulong>("balances");
-        _allowances = new StorageMap<string, ulong>("allowances");
+        _totalSupply = new StorageValue<UInt256>("total_supply");
+        _balances = new StorageMap<string, UInt256>("balances");
+        _allowances = new StorageMap<string, UInt256>("allowances");
     }
 
     [BasaltView]
@@ -34,29 +36,29 @@ public partial class BST20Token : IBST20
     public byte Decimals() => _decimals;
 
     [BasaltView]
-    public ulong TotalSupply() => _totalSupply.Get();
+    public UInt256 TotalSupply() => _totalSupply.Get();
 
     [BasaltView]
-    public ulong BalanceOf(byte[] account)
+    public UInt256 BalanceOf(byte[] account)
     {
         return _balances.Get(ToKey(account));
     }
 
     [BasaltEntrypoint]
-    public bool Transfer(byte[] to, ulong amount)
+    public bool Transfer(byte[] to, UInt256 amount)
     {
         var sender = Context.Caller;
         return TransferInternal(sender, to, amount);
     }
 
     [BasaltView]
-    public ulong Allowance(byte[] owner, byte[] spender)
+    public UInt256 Allowance(byte[] owner, byte[] spender)
     {
         return _allowances.Get(AllowanceKey(owner, spender));
     }
 
     [BasaltEntrypoint]
-    public bool Approve(byte[] spender, ulong amount)
+    public bool Approve(byte[] spender, UInt256 amount)
     {
         var owner = Context.Caller;
         _allowances.Set(AllowanceKey(owner, spender), amount);
@@ -72,7 +74,7 @@ public partial class BST20Token : IBST20
     }
 
     [BasaltEntrypoint]
-    public bool TransferFrom(byte[] from, byte[] to, ulong amount)
+    public bool TransferFrom(byte[] from, byte[] to, UInt256 amount)
     {
         var spender = Context.Caller;
         var allowanceKey = AllowanceKey(from, spender);
@@ -87,7 +89,7 @@ public partial class BST20Token : IBST20
     /// <summary>
     /// Mint new tokens to an address. Only callable internally.
     /// </summary>
-    protected void Mint(byte[] to, ulong amount)
+    protected void Mint(byte[] to, UInt256 amount)
     {
         var supply = _totalSupply.Get();
         _totalSupply.Set(supply + amount);
@@ -106,7 +108,7 @@ public partial class BST20Token : IBST20
     /// <summary>
     /// Burn tokens from an address. Only callable internally.
     /// </summary>
-    protected void Burn(byte[] from, ulong amount)
+    protected void Burn(byte[] from, UInt256 amount)
     {
         var balance = _balances.Get(ToKey(from));
         Context.Require(balance >= amount, "BST20: burn exceeds balance");
@@ -123,7 +125,7 @@ public partial class BST20Token : IBST20
         });
     }
 
-    private bool TransferInternal(byte[] from, byte[] to, ulong amount)
+    private bool TransferInternal(byte[] from, byte[] to, UInt256 amount)
     {
         var fromBalance = _balances.Get(ToKey(from));
         Context.Require(fromBalance >= amount, "BST20: insufficient balance");

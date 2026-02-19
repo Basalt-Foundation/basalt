@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -13,10 +15,10 @@ public partial class Governance
     private readonly StorageMap<string, ulong> _endBlocks;
     private readonly StorageMap<string, string> _proposers;
     private readonly StorageMap<string, string> _status;
-    private readonly StorageMap<string, ulong> _votesFor;
-    private readonly StorageMap<string, ulong> _votesAgainst;
+    private readonly StorageMap<string, UInt256> _votesFor;
+    private readonly StorageMap<string, UInt256> _votesAgainst;
     private readonly StorageMap<string, string> _hasVoted;
-    private readonly StorageMap<string, ulong> _voterWeight;
+    private readonly StorageMap<string, UInt256> _voterWeight;
 
     // Proposal type & execution payload
     private readonly StorageMap<string, string> _proposalTypes;
@@ -29,45 +31,46 @@ public partial class Governance
 
     // Delegation
     private readonly StorageMap<string, string> _delegates;
-    private readonly StorageMap<string, ulong> _delegatedPower;
-    private readonly StorageMap<string, ulong> _delegatorStake;
+    private readonly StorageMap<string, UInt256> _delegatedPower;
+    private readonly StorageMap<string, UInt256> _delegatorStake;
 
     // Configuration
     private readonly StorageValue<ulong> _quorumBps;
-    private readonly StorageValue<ulong> _proposalThreshold;
+    private readonly StorageValue<UInt256> _proposalThreshold;
     private readonly StorageValue<ulong> _votingPeriod;
-    private readonly StorageMap<string, ulong> _totalStakeSnapshot;
+    private readonly StorageMap<string, UInt256> _totalStakeSnapshot;
 
     // StakingPool system contract address (0x...1005)
     private readonly byte[] _stakingPoolAddress;
 
     public Governance(
         ulong quorumBps = 400,
-        ulong proposalThreshold = 1000,
+        UInt256 proposalThreshold = default,
         ulong votingPeriodBlocks = 216000,
         ulong timelockDelayBlocks = 432000)
     {
+        if (proposalThreshold.IsZero) proposalThreshold = new UInt256(1000);
         _nextProposalId = new StorageValue<ulong>("gov_next");
         _descriptions = new StorageMap<string, string>("gov_desc");
         _endBlocks = new StorageMap<string, ulong>("gov_end");
         _proposers = new StorageMap<string, string>("gov_proposer");
         _status = new StorageMap<string, string>("gov_status");
-        _votesFor = new StorageMap<string, ulong>("gov_for");
-        _votesAgainst = new StorageMap<string, ulong>("gov_against");
+        _votesFor = new StorageMap<string, UInt256>("gov_for");
+        _votesAgainst = new StorageMap<string, UInt256>("gov_against");
         _hasVoted = new StorageMap<string, string>("gov_voted");
-        _voterWeight = new StorageMap<string, ulong>("gov_vw");
+        _voterWeight = new StorageMap<string, UInt256>("gov_vw");
         _proposalTypes = new StorageMap<string, string>("gov_type");
         _targets = new StorageMap<string, string>("gov_target");
         _callMethods = new StorageMap<string, string>("gov_method");
         _timelockExpiry = new StorageMap<string, ulong>("gov_tl");
         _timelockDelay = new StorageValue<ulong>("gov_tl_delay");
         _delegates = new StorageMap<string, string>("gov_del");
-        _delegatedPower = new StorageMap<string, ulong>("gov_dp");
-        _delegatorStake = new StorageMap<string, ulong>("gov_ds");
+        _delegatedPower = new StorageMap<string, UInt256>("gov_dp");
+        _delegatorStake = new StorageMap<string, UInt256>("gov_ds");
         _quorumBps = new StorageValue<ulong>("gov_quorum");
-        _proposalThreshold = new StorageValue<ulong>("gov_pthresh");
+        _proposalThreshold = new StorageValue<UInt256>("gov_pthresh");
         _votingPeriod = new StorageValue<ulong>("gov_vperiod");
-        _totalStakeSnapshot = new StorageMap<string, ulong>("gov_snap");
+        _totalStakeSnapshot = new StorageMap<string, UInt256>("gov_snap");
 
         _quorumBps.Set(quorumBps);
         _proposalThreshold.Set(proposalThreshold);
@@ -85,7 +88,7 @@ public partial class Governance
     /// Create a text-only (signaling) proposal.
     /// </summary>
     [BasaltEntrypoint]
-    public ulong CreateProposal(string description, ulong votingPeriodBlocks, ulong totalStake)
+    public ulong CreateProposal(string description, ulong votingPeriodBlocks, UInt256 totalStake)
     {
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
         Context.Require(votingPeriodBlocks > 0, "GOV: voting period must be > 0");
@@ -98,7 +101,7 @@ public partial class Governance
     /// </summary>
     [BasaltEntrypoint]
     public ulong CreateExecutableProposal(
-        string description, ulong votingPeriodBlocks, ulong totalStake,
+        string description, ulong votingPeriodBlocks, UInt256 totalStake,
         byte[] targetContract, string methodName)
     {
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
@@ -129,12 +132,12 @@ public partial class Governance
         Context.Require(string.IsNullOrEmpty(delegatee), "GOV: vote delegated");
 
         // Get stake from StakingPool
-        var ownStake = Context.CallContract<ulong>(_stakingPoolAddress, "GetDelegation", poolId, Context.Caller);
+        var ownStake = Context.CallContract<UInt256>(_stakingPoolAddress, "GetDelegation", poolId, Context.Caller);
         var delegated = _delegatedPower.Get(callerHex);
         var rawPower = ownStake + delegated;
         var weight = IntegerSqrt(rawPower);
 
-        Context.Require(weight > 0, "GOV: no voting power");
+        Context.Require(!weight.IsZero, "GOV: no voting power");
 
         _hasVoted.Set(voteKey, "1");
         _voterWeight.Set(voteKey, weight);
@@ -168,8 +171,8 @@ public partial class Governance
         UndelegateInternal(callerHex);
 
         // Get caller's stake from StakingPool
-        var stake = Context.CallContract<ulong>(_stakingPoolAddress, "GetDelegation", poolId, Context.Caller);
-        Context.Require(stake > 0, "GOV: no stake to delegate");
+        var stake = Context.CallContract<UInt256>(_stakingPoolAddress, "GetDelegation", poolId, Context.Caller);
+        Context.Require(!stake.IsZero, "GOV: no stake to delegate");
 
         _delegates.Set(callerHex, delegateeHex);
         _delegatorStake.Set(callerHex, stake);
@@ -219,8 +222,8 @@ public partial class Governance
         // Check quorum (in quadratic units)
         var totalStake = _totalStakeSnapshot.Get(key);
         var quorumBps = _quorumBps.Get();
-        var quorumThreshold = IntegerSqrt(totalStake * quorumBps / 10000);
-        if (quorumThreshold == 0) quorumThreshold = 1; // minimum 1 vote
+        var quorumThreshold = IntegerSqrt(totalStake * new UInt256(quorumBps) / new UInt256(10000));
+        if (quorumThreshold.IsZero) quorumThreshold = UInt256.One; // minimum 1 vote
 
         if (totalVotes >= quorumThreshold && votesFor > votesAgainst)
         {
@@ -295,11 +298,11 @@ public partial class Governance
         => _status.Get(proposalId.ToString()) ?? "unknown";
 
     [BasaltView]
-    public ulong GetVotesFor(ulong proposalId)
+    public UInt256 GetVotesFor(ulong proposalId)
         => _votesFor.Get(proposalId.ToString());
 
     [BasaltView]
-    public ulong GetVotesAgainst(ulong proposalId)
+    public UInt256 GetVotesAgainst(ulong proposalId)
         => _votesAgainst.Get(proposalId.ToString());
 
     [BasaltView]
@@ -315,14 +318,14 @@ public partial class Governance
         => _delegates.Get(Convert.ToHexString(voter)) ?? "";
 
     [BasaltView]
-    public ulong GetDelegatedPower(byte[] delegatee)
+    public UInt256 GetDelegatedPower(byte[] delegatee)
         => _delegatedPower.Get(Convert.ToHexString(delegatee));
 
     [BasaltView]
     public ulong GetQuorumBps() => _quorumBps.Get();
 
     [BasaltView]
-    public ulong GetProposalThreshold() => _proposalThreshold.Get();
+    public UInt256 GetProposalThreshold() => _proposalThreshold.Get();
 
     [BasaltView]
     public ulong GetVotingPeriod() => _votingPeriod.Get();
@@ -331,13 +334,13 @@ public partial class Governance
     public ulong GetTimelockDelay() => _timelockDelay.Get();
 
     [BasaltView]
-    public ulong GetVoterWeight(ulong proposalId, byte[] voter)
+    public UInt256 GetVoterWeight(ulong proposalId, byte[] voter)
         => _voterWeight.Get(proposalId.ToString() + ":" + Convert.ToHexString(voter));
 
     // --- Internal helpers ---
 
     private ulong CreateProposalInternal(
-        string description, ulong votingPeriodBlocks, ulong totalStake,
+        string description, ulong votingPeriodBlocks, UInt256 totalStake,
         string proposalType, byte[] targetContract, string methodName)
     {
         var id = _nextProposalId.Get();
@@ -378,20 +381,24 @@ public partial class Governance
 
         var stake = _delegatorStake.Get(callerHex);
         var currentPower = _delegatedPower.Get(delegateeHex);
-        _delegatedPower.Set(delegateeHex, currentPower >= stake ? currentPower - stake : 0);
+        _delegatedPower.Set(delegateeHex, currentPower >= stake ? currentPower - stake : UInt256.Zero);
 
         _delegates.Delete(callerHex);
         _delegatorStake.Delete(callerHex);
     }
 
-    private static ulong IntegerSqrt(ulong n)
+    private static UInt256 IntegerSqrt(UInt256 n)
     {
-        if (n == 0) return 0;
-        if (n == 1) return 1;
-        var x = (ulong)Math.Sqrt(n);
-        // Newton's method refinement for correctness with large ulongs
-        while (x > 0 && x * x > n) x--;
-        while ((x + 1) * (x + 1) <= n) x++;
+        if (n.IsZero) return UInt256.Zero;
+        if (n == UInt256.One) return UInt256.One;
+        // Newton's method: x = (x + n/x) / 2
+        var x = n;
+        var y = (x + UInt256.One) / new UInt256(2);
+        while (y < x)
+        {
+            x = y;
+            y = (x + n / x) / new UInt256(2);
+        }
         return x;
     }
 }
@@ -412,7 +419,7 @@ public class VoteCastEvent
     [Indexed] public ulong ProposalId { get; set; }
     [Indexed] public byte[] Voter { get; set; } = null!;
     public bool Support { get; set; }
-    public ulong Weight { get; set; }
+    public UInt256 Weight { get; set; }
 }
 
 [BasaltEvent]

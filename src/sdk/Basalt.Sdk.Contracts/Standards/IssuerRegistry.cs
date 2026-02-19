@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -13,7 +15,7 @@ public partial class IssuerRegistry
     private readonly StorageMap<string, string> _admin;      // "admin" -> admin hex
     private readonly StorageMap<string, byte> _tiers;        // issuerHex -> tier (0-3)
     private readonly StorageMap<string, string> _names;      // issuerHex -> display name
-    private readonly StorageMap<string, ulong> _stakes;      // issuerHex -> collateral staked
+    private readonly StorageMap<string, UInt256> _stakes;      // issuerHex -> collateral staked
     private readonly StorageMap<string, bool> _active;       // issuerHex -> active flag
     private readonly StorageMap<string, string> _revRoots;   // issuerHex -> revocation tree root hex
     private readonly StorageMap<string, bool> _schemas;      // "issuerHex:schemaIdHex" -> supports schema
@@ -23,7 +25,7 @@ public partial class IssuerRegistry
         _admin = new StorageMap<string, string>("ir_admin");
         _tiers = new StorageMap<string, byte>("ir_tier");
         _names = new StorageMap<string, string>("ir_name");
-        _stakes = new StorageMap<string, ulong>("ir_stake");
+        _stakes = new StorageMap<string, UInt256>("ir_stake");
         _active = new StorageMap<string, bool>("ir_active");
         _revRoots = new StorageMap<string, string>("ir_revroot");
         _schemas = new StorageMap<string, bool>("ir_schemas");
@@ -93,7 +95,7 @@ public partial class IssuerRegistry
     [BasaltEntrypoint]
     public void StakeCollateral()
     {
-        Context.Require(Context.TxValue > 0, "ISSUER: must send value");
+        Context.Require(!Context.TxValue.IsZero, "ISSUER: must send value");
 
         var issuerHex = Convert.ToHexString(Context.Caller);
         Context.Require(!string.IsNullOrEmpty(_names.Get(issuerHex)), "ISSUER: not registered");
@@ -169,7 +171,7 @@ public partial class IssuerRegistry
         Context.Require(!string.IsNullOrEmpty(_names.Get(issuerHex)), "ISSUER: not registered");
 
         var slashedAmount = _stakes.Get(issuerHex);
-        _stakes.Set(issuerHex, 0);
+        _stakes.Set(issuerHex, UInt256.Zero);
         _active.Set(issuerHex, false);
 
         Context.Emit(new IssuerSlashedEvent
@@ -252,7 +254,7 @@ public partial class IssuerRegistry
     /// Get the collateral stake amount for an issuer.
     /// </summary>
     [BasaltView]
-    public ulong GetCollateralStake(byte[] issuerAddress)
+    public UInt256 GetCollateralStake(byte[] issuerAddress)
     {
         return _stakes.Get(Convert.ToHexString(issuerAddress));
     }
@@ -298,8 +300,8 @@ public class IssuerRegisteredEvent
 public class CollateralStakedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
-    public ulong Amount { get; set; }
-    public ulong TotalStake { get; set; }
+    public UInt256 Amount { get; set; }
+    public UInt256 TotalStake { get; set; }
 }
 
 [BasaltEvent]
@@ -313,7 +315,7 @@ public class IssuerSlashedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
     public string Reason { get; set; } = "";
-    public ulong SlashedAmount { get; set; }
+    public UInt256 SlashedAmount { get; set; }
 }
 
 [BasaltEvent]

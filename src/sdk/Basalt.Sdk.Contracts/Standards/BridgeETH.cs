@@ -28,7 +28,7 @@ public partial class BridgeETH
     private readonly StorageValue<ulong> _nextNonce;
     private readonly StorageMap<string, string> _depositSenders;
     private readonly StorageMap<string, string> _depositRecipients;
-    private readonly StorageMap<string, ulong> _depositAmounts;
+    private readonly StorageMap<string, UInt256> _depositAmounts;
     private readonly StorageMap<string, string> _depositStatus;
     private readonly StorageMap<string, ulong> _depositBlockHeights;
 
@@ -36,7 +36,7 @@ public partial class BridgeETH
     private readonly StorageMap<string, bool> _processedWithdrawals;
 
     // Balance
-    private readonly StorageValue<ulong> _totalLocked;
+    private readonly StorageValue<UInt256> _totalLocked;
 
     public BridgeETH(uint threshold = 2)
     {
@@ -48,11 +48,11 @@ public partial class BridgeETH
         _nextNonce = new StorageValue<ulong>("bch_nonce");
         _depositSenders = new StorageMap<string, string>("bch_dsnd");
         _depositRecipients = new StorageMap<string, string>("bch_drec");
-        _depositAmounts = new StorageMap<string, ulong>("bch_damt");
+        _depositAmounts = new StorageMap<string, UInt256>("bch_damt");
         _depositStatus = new StorageMap<string, string>("bch_dsts");
         _depositBlockHeights = new StorageMap<string, ulong>("bch_dblk");
         _processedWithdrawals = new StorageMap<string, bool>("bch_proc");
-        _totalLocked = new StorageValue<ulong>("bch_locked");
+        _totalLocked = new StorageValue<UInt256>("bch_locked");
 
         _admin.Set("admin", Convert.ToHexString(Context.Caller));
         _threshold.Set(threshold);
@@ -135,7 +135,7 @@ public partial class BridgeETH
     public ulong Lock(byte[] ethRecipient)
     {
         RequireNotPaused();
-        Context.Require(Context.TxValue > 0, "BRIDGE: must send value");
+        Context.Require(!Context.TxValue.IsZero, "BRIDGE: must send value");
         Context.Require(ethRecipient.Length > 0, "BRIDGE: invalid recipient");
 
         var nonce = _nextNonce.Get();
@@ -189,14 +189,14 @@ public partial class BridgeETH
     /// <summary>
     /// Verify M-of-N Ed25519 relayer signatures and release locked tokens.
     /// Signatures are packed as N × 96 bytes: [32B pubkey][64B sig][32B pubkey][64B sig]...
-    /// Withdrawal hash = BLAKE3(LE_u64(nonce) || recipient || LE_u64(amount) || stateRoot)
+    /// Withdrawal hash = BLAKE3(LE_u64(nonce) || recipient || UInt256_LE(amount) || stateRoot)
     /// </summary>
     [BasaltEntrypoint]
-    public void Unlock(ulong depositNonce, byte[] recipient, ulong amount, byte[] stateRoot, byte[] signatures)
+    public void Unlock(ulong depositNonce, byte[] recipient, UInt256 amount, byte[] stateRoot, byte[] signatures)
     {
         RequireNotPaused();
         Context.Require(recipient.Length > 0, "BRIDGE: invalid recipient");
-        Context.Require(amount > 0, "BRIDGE: zero amount");
+        Context.Require(!amount.IsZero, "BRIDGE: zero amount");
         Context.Require(signatures.Length > 0 && signatures.Length % SignatureEntrySize == 0,
             "BRIDGE: invalid signatures format");
 
@@ -249,7 +249,7 @@ public partial class BridgeETH
     public string GetAdmin() => _admin.Get("admin") ?? "";
 
     [BasaltView]
-    public ulong GetDepositAmount(ulong nonce) => _depositAmounts.Get(nonce.ToString());
+    public UInt256 GetDepositAmount(ulong nonce) => _depositAmounts.Get(nonce.ToString());
 
     [BasaltView]
     public string GetDepositStatus(ulong nonce) => _depositStatus.Get(nonce.ToString()) ?? "";
@@ -261,7 +261,7 @@ public partial class BridgeETH
     public ulong GetCurrentNonce() => _nextNonce.Get();
 
     [BasaltView]
-    public ulong GetTotalLocked() => _totalLocked.Get();
+    public UInt256 GetTotalLocked() => _totalLocked.Get();
 
     [BasaltView]
     public bool IsRelayer(byte[] publicKey) => _relayers.Get(Convert.ToHexString(publicKey));
@@ -294,15 +294,15 @@ public partial class BridgeETH
 
     /// <summary>
     /// Compute withdrawal hash — byte-for-byte compatible with BridgeState.ComputeWithdrawalHash().
-    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u64(amount) || stateRoot)
+    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
     /// </summary>
-    private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, ulong amount, byte[] stateRoot)
+    private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, UInt256 amount, byte[] stateRoot)
     {
-        var data = new byte[8 + recipient.Length + 8 + stateRoot.Length];
+        var data = new byte[8 + recipient.Length + 32 + stateRoot.Length];
         BitConverter.TryWriteBytes(data.AsSpan(0, 8), nonce);
         recipient.CopyTo(data.AsSpan(8));
-        BitConverter.TryWriteBytes(data.AsSpan(8 + recipient.Length, 8), amount);
-        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 8));
+        amount.WriteTo(data.AsSpan(8 + recipient.Length, 32));
+        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 32));
 
         return Blake3Hasher.Hash(data).ToArray();
     }
@@ -316,7 +316,7 @@ public class DepositLockedEvent
     [Indexed] public ulong Nonce { get; set; }
     [Indexed] public byte[] Sender { get; set; } = null!;
     public byte[] EthRecipient { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
     public ulong BlockHeight { get; set; }
 }
 
@@ -337,7 +337,7 @@ public class WithdrawalUnlockedEvent
 {
     [Indexed] public ulong Nonce { get; set; }
     [Indexed] public byte[] Recipient { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }
 
 [BasaltEvent]

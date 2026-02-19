@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -10,18 +12,18 @@ namespace Basalt.Sdk.Contracts.Standards;
 public partial class BST4626Vault : BST20Token, IBST4626
 {
     private readonly byte[] _assetAddress;
-    private readonly StorageValue<ulong> _totalAssets;
+    private readonly StorageValue<UInt256> _totalAssets;
     private readonly StorageMap<string, string> _admin;
 
     // Virtual offset to prevent inflation attack (EIP-4626 mitigation)
-    private const ulong VirtualShares = 1;
-    private const ulong VirtualAssets = 1;
+    private static readonly UInt256 VirtualShares = UInt256.One;
+    private static readonly UInt256 VirtualAssets = UInt256.One;
 
     public BST4626Vault(string name, string symbol, byte decimals, byte[] assetAddress)
         : base(name, symbol, decimals)
     {
         _assetAddress = assetAddress;
-        _totalAssets = new StorageValue<ulong>("vault_assets");
+        _totalAssets = new StorageValue<UInt256>("vault_assets");
         _admin = new StorageMap<string, string>("vault_admin");
         _admin.Set("admin", Convert.ToHexString(Context.Caller));
     }
@@ -32,10 +34,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
     public byte[] Asset() => _assetAddress;
 
     [BasaltView]
-    public ulong TotalAssets() => _totalAssets.Get();
+    public UInt256 TotalAssets() => _totalAssets.Get();
 
     [BasaltView]
-    public ulong ConvertToShares(ulong assets)
+    public UInt256 ConvertToShares(UInt256 assets)
     {
         var supply = TotalSupply() + VirtualShares;
         var total = TotalAssets() + VirtualAssets;
@@ -43,7 +45,7 @@ public partial class BST4626Vault : BST20Token, IBST4626
     }
 
     [BasaltView]
-    public ulong ConvertToAssets(ulong shares)
+    public UInt256 ConvertToAssets(UInt256 shares)
     {
         var supply = TotalSupply() + VirtualShares;
         var total = TotalAssets() + VirtualAssets;
@@ -51,31 +53,31 @@ public partial class BST4626Vault : BST20Token, IBST4626
     }
 
     [BasaltView]
-    public ulong PreviewDeposit(ulong assets) => ConvertToShares(assets);
+    public UInt256 PreviewDeposit(UInt256 assets) => ConvertToShares(assets);
 
     [BasaltView]
-    public ulong PreviewMint(ulong shares)
+    public UInt256 PreviewMint(UInt256 shares)
     {
         var supply = TotalSupply() + VirtualShares;
         var total = TotalAssets() + VirtualAssets;
-        return (shares * total + supply - 1) / supply;
+        return (shares * total + supply - UInt256.One) / supply;
     }
 
     [BasaltView]
-    public ulong PreviewWithdraw(ulong assets)
+    public UInt256 PreviewWithdraw(UInt256 assets)
     {
         var supply = TotalSupply() + VirtualShares;
         var total = TotalAssets() + VirtualAssets;
-        return (assets * supply + total - 1) / total;
+        return (assets * supply + total - UInt256.One) / total;
     }
 
     [BasaltView]
-    public ulong PreviewRedeem(ulong shares) => ConvertToAssets(shares);
+    public UInt256 PreviewRedeem(UInt256 shares) => ConvertToAssets(shares);
 
     // --- Entrypoints ---
 
     [BasaltEntrypoint]
-    public ulong Deposit(ulong assets)
+    public UInt256 Deposit(UInt256 assets)
     {
         Context.Require(assets > 0, "VAULT: zero deposit");
         var shares = ConvertToShares(assets);
@@ -98,7 +100,7 @@ public partial class BST4626Vault : BST20Token, IBST4626
     }
 
     [BasaltEntrypoint]
-    public ulong Withdraw(ulong assets)
+    public UInt256 Withdraw(UInt256 assets)
     {
         Context.Require(assets > 0, "VAULT: zero withdraw");
         var shares = PreviewWithdraw(assets);
@@ -121,7 +123,7 @@ public partial class BST4626Vault : BST20Token, IBST4626
     }
 
     [BasaltEntrypoint]
-    public ulong Redeem(ulong shares)
+    public UInt256 Redeem(UInt256 shares)
     {
         Context.Require(shares > 0, "VAULT: zero redeem");
         var assets = ConvertToAssets(shares);
@@ -144,7 +146,7 @@ public partial class BST4626Vault : BST20Token, IBST4626
     }
 
     [BasaltEntrypoint]
-    public void Harvest(ulong yieldAmount)
+    public void Harvest(UInt256 yieldAmount)
     {
         Context.Require(yieldAmount > 0, "VAULT: zero yield");
         Context.Require(

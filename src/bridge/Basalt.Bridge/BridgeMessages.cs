@@ -40,7 +40,7 @@ public sealed class BridgeDeposit
     public byte[] Recipient { get; init; } = [];
 
     /// <summary>Amount of tokens locked/deposited.</summary>
-    public ulong Amount { get; init; }
+    public UInt256 Amount { get; init; }
 
     /// <summary>Token address on the source chain (zero = native token).</summary>
     public byte[] TokenAddress { get; init; } = [];
@@ -77,7 +77,7 @@ public sealed class BridgeWithdrawal
     public byte[] Recipient { get; init; } = [];
 
     /// <summary>Amount to release.</summary>
-    public ulong Amount { get; init; }
+    public UInt256 Amount { get; init; }
 
     /// <summary>Merkle proof of the deposit on the source chain.</summary>
     public byte[][] Proof { get; init; } = [];

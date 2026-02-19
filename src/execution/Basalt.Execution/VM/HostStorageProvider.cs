@@ -26,6 +26,7 @@ public sealed class HostStorageProvider : IStorageProvider
     private const byte TagString = 0x07;
     private const byte TagByteArray = 0x08;
     private const byte TagUShort = 0x09;
+    private const byte TagUInt256 = 0x0A;
 
     public HostStorageProvider(HostInterface host)
     {
@@ -88,6 +89,7 @@ public sealed class HostStorageProvider : IStorageProvider
             byte v => [TagByte, v],
             string v => SerializeString(v),
             byte[] v => SerializeByteArray(v),
+            UInt256 v => SerializeUInt256(v),
             _ => throw new NotSupportedException($"Cannot serialize type {value.GetType().Name} to storage"),
         };
     }
@@ -117,6 +119,14 @@ public sealed class HostStorageProvider : IStorageProvider
         return result;
     }
 
+    private static byte[] SerializeUInt256(UInt256 value)
+    {
+        var result = new byte[1 + 32];
+        result[0] = TagUInt256;
+        value.WriteTo(result.AsSpan(1));
+        return result;
+    }
+
     private static T DeserializeValue<T>(byte[] data)
     {
         if (data.Length == 0) return default!;
@@ -135,6 +145,7 @@ public sealed class HostStorageProvider : IStorageProvider
             TagByte => payload[0],
             TagString => Encoding.UTF8.GetString(payload),
             TagByteArray => payload.ToArray(),
+            TagUInt256 => new UInt256(payload),
             _ => throw new NotSupportedException($"Unknown storage type tag: 0x{tag:X2}"),
         };
 

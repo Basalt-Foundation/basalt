@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -7,13 +9,13 @@ namespace Basalt.Sdk.Contracts.Standards;
 public interface IBST1155
 {
     /// <summary>Get the balance of a specific token for an account.</summary>
-    ulong BalanceOf(byte[] account, ulong tokenId);
+    UInt256 BalanceOf(byte[] account, ulong tokenId);
 
     /// <summary>Get balances for multiple account/token pairs.</summary>
     ulong[] BalanceOfBatch(byte[][] accounts, ulong[] tokenIds);
 
     /// <summary>Transfer tokens from the caller to a recipient.</summary>
-    void SafeTransferFrom(byte[] from, byte[] to, ulong tokenId, ulong amount);
+    void SafeTransferFrom(byte[] from, byte[] to, ulong tokenId, UInt256 amount);
 
     /// <summary>Batch transfer multiple tokens.</summary>
     void SafeBatchTransferFrom(byte[] from, byte[] to, ulong[] tokenIds, ulong[] amounts);
@@ -38,7 +40,7 @@ public sealed class TransferSingleEvent
     [Indexed] public byte[] From { get; init; } = [];
     [Indexed] public byte[] To { get; init; } = [];
     public ulong TokenId { get; init; }
-    public ulong Amount { get; init; }
+    public UInt256 Amount { get; init; }
 }
 
 /// <summary>

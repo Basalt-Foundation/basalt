@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -9,19 +11,19 @@ public partial class StakingPool
 {
     private readonly StorageValue<ulong> _nextPoolId;
     private readonly StorageMap<string, string> _poolOperators;      // poolId -> operator hex
-    private readonly StorageMap<string, ulong> _poolTotalStake;      // poolId -> total
-    private readonly StorageMap<string, ulong> _poolTotalRewards;    // poolId -> accumulated rewards
-    private readonly StorageMap<string, ulong> _delegations;         // "poolId:delegator" -> amount
-    private readonly StorageMap<string, ulong> _claimedRewards;      // "poolId:delegator" -> claimed
+    private readonly StorageMap<string, UInt256> _poolTotalStake;      // poolId -> total
+    private readonly StorageMap<string, UInt256> _poolTotalRewards;    // poolId -> accumulated rewards
+    private readonly StorageMap<string, UInt256> _delegations;         // "poolId:delegator" -> amount
+    private readonly StorageMap<string, UInt256> _claimedRewards;      // "poolId:delegator" -> claimed
 
     public StakingPool()
     {
         _nextPoolId = new StorageValue<ulong>("sp_next");
         _poolOperators = new StorageMap<string, string>("sp_ops");
-        _poolTotalStake = new StorageMap<string, ulong>("sp_total");
-        _poolTotalRewards = new StorageMap<string, ulong>("sp_rewards");
-        _delegations = new StorageMap<string, ulong>("sp_del");
-        _claimedRewards = new StorageMap<string, ulong>("sp_claimed");
+        _poolTotalStake = new StorageMap<string, UInt256>("sp_total");
+        _poolTotalRewards = new StorageMap<string, UInt256>("sp_rewards");
+        _delegations = new StorageMap<string, UInt256>("sp_del");
+        _claimedRewards = new StorageMap<string, UInt256>("sp_claimed");
     }
 
     /// <summary>
@@ -50,7 +52,7 @@ public partial class StakingPool
     [BasaltEntrypoint]
     public void Delegate(ulong poolId)
     {
-        Context.Require(Context.TxValue > 0, "POOL: must send value");
+        Context.Require(!Context.TxValue.IsZero, "POOL: must send value");
         var key = poolId.ToString();
         Context.Require(!string.IsNullOrEmpty(_poolOperators.Get(key)), "POOL: not found");
 
@@ -73,9 +75,9 @@ public partial class StakingPool
     /// Undelegate stake from a pool.
     /// </summary>
     [BasaltEntrypoint]
-    public void Undelegate(ulong poolId, ulong amount)
+    public void Undelegate(ulong poolId, UInt256 amount)
     {
-        Context.Require(amount > 0, "POOL: amount must be > 0");
+        Context.Require(!amount.IsZero, "POOL: amount must be > 0");
         var key = poolId.ToString();
         var delegatorKey = key + ":" + Convert.ToHexString(Context.Caller);
 
@@ -102,7 +104,7 @@ public partial class StakingPool
     [BasaltEntrypoint]
     public void AddRewards(ulong poolId)
     {
-        Context.Require(Context.TxValue > 0, "POOL: must send value");
+        Context.Require(!Context.TxValue.IsZero, "POOL: must send value");
         var key = poolId.ToString();
         Context.Require(!string.IsNullOrEmpty(_poolOperators.Get(key)), "POOL: not found");
 
@@ -120,17 +122,17 @@ public partial class StakingPool
         var delegatorKey = key + ":" + Convert.ToHexString(Context.Caller);
 
         var delegation = _delegations.Get(delegatorKey);
-        Context.Require(delegation > 0, "POOL: no delegation");
+        Context.Require(!delegation.IsZero, "POOL: no delegation");
 
         var totalStake = _poolTotalStake.Get(key);
         var totalRewards = _poolTotalRewards.Get(key);
         var claimed = _claimedRewards.Get(delegatorKey);
 
         // Pro-rata: (delegation / totalStake) * totalRewards - alreadyClaimed
-        var entitled = totalStake > 0 ? delegation * totalRewards / totalStake : 0UL;
-        var claimable = entitled > claimed ? entitled - claimed : 0UL;
+        var entitled = !totalStake.IsZero ? delegation * totalRewards / totalStake : UInt256.Zero;
+        var claimable = entitled > claimed ? entitled - claimed : UInt256.Zero;
 
-        Context.Require(claimable > 0, "POOL: no rewards to claim");
+        Context.Require(!claimable.IsZero, "POOL: no rewards to claim");
 
         _claimedRewards.Set(delegatorKey, claimed + claimable);
         Context.TransferNative(Context.Caller, claimable);
@@ -144,19 +146,19 @@ public partial class StakingPool
     }
 
     [BasaltView]
-    public ulong GetPoolStake(ulong poolId)
+    public UInt256 GetPoolStake(ulong poolId)
     {
         return _poolTotalStake.Get(poolId.ToString());
     }
 
     [BasaltView]
-    public ulong GetDelegation(ulong poolId, byte[] delegator)
+    public UInt256 GetDelegation(ulong poolId, byte[] delegator)
     {
         return _delegations.Get(poolId.ToString() + ":" + Convert.ToHexString(delegator));
     }
 
     [BasaltView]
-    public ulong GetPoolRewards(ulong poolId)
+    public UInt256 GetPoolRewards(ulong poolId)
     {
         return _poolTotalRewards.Get(poolId.ToString());
     }
@@ -174,7 +176,7 @@ public class DelegatedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }
 
 [BasaltEvent]
@@ -182,7 +184,7 @@ public class UndelegatedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }
 
 [BasaltEvent]
@@ -190,5 +192,5 @@ public class RewardsClaimedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;
-    public ulong Amount { get; set; }
+    public UInt256 Amount { get; set; }
 }

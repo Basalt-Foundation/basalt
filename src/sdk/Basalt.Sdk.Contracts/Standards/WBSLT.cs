@@ -1,3 +1,5 @@
+using Basalt.Core;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -25,7 +27,7 @@ public partial class WBSLT : BST20Token
     /// Burn WBSLT and withdraw native BSLT.
     /// </summary>
     [BasaltEntrypoint]
-    public void Withdraw(ulong amount)
+    public void Withdraw(UInt256 amount)
     {
         Context.Require(amount > 0, "WBSLT: amount must be > 0");
         Burn(Context.Caller, amount);

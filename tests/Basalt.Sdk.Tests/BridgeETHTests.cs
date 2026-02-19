@@ -52,15 +52,15 @@ public class BridgeETHTests : IDisposable
 
     /// <summary>
     /// Compute withdrawal hash using the same algorithm as BridgeETH.ComputeWithdrawalHash.
-    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u64(amount) || stateRoot)
+    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
     /// </summary>
-    private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, ulong amount, byte[] stateRoot)
+    private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, UInt256 amount, byte[] stateRoot)
     {
-        var data = new byte[8 + recipient.Length + 8 + stateRoot.Length];
+        var data = new byte[8 + recipient.Length + 32 + stateRoot.Length];
         BitConverter.TryWriteBytes(data.AsSpan(0, 8), nonce);
         recipient.CopyTo(data.AsSpan(8));
-        BitConverter.TryWriteBytes(data.AsSpan(8 + recipient.Length, 8), amount);
-        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 8));
+        amount.WriteTo(data.AsSpan(8 + recipient.Length, 32));
+        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 32));
         return Blake3Hasher.Hash(data).ToArray();
     }
 
@@ -97,9 +97,9 @@ public class BridgeETHTests : IDisposable
     /// <summary>
     /// Set up native transfer tracking.
     /// </summary>
-    private List<(byte[] to, ulong amount)> SetupNativeTransferTracking()
+    private List<(byte[] to, UInt256 amount)> SetupNativeTransferTracking()
     {
-        var transfers = new List<(byte[] to, ulong amount)>();
+        var transfers = new List<(byte[] to, UInt256 amount)>();
         Context.NativeTransferHandler = (to, amount) => transfers.Add((to, amount));
         return transfers;
     }
@@ -286,12 +286,12 @@ public class BridgeETHTests : IDisposable
         var ethRecipient = new byte[] { 0xAA, 0xBB, 0xCC };
 
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         var nonce = _host.Call(() => _bridge.Lock(ethRecipient));
 
         nonce.Should().Be(0UL);
         _host.Call(() => _bridge.GetDepositStatus(0)).Should().Be("pending");
-        _host.Call(() => _bridge.GetDepositAmount(0)).Should().Be(1000UL);
+        _host.Call(() => _bridge.GetDepositAmount(0)).Should().Be((UInt256)1000);
         _host.Call(() => _bridge.GetDepositRecipient(0))
             .Should().Be(Convert.ToHexString(ethRecipient));
     }
@@ -300,7 +300,7 @@ public class BridgeETHTests : IDisposable
     public void Lock_IncrementsNonce()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 500;
+        Context.TxValue = (UInt256)500;
         var nonce1 = _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
         var nonce2 = _host.Call(() => _bridge.Lock(new byte[] { 0x02 }));
         var nonce3 = _host.Call(() => _bridge.Lock(new byte[] { 0x03 }));
@@ -319,7 +319,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_alice);
         _host.ClearEvents();
-        Context.TxValue = 2000;
+        Context.TxValue = (UInt256)2000;
         _host.Call(() => _bridge.Lock(ethRecipient));
 
         var events = _host.GetEvents<DepositLockedEvent>().ToList();
@@ -327,26 +327,26 @@ public class BridgeETHTests : IDisposable
         events[0].Nonce.Should().Be(0UL);
         events[0].Sender.Should().BeEquivalentTo(_alice);
         events[0].EthRecipient.Should().BeEquivalentTo(ethRecipient);
-        events[0].Amount.Should().Be(2000UL);
+        events[0].Amount.Should().Be((UInt256)2000);
     }
 
     [Fact]
     public void Lock_IncrementsTotalLocked()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 2000;
+        Context.TxValue = (UInt256)2000;
         _host.Call(() => _bridge.Lock(new byte[] { 0x02 }));
 
-        _host.Call(() => _bridge.GetTotalLocked()).Should().Be(3000UL);
+        _host.Call(() => _bridge.GetTotalLocked()).Should().Be((UInt256)3000);
     }
 
     [Fact]
     public void Lock_ZeroValue_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
         var msg = _host.ExpectRevert(() => _bridge.Lock(new byte[] { 0x01 }));
         msg.Should().Contain("must send value");
     }
@@ -355,7 +355,7 @@ public class BridgeETHTests : IDisposable
     public void Lock_EmptyRecipient_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         var msg = _host.ExpectRevert(() => _bridge.Lock(Array.Empty<byte>()));
         msg.Should().Contain("invalid recipient");
     }
@@ -364,9 +364,9 @@ public class BridgeETHTests : IDisposable
     public void ConfirmDeposit_TransitionsStatus()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_admin);
         _host.ClearEvents();
@@ -383,9 +383,9 @@ public class BridgeETHTests : IDisposable
     public void FinalizeDeposit_TransitionsStatus()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_admin);
         _host.Call(() => _bridge.ConfirmDeposit(0));
@@ -410,7 +410,7 @@ public class BridgeETHTests : IDisposable
         var transfers = SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 5000;
+        UInt256 amount = 5000;
         ulong depositNonce = 42;
         var stateRoot = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
 
@@ -446,7 +446,7 @@ public class BridgeETHTests : IDisposable
         var transfers = SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 3000;
+        UInt256 amount = 3000;
         ulong depositNonce = 10;
         var stateRoot = new byte[] { 0x11, 0x22, 0x33 };
 
@@ -470,7 +470,7 @@ public class BridgeETHTests : IDisposable
         SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 1000;
+        UInt256 amount = 1000;
         ulong depositNonce = 0;
         var stateRoot = new byte[] { 0xFF };
 
@@ -495,7 +495,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, 1000, new byte[] { 0x01 }, badSigs));
+            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, badSigs));
         msg.Should().Contain("invalid signatures format");
     }
 
@@ -506,7 +506,7 @@ public class BridgeETHTests : IDisposable
         SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 5000;
+        UInt256 amount = 5000;
         ulong depositNonce = 7;
         var stateRoot = new byte[] { 0xAA };
 
@@ -535,7 +535,7 @@ public class BridgeETHTests : IDisposable
         _host.Call(() => _bridge.RemoveRelayer(_relayer3Pub));
 
         var recipient = _alice;
-        ulong amount = 1000;
+        UInt256 amount = 1000;
         ulong depositNonce = 0;
         var stateRoot = new byte[] { 0x01 };
 
@@ -560,7 +560,7 @@ public class BridgeETHTests : IDisposable
         SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 1000;
+        UInt256 amount = 1000;
         ulong depositNonce = 0;
         var stateRoot = new byte[] { 0x01 };
 
@@ -584,7 +584,7 @@ public class BridgeETHTests : IDisposable
         SetupNativeTransferTracking();
 
         var recipient = _bob;
-        ulong amount = 9999;
+        UInt256 amount = 9999;
         ulong depositNonce = 100;
         var stateRoot = new byte[] { 0xFE, 0xED };
 
@@ -601,7 +601,7 @@ public class BridgeETHTests : IDisposable
         events.Should().HaveCount(1);
         events[0].Nonce.Should().Be(100UL);
         events[0].Recipient.Should().BeEquivalentTo(_bob);
-        events[0].Amount.Should().Be(9999UL);
+        events[0].Amount.Should().Be((UInt256)9999);
     }
 
     [Fact]
@@ -609,7 +609,7 @@ public class BridgeETHTests : IDisposable
     {
         // Verify the hash is deterministic: same inputs -> same hash
         var recipient = _alice;
-        ulong amount = 5000;
+        UInt256 amount = 5000;
         ulong nonce = 42;
         var stateRoot = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
 
@@ -629,14 +629,14 @@ public class BridgeETHTests : IDisposable
         RegisterAllRelayers();
         SetupNativeTransferTracking();
 
-        var hash = ComputeWithdrawalHash(0, _alice, 0, new byte[] { 0x01 });
+        var hash = ComputeWithdrawalHash(0, _alice, UInt256.Zero, new byte[] { 0x01 });
         var sigs = PackSignatures(hash,
             (_relayer1Pub, _relayer1Priv),
             (_relayer2Pub, _relayer2Priv));
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, 0, new byte[] { 0x01 }, sigs));
+            _bridge.Unlock(0, _alice, UInt256.Zero, new byte[] { 0x01 }, sigs));
         msg.Should().Contain("zero amount");
     }
 
@@ -651,7 +651,7 @@ public class BridgeETHTests : IDisposable
         _host.Call(() => _bridge.Pause());
 
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         var msg = _host.ExpectRevert(() => _bridge.Lock(new byte[] { 0x01 }));
         msg.Should().Contain("paused");
     }
@@ -665,14 +665,15 @@ public class BridgeETHTests : IDisposable
         _host.SetCaller(_admin);
         _host.Call(() => _bridge.Pause());
 
-        var hash = ComputeWithdrawalHash(0, _alice, 1000, new byte[] { 0x01 });
+        UInt256 amount = 1000;
+        var hash = ComputeWithdrawalHash(0, _alice, amount, new byte[] { 0x01 });
         var sigs = PackSignatures(hash,
             (_relayer1Pub, _relayer1Priv),
             (_relayer2Pub, _relayer2Priv));
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, 1000, new byte[] { 0x01 }, sigs));
+            _bridge.Unlock(0, _alice, amount, new byte[] { 0x01 }, sigs));
         msg.Should().Contain("paused");
     }
 
@@ -690,7 +691,7 @@ public class BridgeETHTests : IDisposable
 
         // Lock should work again
         _host.SetCaller(_alice);
-        Context.TxValue = 1000;
+        Context.TxValue = (UInt256)1000;
         var nonce = _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
         nonce.Should().Be(0UL);
     }
@@ -711,20 +712,20 @@ public class BridgeETHTests : IDisposable
     public void GetDepositAmount_ReturnsCorrectAmount()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 7777;
+        Context.TxValue = (UInt256)7777;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
-        _host.Call(() => _bridge.GetDepositAmount(0)).Should().Be(7777UL);
+        _host.Call(() => _bridge.GetDepositAmount(0)).Should().Be((UInt256)7777);
     }
 
     [Fact]
     public void GetDepositStatus_ReturnsCorrectStatus()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.Call(() => _bridge.GetDepositStatus(0)).Should().Be("pending");
 
@@ -742,9 +743,9 @@ public class BridgeETHTests : IDisposable
         var ethRecipient = new byte[] { 0xCA, 0xFE, 0xBA, 0xBE };
 
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(ethRecipient));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.Call(() => _bridge.GetDepositRecipient(0))
             .Should().Be(Convert.ToHexString(ethRecipient));
@@ -765,7 +766,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, 1000, new byte[] { 0x01 }, badSigs));
+            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, badSigs));
         msg.Should().Contain("invalid signatures format");
     }
 
@@ -777,7 +778,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, 1000, new byte[] { 0x01 }, Array.Empty<byte>()));
+            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, Array.Empty<byte>()));
         msg.Should().Contain("invalid signatures format");
     }
 
@@ -792,7 +793,7 @@ public class BridgeETHTests : IDisposable
         var transfers = SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 2000;
+        UInt256 amount = 2000;
         ulong depositNonce = 0;
         var stateRoot = new byte[] { 0x01 };
 
@@ -816,9 +817,9 @@ public class BridgeETHTests : IDisposable
     public void ConfirmDeposit_NonPending_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_admin);
         _host.Call(() => _bridge.ConfirmDeposit(0));
@@ -832,9 +833,9 @@ public class BridgeETHTests : IDisposable
     public void FinalizeDeposit_NonConfirmed_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_admin);
         // Try to finalize a "pending" deposit (not yet confirmed)
@@ -887,9 +888,9 @@ public class BridgeETHTests : IDisposable
     public void ConfirmDeposit_NonAdmin_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() => _bridge.ConfirmDeposit(0));
@@ -900,9 +901,9 @@ public class BridgeETHTests : IDisposable
     public void FinalizeDeposit_NonAdmin_Reverts()
     {
         _host.SetCaller(_alice);
-        Context.TxValue = 100;
+        Context.TxValue = (UInt256)100;
         _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
-        Context.TxValue = 0;
+        Context.TxValue = UInt256.Zero;
 
         _host.SetCaller(_admin);
         _host.Call(() => _bridge.ConfirmDeposit(0));
@@ -918,14 +919,15 @@ public class BridgeETHTests : IDisposable
         RegisterAllRelayers();
         SetupNativeTransferTracking();
 
-        var hash = ComputeWithdrawalHash(0, Array.Empty<byte>(), 1000, new byte[] { 0x01 });
+        UInt256 amount = 1000;
+        var hash = ComputeWithdrawalHash(0, Array.Empty<byte>(), amount, new byte[] { 0x01 });
         var sigs = PackSignatures(hash,
             (_relayer1Pub, _relayer1Priv),
             (_relayer2Pub, _relayer2Priv));
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, Array.Empty<byte>(), 1000, new byte[] { 0x01 }, sigs));
+            _bridge.Unlock(0, Array.Empty<byte>(), amount, new byte[] { 0x01 }, sigs));
         msg.Should().Contain("invalid recipient");
     }
 
@@ -936,7 +938,7 @@ public class BridgeETHTests : IDisposable
         SetupNativeTransferTracking();
 
         var recipient = _alice;
-        ulong amount = 1000;
+        UInt256 amount = 1000;
         ulong depositNonce = 0;
         var stateRoot = new byte[] { 0x01 };
 
@@ -989,7 +991,7 @@ public class BridgeETHTests : IDisposable
         _host.Call(() => _bridge.Unpause());
 
         _host.SetCaller(_alice);
-        Context.TxValue = 500;
+        Context.TxValue = (UInt256)500;
         var nonce = _host.Call(() => _bridge.Lock(new byte[] { 0xAA }));
         nonce.Should().Be(0UL);
     }

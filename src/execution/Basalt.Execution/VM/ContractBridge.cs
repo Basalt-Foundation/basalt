@@ -35,7 +35,7 @@ public static class ContractBridge
         // Wire context from VmExecutionContext
         Context.Caller = ctx.Caller.ToArray();
         Context.Self = ctx.ContractAddress.ToArray();
-        Context.TxValue = ctx.Value.IsZero ? 0UL : (ulong)ctx.Value.Lo;
+        Context.TxValue = ctx.Value;
         Context.BlockTimestamp = (long)ctx.BlockTimestamp;
         Context.BlockHeight = ctx.BlockNumber;
         Context.ChainId = ctx.ChainId;
@@ -58,14 +58,14 @@ public static class ContractBridge
 
             // Debit contract
             var contractAccount = ctx.StateDb.GetAccount(contractAddr);
-            if (contractAccount is null || contractAccount.Value.Balance < new UInt256(amount))
+            if (contractAccount is null || contractAccount.Value.Balance < amount)
                 throw new ContractRevertException("Insufficient contract balance for transfer");
 
             var ca = contractAccount.Value;
             ctx.StateDb.SetAccount(contractAddr, new AccountState
             {
                 Nonce = ca.Nonce,
-                Balance = ca.Balance - new UInt256(amount),
+                Balance = ca.Balance - amount,
                 StorageRoot = ca.StorageRoot,
                 CodeHash = ca.CodeHash,
                 AccountType = ca.AccountType,
@@ -79,7 +79,7 @@ public static class ContractBridge
             ctx.StateDb.SetAccount(recipientAddr, new AccountState
             {
                 Nonce = ra.Nonce,
-                Balance = recipientBalance + new UInt256(amount),
+                Balance = recipientBalance + amount,
                 StorageRoot = ra.StorageRoot,
                 CodeHash = ra.CodeHash,
                 AccountType = ra.AccountType,
@@ -97,14 +97,14 @@ public static class ContractBridge
     {
         public byte[] PreviousCaller = null!;
         public byte[] PreviousSelf = null!;
-        public ulong PreviousTxValue;
+        public UInt256 PreviousTxValue;
         public long PreviousBlockTimestamp;
         public ulong PreviousBlockHeight;
         public uint PreviousChainId;
         public ulong PreviousGasRemaining;
         public int PreviousCallDepth;
         public Action<string, object>? PreviousEventEmitted;
-        public Action<byte[], ulong>? PreviousNativeTransferHandler;
+        public Action<byte[], UInt256>? PreviousNativeTransferHandler;
         public IStorageProvider PreviousProvider = null!;
 
         public void Dispose()
