@@ -634,6 +634,56 @@ public static class RestApiEndpoints
             });
         }
 
+        // GET /v1/pools — list all staking pools from the StakingPool contract
+        app.MapGet("/v1/pools", () =>
+        {
+            var contractAddr = new Address(new byte[]
+            {
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0x05,
+            });
+
+            // Read _nextPoolId (key "sp_next")
+            var nextIdRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_next")));
+            ulong poolCount = 0;
+            if (nextIdRaw is { Length: >= 9 } && nextIdRaw[0] == 0x01)
+                poolCount = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(nextIdRaw.AsSpan(1));
+
+            var pools = new List<PoolInfoResponse>();
+            for (ulong i = 0; i < poolCount; i++)
+            {
+                var idStr = i.ToString();
+
+                // Operator (key "sp_ops:{id}", tag 0x07 = string)
+                var opsRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_ops:" + idStr)));
+                var operatorHex = opsRaw is { Length: > 1 } && opsRaw[0] == 0x07
+                    ? Encoding.UTF8.GetString(opsRaw.AsSpan(1))
+                    : "";
+
+                // Total stake (key "sp_total:{id}", tag 0x0A = UInt256)
+                var stakeRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_total:" + idStr)));
+                var totalStake = stakeRaw is { Length: >= 33 } && stakeRaw[0] == 0x0A
+                    ? new UInt256(stakeRaw.AsSpan(1, 32)).ToString()
+                    : "0";
+
+                // Total rewards (key "sp_rewards:{id}", tag 0x0A = UInt256)
+                var rewardsRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_rewards:" + idStr)));
+                var totalRewards = rewardsRaw is { Length: >= 33 } && rewardsRaw[0] == 0x0A
+                    ? new UInt256(rewardsRaw.AsSpan(1, 32)).ToString()
+                    : "0";
+
+                pools.Add(new PoolInfoResponse
+                {
+                    PoolId = i,
+                    Operator = operatorHex,
+                    TotalStake = totalStake,
+                    TotalRewards = totalRewards,
+                });
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(pools.ToArray());
+        });
+
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
         app.MapGet("/v1/debug/mempool", () =>
         {
@@ -854,6 +904,14 @@ public sealed class ValidatorInfoResponse
     [JsonPropertyName("status")] public string Status { get; set; } = "active";
 }
 
+public sealed class PoolInfoResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("operator")] public string Operator { get; set; } = "";
+    [JsonPropertyName("totalStake")] public string TotalStake { get; set; } = "0";
+    [JsonPropertyName("totalRewards")] public string TotalRewards { get; set; } = "0";
+}
+
 public sealed class CallRequest
 {
     [JsonPropertyName("to")] public string To { get; set; } = "";
@@ -972,6 +1030,8 @@ public sealed class ComplianceProofDto
 [JsonSerializable(typeof(PaginatedBlocksResponse))]
 [JsonSerializable(typeof(ValidatorInfoResponse))]
 [JsonSerializable(typeof(ValidatorInfoResponse[]))]
+[JsonSerializable(typeof(PoolInfoResponse))]
+[JsonSerializable(typeof(PoolInfoResponse[]))]
 [JsonSerializable(typeof(CallRequest))]
 [JsonSerializable(typeof(CallResponse))]
 [JsonSerializable(typeof(ContractInfoResponse))]

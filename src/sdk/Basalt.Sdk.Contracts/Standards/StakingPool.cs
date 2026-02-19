@@ -146,6 +146,20 @@ public partial class StakingPool
     }
 
     [BasaltView]
+    public ulong GetPoolCount()
+    {
+        return _nextPoolId.Get();
+    }
+
+    [BasaltView]
+    public byte[] GetPoolOperator(ulong poolId)
+    {
+        var hex = _poolOperators.Get(poolId.ToString());
+        if (string.IsNullOrEmpty(hex)) return [];
+        return Convert.FromHexString(hex);
+    }
+
+    [BasaltView]
     public UInt256 GetPoolStake(ulong poolId)
     {
         return _poolTotalStake.Get(poolId.ToString());

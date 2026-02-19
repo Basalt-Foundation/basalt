@@ -1,0 +1,59 @@
+@page "/pools"
+@inject BasaltApiClient Api
+@inject NavigationManager Nav
+
+<PageTitle>Basalt Explorer - Staking Pools</PageTitle>
+
+<div class="card">
+    <div class="card-header">Staking Pools</div>
+    <div class="card-body">
+        @if (_pools != null && _pools.Length > 0)
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Pool ID</th>
+                        <th>Operator</th>
+                        <th>Total Stake</th>
+                        <th>Total Rewards</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in _pools)
+                    {
+                        <tr>
+                            <td>@p.PoolId</td>
+                            <td class="hash" style="cursor:pointer" @onclick="() => NavigateToAccount(p.Operator)">@FormatHelper.TruncateHash(p.Operator)</td>
+                            <td>@FormatHelper.FormatBslt(p.TotalStake)</td>
+                            <td>@FormatHelper.FormatBslt(p.TotalRewards)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_loading)
+        {
+            <div class="loading">Loading pools...</div>
+        }
+        else
+        {
+            <div class="empty-state">No staking pools found.</div>
+        }
+    </div>
+</div>
+
+@code {
+    private PoolDto[]? _pools;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _pools = await Api.GetPoolsAsync();
+        _loading = false;
+    }
+
+    private void NavigateToAccount(string address)
+    {
+        Nav.NavigateTo("/account/" + address);
+    }
+}

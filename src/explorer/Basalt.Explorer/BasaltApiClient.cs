@@ -64,6 +64,12 @@ public sealed class BasaltApiClient
         catch { return []; }
     }
 
+    public async Task<PoolDto[]?> GetPoolsAsync()
+    {
+        try { return await _http.GetFromJsonAsync("v1/pools", ExplorerJsonContext.Default.PoolDtoArray); }
+        catch { return []; }
+    }
+
     public async Task<TransactionDto[]?> GetAccountTransactionsAsync(string address, int count = 25)
     {
         try { return await _http.GetFromJsonAsync($"v1/accounts/{address}/transactions?count={count}", ExplorerJsonContext.Default.TransactionDtoArray); }
@@ -163,6 +169,14 @@ public sealed class ValidatorDto
     [JsonPropertyName("status")] public string Status { get; set; } = "active";
 }
 
+public sealed class PoolDto
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("operator")] public string Operator { get; set; } = "";
+    [JsonPropertyName("totalStake")] public string TotalStake { get; set; } = "0";
+    [JsonPropertyName("totalRewards")] public string TotalRewards { get; set; } = "0";
+}
+
 public sealed class MempoolResponseDto
 {
     [JsonPropertyName("count")] public int Count { get; set; }
@@ -226,6 +240,8 @@ public sealed class StorageReadResponseDto
 [JsonSerializable(typeof(TransactionDto[]))]
 [JsonSerializable(typeof(ValidatorDto))]
 [JsonSerializable(typeof(ValidatorDto[]))]
+[JsonSerializable(typeof(PoolDto))]
+[JsonSerializable(typeof(PoolDto[]))]
 [JsonSerializable(typeof(MempoolResponseDto))]
 [JsonSerializable(typeof(MempoolTransactionDto))]
 [JsonSerializable(typeof(MempoolTransactionDto[]))]
