@@ -23,6 +23,7 @@ public static class GenesisContractDeployer
         public static readonly Address StakingPool = MakeSystemAddress(0x1005);
         public static readonly Address SchemaRegistry = MakeSystemAddress(0x1006);
         public static readonly Address IssuerRegistry = MakeSystemAddress(0x1007);
+        public static readonly Address BridgeETH = MakeSystemAddress(0x1008);
 
         private static Address MakeSystemAddress(ushort id)
         {
@@ -46,7 +47,7 @@ public static class GenesisContractDeployer
         // Basalt Name Service (0x0101) — default fee
         DeploySystemContract(stateDb, registry, Addresses.NameService, 0x0101, [], chainId, logger);
 
-        // Simple Governance (0x0102) — default quorum
+        // Governance (0x0102) — default config
         DeploySystemContract(stateDb, registry, Addresses.Governance, 0x0102, [], chainId, logger);
 
         // Escrow (0x0103) — no constructor args
@@ -61,7 +62,10 @@ public static class GenesisContractDeployer
         // Issuer Registry (0x0106) — ZK compliance issuer management
         DeploySystemContract(stateDb, registry, Addresses.IssuerRegistry, 0x0106, [], chainId, logger);
 
-        logger?.LogInformation("Deployed {Count} system contracts at genesis", 7);
+        // BridgeETH (0x0107) — EVM bridge (Ethereum/Polygon)
+        DeploySystemContract(stateDb, registry, Addresses.BridgeETH, 0x0107, [], chainId, logger);
+
+        logger?.LogInformation("Deployed {Count} system contracts at genesis", 8);
     }
 
     private static void DeploySystemContract(

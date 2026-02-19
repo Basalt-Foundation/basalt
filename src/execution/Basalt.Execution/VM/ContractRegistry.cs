@@ -143,15 +143,19 @@ public sealed class ContractRegistry
             return new Basalt.Sdk.Contracts.Standards.BasaltNameService();
         });
 
-        registry.Register(0x0102, "SimpleGovernance", args =>
+        registry.Register(0x0102, "Governance", args =>
         {
             if (args.Length > 0)
             {
                 var reader = new Basalt.Codec.BasaltReader(args);
-                var quorum = reader.ReadUInt64();
-                return new Basalt.Sdk.Contracts.Standards.SimpleGovernance(quorum);
+                var quorumBps = reader.ReadUInt64();
+                var proposalThreshold = reader.ReadUInt64();
+                var votingPeriodBlocks = reader.ReadUInt64();
+                var timelockDelayBlocks = reader.ReadUInt64();
+                return new Basalt.Sdk.Contracts.Standards.Governance(
+                    quorumBps, proposalThreshold, votingPeriodBlocks, timelockDelayBlocks);
             }
-            return new Basalt.Sdk.Contracts.Standards.SimpleGovernance();
+            return new Basalt.Sdk.Contracts.Standards.Governance();
         });
 
         registry.Register(0x0103, "Escrow", _ =>
@@ -188,6 +192,17 @@ public sealed class ContractRegistry
 
         registry.Register(0x0106, "IssuerRegistry", _ =>
             new Basalt.Sdk.Contracts.Standards.IssuerRegistry());
+
+        registry.Register(0x0107, "BridgeETH", args =>
+        {
+            if (args.Length > 0)
+            {
+                var reader = new Basalt.Codec.BasaltReader(args);
+                var threshold = reader.ReadUInt32();
+                return new Basalt.Sdk.Contracts.Standards.BridgeETH(threshold);
+            }
+            return new Basalt.Sdk.Contracts.Standards.BridgeETH();
+        });
 
         return registry;
     }

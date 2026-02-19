@@ -153,7 +153,7 @@ public class ContractRegistryTests
 
         registry.IsRegistered(0x0100).Should().BeTrue();  // WBSLT
         registry.IsRegistered(0x0101).Should().BeTrue();  // BasaltNameService
-        registry.IsRegistered(0x0102).Should().BeTrue();  // SimpleGovernance
+        registry.IsRegistered(0x0102).Should().BeTrue();  // Governance
         registry.IsRegistered(0x0103).Should().BeTrue();  // Escrow
         registry.IsRegistered(0x0104).Should().BeTrue();  // StakingPool
     }
@@ -171,7 +171,7 @@ public class ContractRegistryTests
         registry.GetName(0x0004).Should().Be("BSTDIDRegistry");
         registry.GetName(0x0100).Should().Be("WBSLT");
         registry.GetName(0x0101).Should().Be("BasaltNameService");
-        registry.GetName(0x0102).Should().Be("SimpleGovernance");
+        registry.GetName(0x0102).Should().Be("Governance");
         registry.GetName(0x0103).Should().Be("Escrow");
         registry.GetName(0x0104).Should().Be("StakingPool");
     }
