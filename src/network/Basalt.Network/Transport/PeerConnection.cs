@@ -27,6 +27,9 @@ public sealed class PeerConnection : IDisposable
     private readonly Action<PeerId, byte[]> _onMessageReceived;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
+    /// <summary>NET-C02: Per-connection AES-256-GCM encryption (null during handshake).</summary>
+    private TransportEncryption? _encryption;
+
     /// <summary>NET-M02: Use int + Interlocked for thread-safe dispose.</summary>
     private int _disposed;
 
@@ -50,6 +53,16 @@ public sealed class PeerConnection : IDisposable
     /// Whether the underlying TCP connection is still alive.
     /// </summary>
     public bool IsConnected => !IsDisposed && _client.Connected;
+
+    /// <summary>
+    /// NET-C02: Enable AES-256-GCM encryption on this connection after handshake.
+    /// Must be called before StartReadLoopAsync.
+    /// </summary>
+    public void EnableEncryption(TransportEncryption encryption)
+    {
+        ArgumentNullException.ThrowIfNull(encryption);
+        _encryption = encryption;
+    }
 
     /// <summary>
     /// Starts the asynchronous read loop that continuously reads length-prefixed messages
@@ -88,7 +101,9 @@ public sealed class PeerConnection : IDisposable
                 var payload = new byte[messageLength];
                 await ReadExactAsync(_stream, payload, frameCts.Token).ConfigureAwait(false);
 
-                _onMessageReceived(PeerId, payload);
+                // NET-C02: Decrypt if encryption is enabled
+                var message = _encryption != null ? _encryption.Decrypt(payload) : payload;
+                _onMessageReceived(PeerId, message);
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -125,16 +140,21 @@ public sealed class PeerConnection : IDisposable
         if (data.Length == 0)
             throw new ArgumentException("Cannot send an empty message.", nameof(data));
 
-        if (data.Length > MaxMessageSize)
+        // NET-C02: Account for encryption overhead so the wire frame stays within MaxMessageSize
+        var maxPlaintext = _encryption != null ? MaxMessageSize - TransportEncryption.Overhead : MaxMessageSize;
+        if (data.Length > maxPlaintext)
             throw new ArgumentException(
-                $"Message size {data.Length} exceeds maximum of {MaxMessageSize} bytes.", nameof(data));
+                $"Message size {data.Length} exceeds maximum of {maxPlaintext} bytes.", nameof(data));
 
         ObjectDisposedException.ThrowIf(IsDisposed, this);
 
+        // NET-C02: Encrypt if encryption is enabled
+        var wireData = _encryption != null ? _encryption.Encrypt(data) : data;
+
         // NET-M03: Combine header + payload into single buffer to avoid TCP fragmentation
-        var frame = new byte[LengthPrefixSize + data.Length];
-        BinaryPrimitives.WriteUInt32BigEndian(frame, (uint)data.Length);
-        data.CopyTo(frame.AsSpan(LengthPrefixSize));
+        var frame = new byte[LengthPrefixSize + wireData.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(frame, (uint)wireData.Length);
+        wireData.CopyTo(frame.AsSpan(LengthPrefixSize));
 
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -181,7 +201,9 @@ public sealed class PeerConnection : IDisposable
         {
             return null; // NET-L03: Consistent IOException handling for payload read
         }
-        return payload;
+
+        // NET-C02: Decrypt if encryption is enabled
+        return _encryption != null ? _encryption.Decrypt(payload) : payload;
     }
 
     /// <summary>
@@ -212,6 +234,15 @@ public sealed class PeerConnection : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        try
+        {
+            _encryption?.Dispose();
+        }
+        catch
+        {
+            // Best-effort cleanup.
+        }
 
         try
         {

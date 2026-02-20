@@ -682,6 +682,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _logger.LogInformation("Peer {PeerId} connected (inbound) from {Host}, best block: #{BestBlock}",
                 result.PeerId, result.PeerHost, result.PeerBestBlock);
 
+            // NET-C02: Enable transport encryption if shared secret was established
+            if (result.SharedSecret != null)
+            {
+                var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
+                CryptographicOperations.ZeroMemory(result.SharedSecret);
+                connection.EnableEncryption(enc);
+                _logger.LogDebug("Transport encryption enabled for inbound peer {PeerId}", result.PeerId);
+            }
+
             // Start reading messages
             _transport!.StartReadLoop(connection);
         }
@@ -1251,6 +1260,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 _logger.LogInformation("Connected to peer {PeerId} at {Host}:{Port}, best block: #{BestBlock}",
                     result.PeerId, host, port, result.PeerBestBlock);
+
+                // NET-C02: Enable transport encryption if shared secret was established
+                if (result.SharedSecret != null)
+                {
+                    var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
+                    CryptographicOperations.ZeroMemory(result.SharedSecret);
+                    connection.EnableEncryption(enc);
+                    _logger.LogDebug("Transport encryption enabled for outbound peer {PeerId}", result.PeerId);
+                }
 
                 // Start reading messages
                 _transport!.StartReadLoop(connection);
