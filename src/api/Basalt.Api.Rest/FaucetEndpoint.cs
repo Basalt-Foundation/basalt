@@ -51,7 +51,8 @@ public static class FaucetEndpoint
         Mempool mempool,
         ChainParameters chainParams,
         byte[] faucetPrivateKey,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        ChainManager? chainManager = null)
     {
         _faucetPrivateKey = faucetPrivateKey;
         _logger = logger;
@@ -93,9 +94,13 @@ public static class FaucetEndpoint
                 }
             }
 
+            // Use the higher of MinGasPrice and current base fee
+            var baseFee = chainManager?.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
+            var gasPrice = chainParams.MinGasPrice > baseFee ? chainParams.MinGasPrice : baseFee;
+
             // Check faucet balance
             var faucetAccount = stateDb.GetAccount(FaucetAddress);
-            var gasCost = chainParams.MinGasPrice * new UInt256(chainParams.TransferGasCost);
+            var gasCost = gasPrice * new UInt256(chainParams.TransferGasCost);
             var totalCost = DripAmount + gasCost;
             if (faucetAccount == null || faucetAccount.Value.Balance < totalCost)
                 return Results.BadRequest(new FaucetResponse
@@ -126,7 +131,7 @@ public static class FaucetEndpoint
                 To = recipientAddr,
                 Value = DripAmount,
                 GasLimit = chainParams.TransferGasCost,
-                GasPrice = chainParams.MinGasPrice,
+                GasPrice = gasPrice,
                 Data = [],
                 Priority = 0,
                 ChainId = chainParams.ChainId,

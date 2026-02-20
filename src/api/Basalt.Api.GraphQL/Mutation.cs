@@ -16,7 +16,8 @@ public class Mutation
         try
         {
             var tx = input.ToTransaction();
-            var validationResult = validator.Validate(tx, stateDb);
+            var baseFee = chainManager.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
+            var validationResult = validator.Validate(tx, stateDb, baseFee);
             if (!validationResult.IsSuccess)
             {
                 return new TransactionResult

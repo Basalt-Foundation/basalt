@@ -151,7 +151,7 @@ try
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
-    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey, faucetLogger);
+    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager);
 
     // Map WebSocket endpoint
     app.UseWebSockets();

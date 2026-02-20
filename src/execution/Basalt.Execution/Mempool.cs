@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Storage;
 
 namespace Basalt.Execution;
 
@@ -97,6 +98,44 @@ public sealed class Mempool
                     _orderedEntries.Remove(new MempoolEntry(existing));
             }
         }
+    }
+
+    /// <summary>
+    /// Remove transactions that are no longer executable: stale nonces (already confirmed)
+    /// or gas price below the current base fee.
+    /// Returns the number of evicted transactions.
+    /// </summary>
+    public int PruneStale(IStateDatabase stateDb, UInt256 baseFee)
+    {
+        var toRemove = new List<Hash256>();
+        lock (_lock)
+        {
+            foreach (var tx in _transactions.Values)
+            {
+                var account = stateDb.GetAccount(tx.Sender);
+                var onChainNonce = account?.Nonce ?? 0;
+
+                // Stale: nonce already used (tx was confirmed or replaced)
+                if (tx.Nonce < onChainNonce)
+                {
+                    toRemove.Add(tx.Hash);
+                    continue;
+                }
+
+                // Underpriced: gas price can't cover the current base fee
+                if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+                {
+                    toRemove.Add(tx.Hash);
+                }
+            }
+
+            foreach (var hash in toRemove)
+            {
+                if (_transactions.Remove(hash, out var existing))
+                    _orderedEntries.Remove(new MempoolEntry(existing));
+            }
+        }
+        return toRemove.Count;
     }
 
     public bool Contains(Hash256 txHash)

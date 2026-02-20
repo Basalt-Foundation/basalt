@@ -416,6 +416,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (result.IsSuccess)
             {
                 _mempool.RemoveConfirmed(block.Transactions);
+
+                // Prune stale/underpriced transactions that can no longer be included
+                var pruned = _mempool.PruneStale(_stateDb, block.Header.BaseFee);
+                if (pruned > 0)
+                    _logger.LogInformation("Pruned {Count} stale/underpriced transactions from mempool", pruned);
+
                 MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
                 _ = _wsHandler.BroadcastNewBlock(block);
 
@@ -790,7 +796,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             try
             {
                 var tx = BlockCodec.DeserializeTransaction(txBytes);
-                var validationResult = _txValidator.Validate(tx, _stateDb);
+                var baseFee = _chainManager.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
+                var validationResult = _txValidator.Validate(tx, _stateDb, baseFee);
                 if (validationResult.IsSuccess)
                 {
                     if (_mempool.Add(tx, raiseEvent: false))

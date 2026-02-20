@@ -103,13 +103,16 @@ public static class RestApiEndpoints
             return receiptStore?.GetReceipt(txHash);
         }
 
+        // Helper: get the current base fee from the latest block
+        UInt256 GetCurrentBaseFee() => chainManager.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
+
         // POST /v1/transactions
         app.MapPost("/v1/transactions", (TransactionRequest request) =>
         {
             try
             {
                 var tx = request.ToTransaction();
-                var validationResult = validator.Validate(tx, stateDb);
+                var validationResult = validator.Validate(tx, stateDb, GetCurrentBaseFee());
                 if (!validationResult.IsSuccess)
                 {
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
@@ -688,9 +691,10 @@ public static class RestApiEndpoints
         app.MapGet("/v1/debug/mempool", () =>
         {
             var pending = mempool.GetPending(100);
+            var currentBaseFee = GetCurrentBaseFee();
             var results = pending.Select(tx =>
             {
-                var validation = validator.Validate(tx, stateDb);
+                var validation = validator.Validate(tx, stateDb, currentBaseFee);
                 var senderAccount = stateDb.GetAccount(tx.Sender);
                 return new
                 {
