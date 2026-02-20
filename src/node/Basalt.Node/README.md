@@ -29,7 +29,7 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 4. Creates genesis block with initial account balances
 5. Registers genesis validators in StakingState
 6. Starts the REST API (including receipt queries), gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
-7. Creates a `BlockProductionLoop` for timer-based block production (400ms block time)
+7. Creates a `BlockProductionLoop` for timer-based block production (2s block time)
 8. Wires metrics and WebSocket notifications to the block production loop
 9. Handles graceful shutdown on SIGINT/SIGTERM
 

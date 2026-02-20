@@ -18,9 +18,9 @@ public sealed class StakingState : IStakingState
     public UInt256 MinValidatorStake { get; init; } = UInt256.Parse("100000000000000000000000");
 
     /// <summary>
-    /// Unbonding period in blocks (~21 days at 400ms blocks).
+    /// Unbonding period in blocks (~21 days at 2s blocks).
     /// </summary>
-    public uint UnbondingPeriod { get; init; } = 4_536_000;
+    public uint UnbondingPeriod { get; init; } = 907_200;
 
     /// <summary>
     /// Register a new validator with an initial stake.

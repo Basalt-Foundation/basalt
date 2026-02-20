@@ -46,7 +46,7 @@ public class TestHostTests : IDisposable
         _host.AdvanceBlocks(5);
 
         Context.BlockHeight.Should().Be(15);
-        Context.BlockTimestamp.Should().Be(7000); // 5000 + 5*400
+        Context.BlockTimestamp.Should().Be(15000); // 5000 + 5*2000
     }
 
     [Fact]

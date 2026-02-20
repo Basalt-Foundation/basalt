@@ -126,7 +126,7 @@ Key properties:
 |----------|------|---------|-------------|
 | `ChainId` | `uint` | (required) | Chain ID for replay protection |
 | `NetworkName` | `string` | (required) | Human-readable network name |
-| `BlockTimeMs` | `uint` | 400 | Target block time in milliseconds |
+| `BlockTimeMs` | `uint` | 2000 | Target block time in milliseconds |
 | `MaxBlockSizeBytes` | `uint` | 2 MB | Maximum block size |
 | `MaxTransactionsPerBlock` | `uint` | 10,000 | Max transactions per block |
 | `MaxTransactionDataBytes` | `uint` | 128 KB | Max transaction data size |

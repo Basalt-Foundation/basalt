@@ -155,7 +155,7 @@ UInt256 total = staking.TotalStaked;  // Sum of all validator stakes
 
 `StakingState` also implements `IStakingState` (defined in `Basalt.Core`) via explicit interface implementation, allowing the execution layer to interact with staking without a direct dependency on the consensus assembly.
 
-Default `MinValidatorStake` is `100000000000000000000000` (100,000 tokens at 10^18 precision). Default `UnbondingPeriod` is 4,536,000 blocks (~21 days at 400ms blocks).
+Default `MinValidatorStake` is `100000000000000000000000` (100,000 tokens at 10^18 precision). Default `UnbondingPeriod` is 907,200 blocks (~21 days at 2s blocks).
 
 `InitiateUnstake` enforces that remaining stake must either be zero or at least `MinValidatorStake`. When self-stake drops to zero, the validator is deactivated.
 

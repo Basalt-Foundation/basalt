@@ -144,7 +144,7 @@ Write-Host "============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Validators:  4 nodes (BFT consensus)"
 Write-Host "  Chain ID:    4242"
-Write-Host "  Block time:  400ms"
+Write-Host "  Block time:  2s"
 Write-Host ""
 Write-Host "  The testnet is accessible via your Cloudflare Tunnel domain."
 Write-Host "  No firewall ports need to be opened." -ForegroundColor Green

@@ -429,8 +429,8 @@ A TCP+Noise fallback is provided for environments where UDP is blocked. Noise\_I
 | :---- | :---- | :---- |
 | Primary transport | QUIC (UDP) via System.Net.Quic | Native multiplexing, 0-RTT, built-in TLS 1.3 |
 | Fallback transport | TCP \+ Noise\_IK | Compatibility with UDP-blocked networks |
-| Max block size | 2 MB | Throughput/propagation balance at 400ms block time |
-| Block time (target) | 400 ms | Fast finality for enterprise use cases |
+| Max block size | 2 MB | Throughput/propagation balance at 2s block time |
+| Block time (target) | 2s | Fast finality for enterprise use cases |
 | Max direct peers | 50 | Sufficient connectivity without resource exhaustion |
 | Max passive peers | 200 | Extended reach via gossip relay |
 | Connection timeout | 5 seconds | Aggressive timeout for enterprise SLAs |
@@ -520,7 +520,7 @@ BasaltBFT operates in views. Each view has a designated leader who proposes a bl
 | Fault model | Byzantine (f \= ⌊(n−1)/3⌋ malicious validators) |
 | Finality | Deterministic (absolute, no rollbacks) |
 | Phases per block | 3 (PREPARE, PRE-COMMIT, COMMIT), pipelined |
-| Finality latency | 2 round-trips \= 800ms at 400ms block time |
+| Finality latency | 2 round-trips \= 4s at 2s block time |
 | Leader selection | Weighted round-robin (stake × reputation) |
 | View change timeout | 2 seconds (exponential backoff: 2s, 4s, 8s, max 60s) |
 | Signature aggregation | BLS12-381 (96 bytes per aggregated proof) |
@@ -662,7 +662,7 @@ BasaltBFT supports permissioned subnets with a restricted validator set:
 
 * **Cross-chain finality:** Subnet block headers are periodically anchored to mainnet (every 100 subnet blocks or every 60 seconds, whichever comes first). Mainnet validators verify the subnet header chain for bridge operations.
 
-* **Performance:** With 21 validators: \~25,000 TPS, 400ms finality. With 7 validators: \~50,000 TPS, 200ms finality.
+* **Performance:** With 21 validators: \~5,000 TPS, 2s finality. With 7 validators: \~10,000 TPS, 2s finality.
 
 # **5\. Execution Layer — BasaltVM**
 
@@ -840,7 +840,7 @@ All node hashes use BLAKE3. Empty trie root: BLAKE3(0x80) \= constant EMPTY\_ROO
 | :---- | :---- | :---- |
 | Column families | state, blocks, receipts, metadata | Isolation and independent compaction |
 | Compression | Zstd (level 3\) | 60–70% size reduction with minimal CPU overhead |
-| Block cache | 2 GB | Hot state fits in cache for 400ms block times |
+| Block cache | 2 GB | Hot state fits in cache for 2s block times |
 | Write buffer | 256 MB (4 x 64 MB) | Absorb burst writes during block execution |
 | Bloom filter | 10 bits/key | Reduce read amplification for point lookups |
 | Max open files | 1024 | Sufficient for active state \+ recent blocks |
@@ -853,7 +853,7 @@ Blocks are stored sequentially in a dedicated column family with dual indexing:
 
 * **By height:** key \= uint64(height) → value \= block hash (indirection).
 
-Block bodies and headers are stored together. Full blocks are retained for the most recent 128 blocks (approximately 51 seconds at 400ms block time). Older blocks retain headers only; bodies are available from archive nodes.
+Block bodies and headers are stored together. Full blocks are retained for the most recent 128 blocks (approximately 256 seconds at 2s block time). Older blocks retain headers only; bodies are available from archive nodes.
 
 ## **6.3 Receipt Database**
 
@@ -1253,10 +1253,10 @@ To improve enterprise UX, transaction fees can be paid in approved stablecoins (
 
 | Metric | Target (Mainnet) | Target (Enterprise Subnet) | Measurement Method |
 | :---- | :---- | :---- | :---- |
-| Transaction throughput | ≥12,000 TPS | ≥25,000 TPS (21 val.) | Sustained load test, 10 min, standard transfer tx |
-| Block finality | ≤800 ms | ≤400 ms | Time from proposal to commit proof |
-| Transaction latency (p50) | ≤500 ms | ≤300 ms | Submit to receipt confirmation |
-| Transaction latency (p99) | ≤1,200 ms | ≤600 ms | Submit to receipt confirmation |
+| Transaction throughput | ≥2,000 TPS | ≥5,000 TPS (21 val.) | Sustained load test, 10 min, standard transfer tx |
+| Block finality | ≤4s | ≤2s | Time from proposal to commit proof |
+| Transaction latency (p50) | ≤2.5s | ≤1.5s | Submit to receipt confirmation |
+| Transaction latency (p99) | ≤6s | ≤3s | Submit to receipt confirmation |
 | State read latency (hot) | ≤50 µs | ≤50 µs | StorageMap.Get with cached trie nodes |
 | State write latency | ≤200 µs | ≤200 µs | StorageMap.Set single slot |
 | Node startup (cold) | ≤30 seconds | ≤30 seconds | Process start to block sync ready |
@@ -1312,9 +1312,9 @@ Each specification section maps to testable acceptance criteria for Phase 1 (Fou
 
 ## **13.2 Consensus**
 
-* A 4-validator devnet MUST produce blocks at 400ms intervals with \<10ms jitter.
+* A 4-validator devnet MUST produce blocks at 2s intervals with \<100ms jitter.
 
-* Finality MUST be achieved within 800ms measured from block proposal to commit proof.
+* Finality MUST be achieved within 4s measured from block proposal to commit proof.
 
 * The protocol MUST correctly handle a single Byzantine validator (1 of 4\) without stalling.
 
@@ -1367,7 +1367,7 @@ Each specification section maps to testable acceptance criteria for Phase 1 (Fou
 | Parameter | Value | Governance-Adjustable |
 | :---- | :---- | :---- |
 | Chain ID | TBD (registered at chainlist.org) | No |
-| Block time | 400 ms | Yes |
+| Block time | 2s | Yes |
 | Block gas limit | 100,000,000 | Yes |
 | Max block size | 2 MB | Yes |
 | Max transaction size | 128 KB (call) / 2 MB (deploy) | Yes |

@@ -72,7 +72,7 @@ public sealed class BasaltTestHost : IDisposable
     public void AdvanceBlocks(ulong count)
     {
         _blockHeight += count;
-        _blockTimestamp += count * 400; // 400ms per block
+        _blockTimestamp += count * 2000; // 2s per block
         Context.BlockHeight = _blockHeight;
         Context.BlockTimestamp = (long)_blockTimestamp;
     }

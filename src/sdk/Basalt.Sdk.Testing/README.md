@@ -51,11 +51,11 @@ var host = new BasaltTestHost();
 host.SetCaller(address);              // Set msg.sender
 host.SetBlockTimestamp(1700000000);    // Set block timestamp
 host.SetBlockHeight(100);             // Set block number
-host.AdvanceBlocks(10);               // Advance by N blocks (400ms per block)
+host.AdvanceBlocks(10);               // Advance by N blocks (2s per block)
 host.Deploy(contractAddress, contract); // Deploy a contract for cross-contract calls
 ```
 
-`AdvanceBlocks(count)` increments the block height by `count` and advances the timestamp by `count * 400` (400ms per block).
+`AdvanceBlocks(count)` increments the block height by `count` and advances the timestamp by `count * 2000` (2s per block).
 
 Cross-contract calls are automatically wired: `BasaltTestHost` sets `Context.CrossContractCallHandler` to a reflection-based dispatcher that routes calls to contracts registered via `Deploy`. The handler looks up the target contract by address and invokes the named method via reflection.
 

@@ -29,7 +29,7 @@ Users (HTTPS)
 | |(RPC) |      |      |      |            |
 | +------+------+------+------+            |
 |                                           |
-| Chain ID: 4242 | Block time: 400ms       |
+| Chain ID: 4242 | Block time: 2s          |
 | Consensus: BasaltBFT (3f+1 = 4 nodes)   |
 +------------------------------------------+
 ```
@@ -96,7 +96,7 @@ Invoke-RestMethod https://testnet.yourdomain.com/v1/status
 Invoke-RestMethod http://localhost:80/v1/status
 ```
 
-You should see block height increasing every 400ms.
+You should see block height increasing every 2s.
 
 ## Operations
 

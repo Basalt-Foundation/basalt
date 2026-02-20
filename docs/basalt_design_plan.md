@@ -148,13 +148,13 @@ Transaction propagation uses a two-tier gossip protocol: fast gossip for priorit
 | :---- | :---- | :---- |
 | Transport | QUIC (UDP) \+ TCP fallback | Performance \+ compatibility |
 | Max block size | 2 MB | Throughput / propagation balance |
-| Block time | 400 ms | Fast finality for enterprise |
+| Block time | 2s | Fast finality for enterprise |
 | Max active peers | 50 direct \+ 200 passive | Resilience without overhead |
 | Gossip protocol | Episub (Epidemic \+ Subscribe) | Fast propagation, low bandwidth |
 
 ## **3.4 Consensus Layer — BasaltBFT**
 
-BasaltBFT is a BFT consensus protocol derived from HotStuff, optimized for enterprise use cases. It delivers finality in 2 rounds (800 ms) with tolerance for f \= (n−1)/3 Byzantine nodes.
+BasaltBFT is a BFT consensus protocol derived from HotStuff, optimized for enterprise use cases. It delivers finality in 2 rounds (4s) with tolerance for f \= (n−1)/3 Byzantine nodes.
 
 ### **Key Characteristics**
 
@@ -180,9 +180,9 @@ BasaltBFT supports a unique hybrid mode. The network is public by default, but e
 
 | Scenario | TPS | Finality | Validators |
 | :---- | :---- | :---- | :---- |
-| Mainnet (100 validators) | \~12,000 | 800 ms | 100 |
-| Enterprise subnet (21 val.) | \~25,000 | 400 ms | 21 |
-| Private subnet (7 val.) | \~50,000 | 200 ms | 7 |
+| Mainnet (100 validators) | \~2,000 | 4s | 100 |
+| Enterprise subnet (21 val.) | \~5,000 | 2s | 21 |
+| Private subnet (7 val.) | \~10,000 | 2s | 7 |
 
 ## **3.5 Execution Layer — BasaltVM**
 

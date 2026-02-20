@@ -9,7 +9,7 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **Ed25519 Signatures** -- Fast signing/verification via libsodium, with batch verification support
 - **BLS12-381 Aggregation** -- BLS signatures via Nethermind.Crypto.Bls for aggregate consensus certificates
 - **Keccak-256** -- Custom software implementation for address derivation (macOS-compatible)
-- **BasaltBFT Consensus** -- Pipelined HotStuff-based BFT with 400ms block time, stake-weighted leader selection, BLS aggregation, and epoch-based dynamic validator sets
+- **BasaltBFT Consensus** -- Pipelined HotStuff-based BFT with 2s block time, stake-weighted leader selection, BLS aggregation, and epoch-based dynamic validator sets
 - **Merkle Patricia Trie** -- Cryptographically verifiable state with RocksDB persistence
 - **Smart Contracts** -- C# contracts with gas metering, sandboxed execution, and Roslyn analyzers
 - **Token Standards** -- BST-20 (ERC-20), BST-721 (ERC-721), BST-1155 (ERC-1155), BST-3525 (ERC-3525 SFT), BST-4626 (ERC-4626 Vault), BST-VC (W3C Verifiable Credentials), BST-DID
@@ -67,7 +67,7 @@ dotnet test
 dotnet run --project src/node/Basalt.Node
 ```
 
-The node starts in standalone mode on the devnet (chain ID 31337) with a REST API on port 5000 and timer-based block production at 400ms intervals.
+The node starts in standalone mode on the devnet (chain ID 31337) with a REST API on port 5000 and timer-based block production at 2s intervals.
 
 ### Run a 4-Validator Devnet
 
@@ -245,7 +245,7 @@ JSON serialization uses source-generated `JsonSerializerContext` types throughou
 |-----------|-------|
 | Symbol | BSLT |
 | Decimals | 18 |
-| Block time | 400ms |
+| Block time | 2s |
 | Block gas limit | 100,000,000 |
 | Max transactions per block | 10,000 |
 | Transfer gas cost | 21,000 |

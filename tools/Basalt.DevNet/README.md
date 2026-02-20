@@ -22,7 +22,7 @@ Genesis configuration for the development network:
 |-----------|-------|
 | Chain ID | 31337 |
 | Network name | basalt-devnet |
-| Block time | 400ms |
+| Block time | 2s |
 | Validators | 4 |
 | Block gas limit | 100,000,000 |
 | Max transactions per block | 10,000 |

@@ -12,7 +12,7 @@ public sealed class ChainParameters
     public required string NetworkName { get; init; }
 
     /// <summary>Target block time in milliseconds.</summary>
-    public uint BlockTimeMs { get; init; } = 400;
+    public uint BlockTimeMs { get; init; } = 2000;
 
     /// <summary>Maximum block size in bytes.</summary>
     public uint MaxBlockSizeBytes { get; init; } = 2 * 1024 * 1024; // 2 MB
@@ -93,7 +93,7 @@ public sealed class ChainParameters
     {
         ChainId = 31337,
         NetworkName = "basalt-devnet",
-        BlockTimeMs = 400,
+        BlockTimeMs = 2000,
         ValidatorSetSize = 4,
         MinValidatorStake = new UInt256(1000),
         EpochLength = 100,
@@ -127,7 +127,7 @@ public sealed class ChainParameters
                 ChainId = chainId,
                 NetworkName = networkName,
                 // Devnet / local development parameters
-                BlockTimeMs = 400,
+                BlockTimeMs = 2000,
                 ValidatorSetSize = 4,
                 MinValidatorStake = new UInt256(1000),
                 EpochLength = 100,
