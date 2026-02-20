@@ -935,20 +935,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleBlockAnnounce(PeerId sender, BlockAnnounceMessage announce)
     {
-        // If we don't have this block, request it
-        if (_chainManager.GetBlockByHash(announce.BlockHash) == null)
-        {
-            var request = new BlockRequestMessage
-            {
-                SenderId = _localPeerId,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                StartNumber = announce.BlockNumber,
-                Count = 1,
-            };
-            _gossip!.SendToPeer(sender, request);
-        }
-
         _peerManager!.UpdatePeerBestBlock(sender, announce.BlockNumber, announce.BlockHash);
+
+        // If we're behind, trigger a full sync.  Previously this sent a BlockRequestMessage,
+        // but the BlockPayloadMessage response was rejected by the N-04 anti-injection guard
+        // when not in sync mode, causing validators to get permanently stuck after falling behind.
+        if (announce.BlockNumber > _chainManager.LatestBlockNumber)
+        {
+            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+        }
     }
 
     private void HandleBlockPayload(PeerId sender, BlockPayloadMessage payload)
