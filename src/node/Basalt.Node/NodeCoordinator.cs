@@ -51,7 +51,23 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private PeerManager? _peerManager;
     private EpisubService? _episub;
     private GossipService? _gossip;
-    private HandshakeProtocol? _handshake;
+    /// <summary>
+    /// Creates a fresh HandshakeProtocol per connection to avoid sharing ephemeral key state.
+    /// Each handshake generates its own X25519 key pair, so concurrent connections must not
+    /// share the same instance.
+    /// </summary>
+    private HandshakeProtocol CreateHandshake() => new(
+        _config.ChainId,
+        _privateKey,
+        _publicKey,
+        _localBlsPublicKey,
+        _localPeerId,
+        _config.P2PPort,
+        () => _chainManager.LatestBlockNumber,
+        () => _chainManager.LatestBlock?.Hash ?? Hash256.Zero,
+        () => _chainManager.GetBlockByNumber(0)?.Hash ?? Hash256.Zero,
+        _loggerFactory.CreateLogger<HandshakeProtocol>(),
+        $"validator-{_config.ValidatorIndex}");
 
     // Consensus
     private BasaltBft? _consensus;
@@ -290,20 +306,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>());
 
         // Send our validator identity as "validator-N" so peers can map us in their ValidatorSet.
-        var listenAddress = $"validator-{_config.ValidatorIndex}";
-
-        _handshake = new HandshakeProtocol(
-            _config.ChainId,
-            _privateKey,
-            _publicKey,
-            _localBlsPublicKey,
-            _localPeerId,
-            _config.P2PPort,
-            () => _chainManager.LatestBlockNumber,
-            () => _chainManager.LatestBlock?.Hash ?? Hash256.Zero,
-            () => _chainManager.GetBlockByNumber(0)?.Hash ?? Hash256.Zero,
-            _loggerFactory.CreateLogger<HandshakeProtocol>(),
-            listenAddress);
+        // HandshakeProtocol is now created per-connection via CreateHandshake()
+        // to avoid sharing ephemeral X25519 key state across concurrent handshakes.
 
         // Wire transport → message processing
         _transport.OnMessageReceived += HandleRawMessage;
@@ -638,7 +642,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         try
         {
             // Perform handshake as responder
-            var result = await _handshake!.RespondAsync(connection, _cts!.Token);
+            var result = await CreateHandshake().RespondAsync(connection, _cts!.Token);
             if (!result.IsSuccess)
             {
                 _logger.LogWarning("Inbound handshake failed: {Error}", result.Error);
@@ -1231,7 +1235,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 }
 
                 // Perform handshake as initiator
-                var result = await _handshake!.InitiateAsync(connection, _cts!.Token);
+                var result = await CreateHandshake().InitiateAsync(connection, _cts!.Token);
                 if (!result.IsSuccess)
                 {
                     _logger.LogWarning("Handshake with {Host}:{Port} failed: {Error}", host, port, result.Error);
