@@ -82,10 +82,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-14: Cap block request count to prevent resource exhaustion
     private const int MaxBlockRequestCount = 100;
 
-    // N-17: Thread-safe validator activity tracking (for inactivity slashing)
-    private readonly ConcurrentDictionary<Address, ulong> _lastActiveBlock = new();
-    private const ulong InactivityThresholdBlocks = 100; // ~40 seconds at 400ms
-
     // N-17: Thread-safe double-sign detection: keyed by (view, proposer) to avoid false positives
     // when different proposers propose for the same view after a view change.
     private readonly ConcurrentDictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
@@ -282,14 +278,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
         validators.Sort((a, b) => a.Index.CompareTo(b.Index));
         _validatorSet = new ValidatorSet(validators);
 
-        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
-        var currentBlock = _chainManager.LatestBlock?.Header.Number ?? 0;
-        foreach (var v in _validatorSet.Validators)
-        {
-            if (!_lastActiveBlock.ContainsKey(v.Address))
-                _lastActiveBlock[v.Address] = currentBlock;
-        }
-
         _logger.LogInformation("Validator set: {Count} validators, quorum: {Quorum}",
             _validatorSet.Count, _validatorSet.QuorumThreshold);
     }
@@ -346,12 +334,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // Wire weighted leader selection if staking is available
         if (_stakingState != null)
         {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet!, _stakingState);
+            _leaderSelector = new WeightedLeaderSelector(_validatorSet!);
             _validatorSet!.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
             _logger.LogInformation("Consensus: using stake-weighted leader selection");
 
             // Setup epoch manager for dynamic validator set transitions
-            _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner);
+            _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner,
+                _slashingEngine, _loggerFactory.CreateLogger<EpochManager>());
             _logger.LogInformation("Epoch manager: epoch length={EpochLength}, validator set size={SetSize}",
                 _chainParams.EpochLength, _chainParams.ValidatorSetSize);
         }
@@ -431,7 +420,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
     }
 
-    private void HandleBlockFinalized(Hash256 hash, byte[] blockData)
+    private void HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
     {
         try
         {
@@ -487,8 +476,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 PersistBlock(block, blockData);
                 PersistReceipts(block.Receipts);
 
-                // Check for inactive validators and slash
-                CheckInactiveValidators(block.Number);
+                // Record commit participation for deterministic epoch-boundary slashing
+                _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
 
                 // Check for epoch transition — rebuild validator set if at boundary
                 var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -979,6 +968,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     PersistBlock(block, blockBytes);
                     PersistReceipts(block.Receipts);
 
+                    // Record full participation for gossipped blocks (already consensus-validated)
+                    ulong fullBitmap = _validatorSet != null ? (1UL << _validatorSet.Count) - 1 : 0;
+                    _epochManager?.RecordBlockSigners(block.Number, fullBitmap);
+
                     // Apply epoch transitions for blocks received via gossip
                     var newSet = _epochManager?.OnBlockFinalized(block.Number);
                     if (newSet != null)
@@ -1085,6 +1078,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 PersistReceipts(block.Receipts);
                 applied++;
 
+                // Record full participation for synced blocks (already consensus-validated)
+                ulong syncBitmap = _validatorSet != null ? (1UL << _validatorSet.Count) - 1 : 0;
+                _epochManager?.RecordBlockSigners(block.Number, syncBitmap);
+
                 // Apply epoch transitions for synced blocks — without this,
                 // nodes that sync across epoch boundaries would have a stale
                 // ValidatorSet and disagree on leader selection.
@@ -1160,11 +1157,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleConsensusVote(PeerId sender, ConsensusVoteMessage vote)
     {
-        // Track validator activity for inactivity slashing
-        var voterInfo = _validatorSet?.GetByPeerId(vote.SenderId);
-        if (voterInfo != null)
-            _lastActiveBlock[voterInfo.Address] = _chainManager.LatestBlockNumber;
-
         if (_config.UsePipelining)
         {
             var response = _pipelinedConsensus!.HandleVote(vote);
@@ -1543,26 +1535,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
         return best;
     }
 
-    private void CheckInactiveValidators(ulong currentBlock)
-    {
-        if (_slashingEngine == null || _validatorSet == null || currentBlock < InactivityThresholdBlocks)
-            return;
-
-        foreach (var validator in _validatorSet.Validators)
-        {
-            if (validator.PeerId == _localPeerId)
-                continue; // Don't slash ourselves
-
-            if (!_lastActiveBlock.TryGetValue(validator.Address, out var lastActive))
-                lastActive = 0;
-
-            if (currentBlock - lastActive > InactivityThresholdBlocks)
-            {
-                _slashingEngine.SlashInactivity(validator.Address, lastActive, currentBlock);
-            }
-        }
-    }
-
     /// <summary>
     /// Apply an epoch transition: swap the validator set, rewire consensus and leader selection.
     /// </summary>
@@ -1571,10 +1543,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         var oldCount = _validatorSet?.Count ?? 0;
         _validatorSet = newSet;
 
-        // Rewire leader selector with new set
+        // Rewire leader selector with new set (reads snapshotted stakes from ValidatorInfo.Stake)
         if (_stakingState != null)
         {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet, _stakingState);
+            _leaderSelector = new WeightedLeaderSelector(_validatorSet);
             _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
         }
 
@@ -1583,11 +1555,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _pipelinedConsensus?.UpdateValidatorSet(newSet);
         else
             _consensus?.UpdateValidatorSet(newSet);
-
-        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
-        _lastActiveBlock.Clear();
-        foreach (var v in newSet.Validators)
-            _lastActiveBlock[v.Address] = blockNumber;
 
         // N-10: Sliding window — retain evidence for last 10 views on epoch transition
         {

@@ -892,7 +892,7 @@ public class ViewChangeTests
         for (int i = 0; i < 4; i++)
         {
             var idx = i;
-            bfts[i].OnBlockFinalized += (_, _) => finalizedOn.Add(idx);
+            bfts[i].OnBlockFinalized += (_, _, _) => finalizedOn.Add(idx);
         }
 
         // Leader advances view via view change (simulates processing view change first)
@@ -1073,7 +1073,7 @@ public class ViewChangeTests
         aggregates.Clear();
         bool finalized = false;
         foreach (var bft in bfts)
-            bft.OnBlockFinalized += (_, _) => finalized = true;
+            bft.OnBlockFinalized += (_, _, _) => finalized = true;
 
         foreach (var vote in commitVotes)
             bfts[leaderIdx].HandleVote(vote);

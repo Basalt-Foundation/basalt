@@ -59,6 +59,12 @@ public sealed class ChainParameters
     /// <summary>Unbonding period in blocks.</summary>
     public uint UnbondingPeriod { get; init; } = 907_200; // ~21 days at 2s blocks
 
+    /// <summary>
+    /// Minimum block-signing participation percentage required to avoid inactivity slashing.
+    /// Validators signing fewer than this percentage of blocks in an epoch are slashed.
+    /// </summary>
+    public uint InactivityThresholdPercent { get; init; } = 50;
+
     /// <summary>Token decimals (18 like Ethereum).</summary>
     public byte TokenDecimals { get; init; } = 18;
 
@@ -92,6 +98,7 @@ public sealed class ChainParameters
         MinValidatorStake = new UInt256(1000),
         EpochLength = 100,
         InitialBaseFee = new UInt256(1),
+        InactivityThresholdPercent = 50,
     };
 
     /// <summary>
@@ -125,6 +132,7 @@ public sealed class ChainParameters
                 MinValidatorStake = new UInt256(1000),
                 EpochLength = 100,
                 InitialBaseFee = new UInt256(1),
+                InactivityThresholdPercent = 50,
             },
         };
     }

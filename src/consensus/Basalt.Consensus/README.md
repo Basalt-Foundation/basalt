@@ -12,7 +12,7 @@ Core consensus state machine with PREPARE -> PRE-COMMIT -> COMMIT phases. Votes 
 var bft = new BasaltBft(validatorSet, localPeerId, privateKey, logger, blsSigner: null);
 // 5th parameter is optional IBlsSigner? (defaults to new BlsSigner())
 
-bft.OnBlockFinalized += (hash, data) => { /* commit block */ };
+bft.OnBlockFinalized += (hash, data, commitBitmap) => { /* commit block */ };
 bft.OnViewChange += (newView) => { /* leader rotation */ };
 
 // Leader proposes
@@ -49,7 +49,7 @@ var pipeline = new PipelinedConsensus(
     validatorSet, localPeerId, privateKey, blsSigner, logger,
     lastFinalizedBlock: 0);  // IBlsSigner is required, lastFinalizedBlock is optional
 
-pipeline.OnBlockFinalized += (hash, data) => { /* commit block */ };
+pipeline.OnBlockFinalized += (hash, data, commitBitmap) => { /* commit block */ };
 pipeline.OnViewChange += (newView) => { /* leader rotation */ };
 pipeline.OnBehindDetected += (blockNumber) => { /* trigger sync */ };
 

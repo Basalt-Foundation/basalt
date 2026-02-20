@@ -1,5 +1,4 @@
 using Basalt.Consensus;
-using Basalt.Consensus.Staking;
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Network;
@@ -24,8 +23,10 @@ public class WeightedLeaderSelectorTests
         return (privateKey, publicKey, peerId, address);
     }
 
-    private static (ValidatorSet Set, ValidatorInfo[] Infos) MakeValidatorSetWithInfos(int count)
+    private static (ValidatorSet Set, ValidatorInfo[] Infos) MakeValidatorSetWithInfos(
+        int count, UInt256? stake = null)
     {
+        var s = stake ?? new UInt256(1000);
         var validators = Enumerable.Range(0, count).Select(i =>
         {
             var v = MakeValidator();
@@ -36,6 +37,7 @@ public class WeightedLeaderSelectorTests
                 BlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(v.PrivateKey)),
                 Address = v.Address,
                 Index = i,
+                Stake = s,
             };
         }).ToArray();
 
@@ -46,10 +48,7 @@ public class WeightedLeaderSelectorTests
     public void SingleValidator_AlwaysSelected()
     {
         var (set, infos) = MakeValidatorSetWithInfos(1);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        stakingState.RegisterValidator(infos[0].Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var selector = new WeightedLeaderSelector(set);
 
         for (ulong view = 0; view < 10; view++)
         {
@@ -60,12 +59,8 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_IsDeterministic()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(4);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        foreach (var info in infos)
-            stakingState.RegisterValidator(info.Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var (set, _) = MakeValidatorSetWithInfos(4);
+        var selector = new WeightedLeaderSelector(set);
 
         var leader1 = selector.SelectLeader(42);
         var leader2 = selector.SelectLeader(42);
@@ -76,12 +71,8 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_DifferentViews_CanSelectDifferentLeaders()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(4);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        foreach (var info in infos)
-            stakingState.RegisterValidator(info.Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var (set, _) = MakeValidatorSetWithInfos(4);
+        var selector = new WeightedLeaderSelector(set);
 
         // Over many views, at least 2 distinct leaders should be selected
         var leaders = Enumerable.Range(0, 100)
@@ -95,14 +86,13 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_HigherStake_SelectedMoreOften()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(2);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
+        var (set, infos) = MakeValidatorSetWithInfos(2, new UInt256(1000));
 
         // Validator 0 has 10x the stake of validator 1
-        stakingState.RegisterValidator(infos[0].Address, new UInt256(10000));
-        stakingState.RegisterValidator(infos[1].Address, new UInt256(1000));
+        infos[0].Stake = new UInt256(10000);
+        infos[1].Stake = new UInt256(1000);
 
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var selector = new WeightedLeaderSelector(set);
 
         var counts = new int[2];
         for (ulong view = 0; view < 1000; view++)
@@ -121,12 +111,7 @@ public class WeightedLeaderSelectorTests
     public void SelectLeader_EqualStake_BothSelected()
     {
         var (set, infos) = MakeValidatorSetWithInfos(2);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-
-        stakingState.RegisterValidator(infos[0].Address, new UInt256(1000));
-        stakingState.RegisterValidator(infos[1].Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var selector = new WeightedLeaderSelector(set);
 
         var counts = new int[2];
         for (ulong view = 0; view < 1000; view++)
@@ -142,15 +127,14 @@ public class WeightedLeaderSelectorTests
     }
 
     [Fact]
-    public void SelectLeader_Unregistered_StakeFallsToWeight1()
+    public void SelectLeader_ZeroStake_FallsToWeight1()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(3);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
+        var (set, infos) = MakeValidatorSetWithInfos(3, UInt256.Zero);
 
-        // Only register one validator
-        stakingState.RegisterValidator(infos[0].Address, new UInt256(10000));
+        // Only set stake on one validator
+        infos[0].Stake = new UInt256(10000);
 
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var selector = new WeightedLeaderSelector(set);
 
         // Should not throw
         var leader = selector.SelectLeader(1);
@@ -160,12 +144,8 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_LargeViewNumber_DoesNotThrow()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(4);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        foreach (var info in infos)
-            stakingState.RegisterValidator(info.Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var (set, _) = MakeValidatorSetWithInfos(4);
+        var selector = new WeightedLeaderSelector(set);
 
         var act = () => selector.SelectLeader(ulong.MaxValue);
         act.Should().NotThrow();
@@ -174,12 +154,8 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_IntegratesWithValidatorSetLeaderSelector()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(4);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        foreach (var info in infos)
-            stakingState.RegisterValidator(info.Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var (set, _) = MakeValidatorSetWithInfos(4);
+        var selector = new WeightedLeaderSelector(set);
 
         // Wire the weighted selector into ValidatorSet
         set.SetLeaderSelector(view => selector.SelectLeader(view));
@@ -193,12 +169,8 @@ public class WeightedLeaderSelectorTests
     [Fact]
     public void SelectLeader_AllValidatorsAppearOverManyViews()
     {
-        var (set, infos) = MakeValidatorSetWithInfos(4);
-        var stakingState = new StakingState { MinValidatorStake = new UInt256(100) };
-        foreach (var info in infos)
-            stakingState.RegisterValidator(info.Address, new UInt256(1000));
-
-        var selector = new WeightedLeaderSelector(set, stakingState);
+        var (set, _) = MakeValidatorSetWithInfos(4);
+        var selector = new WeightedLeaderSelector(set);
 
         var selectedPeerIds = new HashSet<PeerId>();
         for (ulong view = 0; view < 1000; view++)

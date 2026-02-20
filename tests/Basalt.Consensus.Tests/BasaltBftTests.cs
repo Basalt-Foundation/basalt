@@ -175,7 +175,7 @@ public class BasaltBftTests
         aggregates.Clear();
         var finalizedCount = 0;
         foreach (var bft in bfts)
-            bft.OnBlockFinalized += (hash, data) => finalizedCount++;
+            bft.OnBlockFinalized += (hash, data, _) => finalizedCount++;
 
         foreach (var vote in commitVotes)
             bfts[leaderIndex].HandleVote(vote);

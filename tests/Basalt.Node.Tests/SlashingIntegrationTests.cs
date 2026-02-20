@@ -100,6 +100,7 @@ public class SlashingIntegrationTests
                 BlsPublicKey = new BlsPublicKey(BlsSigner.GetPublicKeyStatic(blsPrivKey1)),
                 Address = addr1,
                 Index = 0,
+                Stake = new UInt256(1_000_000),
             },
             new ValidatorInfo
             {
@@ -108,13 +109,14 @@ public class SlashingIntegrationTests
                 BlsPublicKey = new BlsPublicKey(BlsSigner.GetPublicKeyStatic(blsPrivKey2)),
                 Address = addr2,
                 Index = 1,
+                Stake = new UInt256(900_000),
             },
         };
 
         var vs = new ValidatorSet(validators);
 
         // Weighted leader selector should work
-        var selector = new WeightedLeaderSelector(vs, state);
+        var selector = new WeightedLeaderSelector(vs);
         selector.Should().NotBeNull();
 
         // Selecting a leader should return one of the validators

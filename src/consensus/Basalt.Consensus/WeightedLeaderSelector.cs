@@ -1,27 +1,25 @@
 using Basalt.Core;
-using Basalt.Consensus.Staking;
 using Basalt.Crypto;
 
 namespace Basalt.Consensus;
 
 /// <summary>
-/// Weighted leader selection based on stake * reputation.
-/// Uses a deterministic pseudo-random selection weighted by combined score.
+/// Weighted leader selection based on snapshotted validator stakes.
+/// Uses a deterministic pseudo-random selection weighted by ValidatorInfo.Stake,
+/// which is captured at epoch boundaries for consistency across all nodes.
 /// </summary>
 public sealed class WeightedLeaderSelector
 {
     private readonly ValidatorSet _validatorSet;
-    private readonly StakingState _stakingState;
 
-    public WeightedLeaderSelector(ValidatorSet validatorSet, StakingState stakingState)
+    public WeightedLeaderSelector(ValidatorSet validatorSet)
     {
         _validatorSet = validatorSet;
-        _stakingState = stakingState;
     }
 
     /// <summary>
     /// Select the leader for a given view using weighted random selection.
-    /// Weight = stake_proportion * reputation_factor
+    /// Weights are read from ValidatorInfo.Stake (snapshotted at epoch boundary).
     /// </summary>
     public ValidatorInfo SelectLeader(ulong viewNumber)
     {
@@ -32,14 +30,14 @@ public sealed class WeightedLeaderSelector
         if (validators.Count == 1)
             return validators[0];
 
-        // Compute weights
+        // Compute weights from snapshotted stakes
         var weights = new ulong[validators.Count];
         ulong totalWeight = 0;
 
         for (int i = 0; i < validators.Count; i++)
         {
-            var info = _stakingState.GetStakeInfo(validators[i].Address);
-            var stakeWeight = info != null ? StakeToWeight(info.TotalStake) : 1UL;
+            var stakeWeight = validators[i].Stake != UInt256.Zero
+                ? StakeToWeight(validators[i].Stake) : 1UL;
             weights[i] = stakeWeight;
             totalWeight += stakeWeight;
         }

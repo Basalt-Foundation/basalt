@@ -100,7 +100,7 @@ public class PipelinedConsensusTests
 
         Hash256? finalizedHash = null;
         foreach (var node in nodes)
-            node.OnBlockFinalized += (hash, _) => finalizedHash = hash;
+            node.OnBlockFinalized += (hash, _, _) => finalizedHash = hash;
 
         var blockHash = Blake3Hasher.Hash([1, 2, 3]);
         var blockData = new byte[] { 1, 2, 3 };
@@ -170,7 +170,7 @@ public class PipelinedConsensusTests
         var finalized = new List<ulong>();
         var pipeline = new PipelinedConsensus(validatorSet, v0.Id, v0.PrivateKey,
             new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
-        pipeline.OnBlockFinalized += (_, data) =>
+        pipeline.OnBlockFinalized += (_, data, _) =>
         {
             // Extract block number from data (we encode it as a single byte)
             finalized.Add(data[0]);
