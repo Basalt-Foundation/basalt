@@ -29,8 +29,10 @@ public sealed class EpochManager
     /// <summary>
     /// Per-block commit voter bitmaps within the current epoch.
     /// Key = block number, Value = bitmap where bit i = validator at index i committed.
+    /// Guarded by <see cref="_blockSignersLock"/> for thread safety.
     /// </summary>
     private readonly Dictionary<ulong, ulong> _blockSigners = new();
+    private readonly object _blockSignersLock = new();
 
     /// <summary>
     /// Fired when an epoch transition occurs. Provides the new epoch number and the rebuilt ValidatorSet.
@@ -79,7 +81,8 @@ public sealed class EpochManager
     /// </summary>
     public void RecordBlockSigners(ulong blockNumber, ulong commitBitmap)
     {
-        _blockSigners[blockNumber] = commitBitmap;
+        lock (_blockSignersLock)
+            _blockSigners[blockNumber] = commitBitmap;
     }
 
     /// <summary>
@@ -96,13 +99,18 @@ public sealed class EpochManager
         if (newEpoch <= _currentEpoch)
             return null;
 
+        // Snapshot and clear bitmaps under lock, then slash outside lock
+        Dictionary<ulong, ulong> bitmapSnapshot;
+        lock (_blockSignersLock)
+        {
+            bitmapSnapshot = new Dictionary<ulong, ulong>(_blockSigners);
+            _blockSigners.Clear();
+        }
+
         // Apply deterministic inactivity slashing BEFORE rebuilding the validator set.
         // This ensures the new set reflects any stake reductions from the completed epoch.
-        if (_slashingEngine != null && _blockSigners.Count > 0)
-            SlashInactiveValidators(blockNumber);
-
-        // Clear bitmap tracking for the completed epoch
-        _blockSigners.Clear();
+        if (_slashingEngine != null && bitmapSnapshot.Count > 0)
+            SlashInactiveValidators(blockNumber, bitmapSnapshot);
 
         var newSet = BuildValidatorSetFromStaking();
         newSet.TransferIdentities(_currentSet);
@@ -160,20 +168,21 @@ public sealed class EpochManager
     /// Since all nodes process the same finalized blocks with the same bitmaps,
     /// this produces identical results on every node.
     /// </summary>
-    private void SlashInactiveValidators(ulong epochEndBlock)
+    private void SlashInactiveValidators(ulong epochEndBlock, Dictionary<ulong, ulong> bitmapSnapshot)
     {
         if (_slashingEngine == null || _currentSet.Count == 0)
             return;
 
-        var totalBlocks = (ulong)_blockSigners.Count;
+        var totalBlocks = (ulong)bitmapSnapshot.Count;
         if (totalBlocks == 0)
             return;
 
-        var threshold = totalBlocks * _chainParams.InactivityThresholdPercent / 100;
+        // Ceiling division: validators must sign >= InactivityThresholdPercent of blocks
+        var threshold = (totalBlocks * _chainParams.InactivityThresholdPercent + 99) / 100;
 
         // Count signed blocks per validator index
         var signedCounts = new ulong[_currentSet.Count];
-        foreach (var (_, bitmap) in _blockSigners)
+        foreach (var (_, bitmap) in bitmapSnapshot)
         {
             for (int i = 0; i < _currentSet.Count && i < 64; i++)
             {

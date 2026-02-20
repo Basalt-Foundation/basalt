@@ -969,8 +969,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     PersistReceipts(block.Receipts);
 
                     // Record full participation for gossipped blocks (already consensus-validated)
-                    ulong fullBitmap = _validatorSet != null ? (1UL << _validatorSet.Count) - 1 : 0;
-                    _epochManager?.RecordBlockSigners(block.Number, fullBitmap);
+                    if (_epochManager != null && _validatorSet != null)
+                    {
+                        ulong fullBitmap = _validatorSet.Count >= 64
+                            ? ulong.MaxValue
+                            : (1UL << _validatorSet.Count) - 1;
+                        _epochManager.RecordBlockSigners(block.Number, fullBitmap);
+                    }
 
                     // Apply epoch transitions for blocks received via gossip
                     var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -1079,8 +1084,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 applied++;
 
                 // Record full participation for synced blocks (already consensus-validated)
-                ulong syncBitmap = _validatorSet != null ? (1UL << _validatorSet.Count) - 1 : 0;
-                _epochManager?.RecordBlockSigners(block.Number, syncBitmap);
+                if (_epochManager != null && _validatorSet != null)
+                {
+                    ulong syncBitmap = _validatorSet.Count >= 64
+                        ? ulong.MaxValue
+                        : (1UL << _validatorSet.Count) - 1;
+                    _epochManager.RecordBlockSigners(block.Number, syncBitmap);
+                }
 
                 // Apply epoch transitions for synced blocks — without this,
                 // nodes that sync across epoch boundaries would have a stale
