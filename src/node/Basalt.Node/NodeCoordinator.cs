@@ -604,8 +604,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // Determine next block number for pipeline
         var nextBlock = _chainManager.LatestBlockNumber + 1 + (ulong)_pipelinedConsensus!.ActiveRoundCount;
 
-        // Check if we're the leader for this block
-        var leader = _validatorSet!.GetLeader(nextBlock);
+        // After a view change, MinNextView advances so a different leader is selected.
+        // Use the effective view (max of block number and MinNextView) for leader selection.
+        var effectiveView = Math.Max(nextBlock, _pipelinedConsensus.MinNextView);
+        var leader = _validatorSet!.GetLeader(effectiveView);
         if (leader.PeerId != _localPeerId)
             return;
 

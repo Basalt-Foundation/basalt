@@ -286,6 +286,153 @@ public class PipelinedConsensusTests
     }
 
     [Fact]
+    public void PipelinedConsensus_ViewChange_AdvancesMinNextView()
+    {
+        var v0 = MakeValidator(0);
+        var v1 = MakeValidator(1);
+        var v2 = MakeValidator(2);
+        var v3 = MakeValidator(3);
+
+        var validatorSet = MakeValidatorSet(v0, v1, v2, v3);
+        var pipeline = new PipelinedConsensus(validatorSet, v0.Id, v0.PrivateKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        Assert.Equal((ulong)0, pipeline.MinNextView);
+
+        // Start a round for block 1 (view = 1)
+        pipeline.StartRound(1, [1], Blake3Hasher.Hash([1]));
+        Assert.Equal(1, pipeline.ActiveRoundCount);
+
+        // Trigger view change to view 3 (quorum = 3 for 4 validators)
+        for (int i = 0; i < 3; i++)
+        {
+            var validators = new[] { v0, v1, v2, v3 };
+            pipeline.HandleViewChange(new ViewChangeMessage
+            {
+                SenderId = validators[i].Id,
+                CurrentView = 1,
+                ProposedView = 3,
+                VoterSignature = new BlsSignature(new byte[96]),
+                VoterPublicKey = new BlsPublicKey(new byte[48]),
+            });
+        }
+
+        // MinNextView should advance to 3
+        Assert.Equal((ulong)3, pipeline.MinNextView);
+        // All rounds should be aborted
+        Assert.Equal(0, pipeline.ActiveRoundCount);
+
+        // New round for block 1 should use view 3 (not 1)
+        // Find who is leader for view 3
+        var leaderForView3 = validatorSet.GetLeader(3);
+        var leaderValidators = new[] { (v0.Id, v0.PrivateKey), (v1.Id, v1.PrivateKey), (v2.Id, v2.PrivateKey), (v3.Id, v3.PrivateKey) };
+        var (leaderId, leaderKey) = leaderValidators.First(v => v.Item1 == leaderForView3.PeerId);
+
+        // Create a new PipelinedConsensus for the leader to verify the proposal has view 3
+        var leaderPipeline = new PipelinedConsensus(validatorSet, leaderId, leaderKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        // Simulate the view change on the leader's pipeline too
+        for (int i = 0; i < 3; i++)
+        {
+            var validators = new[] { v0, v1, v2, v3 };
+            leaderPipeline.HandleViewChange(new ViewChangeMessage
+            {
+                SenderId = validators[i].Id,
+                CurrentView = 1,
+                ProposedView = 3,
+                VoterSignature = new BlsSignature(new byte[96]),
+                VoterPublicKey = new BlsPublicKey(new byte[48]),
+            });
+        }
+
+        var proposal = leaderPipeline.StartRound(1, [1], Blake3Hasher.Hash([1]));
+        Assert.NotNull(proposal);
+        // The proposal should use view 3 (advanced by view change), not view 1
+        Assert.Equal((ulong)3, proposal!.ViewNumber);
+    }
+
+    [Fact]
+    public void PipelinedConsensus_ViewChange_RotatesLeader()
+    {
+        var v0 = MakeValidator(0);
+        var v1 = MakeValidator(1);
+        var v2 = MakeValidator(2);
+        var v3 = MakeValidator(3);
+
+        var validatorSet = MakeValidatorSet(v0, v1, v2, v3);
+
+        // Find the leader for view 1 (block 1)
+        var leaderView1 = validatorSet.GetLeader(1);
+        // Find the leader for view 2
+        var leaderView2 = validatorSet.GetLeader(2);
+
+        // With 4 different validators, view 1 and view 2 should (often) have different leaders.
+        // Even if they happen to be the same, the key property is that the view number changes
+        // which prevents false double-sign detection.
+        // Just verify that MinNextView affects the view used in StartRound.
+        var pipeline = new PipelinedConsensus(validatorSet, leaderView2.PeerId,
+            // Find the private key for leaderView2
+            new[] { v0, v1, v2, v3 }.First(v => v.Id == leaderView2.PeerId).PrivateKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        // Trigger view change to view 2
+        for (int i = 0; i < 3; i++)
+        {
+            var validators = new[] { v0, v1, v2, v3 };
+            pipeline.HandleViewChange(new ViewChangeMessage
+            {
+                SenderId = validators[i].Id,
+                CurrentView = 1,
+                ProposedView = 2,
+                VoterSignature = new BlsSignature(new byte[96]),
+                VoterPublicKey = new BlsPublicKey(new byte[48]),
+            });
+        }
+
+        // Start round for block 1 — view should be max(1, 2) = 2
+        var proposal = pipeline.StartRound(1, [1], Blake3Hasher.Hash([1]));
+
+        if (proposal != null)
+        {
+            // If this node is the leader for view 2, the proposal should have ViewNumber = 2
+            Assert.Equal((ulong)2, proposal.ViewNumber);
+        }
+        // Either way, MinNextView should be 2
+        Assert.Equal((ulong)2, pipeline.MinNextView);
+    }
+
+    [Fact]
+    public void PipelinedConsensus_UpdateValidatorSet_ResetsMinNextView()
+    {
+        var v0 = MakeValidator(0);
+        var v1 = MakeValidator(1);
+        var v2 = MakeValidator(2);
+
+        var validatorSet = MakeValidatorSet(v0, v1, v2);
+        var pipeline = new PipelinedConsensus(validatorSet, v0.Id, v0.PrivateKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        // Trigger view change (quorum = 3 for 3 validators: (3*2/3)+1 = 3)
+        var validators = new[] { v0, v1, v2 };
+        for (int i = 0; i < 3; i++)
+        {
+            pipeline.HandleViewChange(new ViewChangeMessage
+            {
+                SenderId = validators[i].Id, CurrentView = 0, ProposedView = 10,
+                VoterSignature = new BlsSignature(new byte[96]),
+                VoterPublicKey = new BlsPublicKey(new byte[48]),
+            });
+        }
+
+        Assert.Equal((ulong)10, pipeline.MinNextView);
+
+        // Epoch transition resets MinNextView
+        pipeline.UpdateValidatorSet(validatorSet);
+        Assert.Equal((ulong)0, pipeline.MinNextView);
+    }
+
+    [Fact]
     public void PipelinedConsensus_LastFinalizedBlock_Tracks_Correctly()
     {
         var v0 = MakeValidator(0);

@@ -41,6 +41,10 @@ public sealed class PipelinedConsensus
     private ulong _lastFinalizedBlock;
     private readonly ConcurrentDictionary<ulong, (Hash256 Hash, byte[] Data, ulong Bitmap)> _pendingFinalizations = new();
 
+    // View advancement: after a view change, new rounds must use a view >= _minNextView
+    // to avoid reusing the same view number (which causes false double-sign detection).
+    private ulong _minNextView;
+
     // Callbacks
     public event Action<Hash256, byte[], ulong>? OnBlockFinalized;
     public event Action<ulong>? OnViewChange;
@@ -68,6 +72,13 @@ public sealed class PipelinedConsensus
     }
 
     /// <summary>
+    /// Minimum view number for new rounds. After a view change advances the view,
+    /// this ensures new rounds don't reuse the old view number (which would cause
+    /// false double-sign detection in NodeCoordinator).
+    /// </summary>
+    public ulong MinNextView => _minNextView;
+
+    /// <summary>
     /// Atomically replace the validator set (e.g., on epoch transition).
     /// Clears all in-flight rounds, view change votes, and pending finalizations.
     /// </summary>
@@ -77,6 +88,7 @@ public sealed class PipelinedConsensus
         _activeRounds.Clear();
         _viewChangeVotes.Clear();
         _pendingFinalizations.Clear();
+        _minNextView = 0;
     }
 
     /// <summary>
@@ -95,6 +107,7 @@ public sealed class PipelinedConsensus
         }
 
         _pendingFinalizations.Clear();
+        _minNextView = 0;
     }
 
     /// <summary>
@@ -128,10 +141,14 @@ public sealed class PipelinedConsensus
             return null;
         }
 
+        // Use the higher of blockNumber and _minNextView to ensure view advances
+        // after view changes (prevents false double-sign detection and rotates leaders).
+        var effectiveView = Math.Max(blockNumber, _minNextView);
+
         var round = new ConsensusRound
         {
             BlockNumber = blockNumber,
-            View = blockNumber,
+            View = effectiveView,
             State = ConsensusState.Proposing,
             BlockHash = blockHash,
             BlockData = blockData,
@@ -326,6 +343,10 @@ public sealed class PipelinedConsensus
             {
                 _logger.LogInformation("View change quorum reached for view {View}, aborting in-flight rounds",
                     viewChange.ProposedView);
+
+                // Advance minimum view so new rounds use a higher view number,
+                // which rotates the leader and avoids false double-sign detection.
+                _minNextView = Math.Max(_minNextView, viewChange.ProposedView);
 
                 // Abort all non-finalized rounds
                 var toRemove = new List<ulong>();
