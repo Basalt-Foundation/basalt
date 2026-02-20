@@ -27,8 +27,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private readonly ChainParameters _chainParams;
     private readonly ChainManager _chainManager;
     private readonly Mempool _mempool;
-    // N-05: Non-readonly to allow fork-and-swap during sync
-    private IStateDatabase _stateDb;
+    // N-05: StateDbRef allows fork-and-swap during sync while keeping the
+    // API layer (which shares this reference) in sync with canonical state.
+    private readonly StateDbRef _stateDb;
     private readonly TransactionValidator _txValidator;
     private readonly WebSocketHandler _wsHandler;
     private readonly ILoggerFactory _loggerFactory;
@@ -116,7 +117,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         ChainParameters chainParams,
         ChainManager chainManager,
         Mempool mempool,
-        IStateDatabase stateDb,
+        StateDbRef stateDb,
         TransactionValidator txValidator,
         WebSocketHandler wsHandler,
         ILoggerFactory loggerFactory,
@@ -1117,10 +1118,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             }
         }
 
-        // N-05: Only adopt the forked state if all blocks were applied successfully
+        // N-05: Only adopt the forked state if all blocks were applied successfully.
+        // Swap() updates the shared StateDbRef so the API layer sees the new state.
         if (applied == blocksToApply.Count && applied > 0)
         {
-            _stateDb = forkedState;
+            _stateDb.Swap(forkedState);
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}", applied, _chainManager.LatestBlockNumber);
         }
         else if (applied > 0)

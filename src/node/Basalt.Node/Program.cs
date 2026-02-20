@@ -22,6 +22,7 @@ Log.Logger = new LoggerConfiguration()
 
 RocksDbStore? rocksDbStore = null;
 IStateDatabase? stateDb = null;
+StateDbRef? stateDbRef = null;
 try
 {
     var config = NodeConfiguration.FromEnvironment();
@@ -154,6 +155,11 @@ try
         Log.Information("Genesis block created. Hash: {Hash}", genesisBlock.Hash.ToHexString()[..18] + "...");
     }
 
+    // Wrap the state database in a mutable reference so that all consumers
+    // (API, faucet, consensus) share the same canonical view.  When the
+    // consensus layer swaps state after a sync, the API sees it immediately.
+    stateDbRef = new StateDbRef(stateDb);
+
     // Build the host
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
@@ -173,7 +179,7 @@ try
 
     // Register services
     builder.Services.AddSingleton(chainParams);
-    builder.Services.AddSingleton<IStateDatabase>(stateDb);
+    builder.Services.AddSingleton<IStateDatabase>(stateDbRef);
     builder.Services.AddSingleton(chainManager);
     builder.Services.AddSingleton(mempool);
     builder.Services.AddSingleton(validator);
@@ -183,11 +189,11 @@ try
 
     // Map REST endpoints (with read-only call support via ManagedContractRuntime)
     var contractRuntime = new ManagedContractRuntime();
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime, receiptStore);
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
-    FaucetEndpoint.MapFaucetEndpoint(app, stateDb, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager);
+    FaucetEndpoint.MapFaucetEndpoint(app, stateDbRef, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager);
 
     // Map WebSocket endpoint
     app.UseWebSockets();
@@ -247,7 +253,7 @@ try
             // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
             var storageKey = "scr_vk:" + schemaId.ToHexString();
             var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
-            var raw = stateDb.GetStorage(schemaRegistryAddress, slot);
+            var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
             if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
                 return null;
             var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
@@ -262,7 +268,7 @@ try
             zkVerifier);
 
         var coordinator = new NodeCoordinator(
-            config, chainParams, chainManager, mempool, stateDb, validator, wsHandler,
+            config, chainParams, chainManager, mempool, stateDbRef, validator, wsHandler,
             app.Services.GetRequiredService<ILoggerFactory>(),
             blockStore, receiptStore,
             stakingState, slashingEngine,
@@ -305,7 +311,7 @@ try
         // Single-node block production on a timer (existing behavior)
         var proposer = Address.FromHexString("0x0000000000000000000000000000000000000001");
         var blockProduction = new BlockProductionLoop(
-            chainParams, chainManager, mempool, stateDb, proposer,
+            chainParams, chainManager, mempool, stateDbRef, proposer,
             app.Services.GetRequiredService<ILogger<BlockProductionLoop>>());
 
         // Wire metrics and WebSocket to block production
@@ -341,7 +347,10 @@ catch (Exception ex)
 }
 finally
 {
-    if (stateDb is FlatStateDb flatState)
+    // Flush the current canonical state — after sync swaps this may differ
+    // from the original stateDb variable.
+    var canonical = stateDbRef?.Inner ?? stateDb;
+    if (canonical is FlatStateDb flatState)
         flatState.FlushToPersistence();
     rocksDbStore?.Dispose();
     Log.CloseAndFlush();
