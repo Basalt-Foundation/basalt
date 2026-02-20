@@ -163,7 +163,10 @@ public sealed class EpochManager
     {
         var activeValidators = _stakingState.GetActiveValidators(); // sorted by TotalStake desc
         // Cap at 64 — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
-        var maxSize = Math.Min((int)_chainParams.ValidatorSetSize, 64);
+        var configuredSize = (int)_chainParams.ValidatorSetSize;
+        var maxSize = Math.Min(configuredSize, 64);
+        if (configuredSize > 64)
+            _logger.LogWarning("ValidatorSetSize {Configured} exceeds bitmap limit of 64; effective set size capped at 64", configuredSize);
         var selected = activeValidators.Take(maxSize).ToList();
 
         // Sort by address ascending for deterministic index assignment across all nodes

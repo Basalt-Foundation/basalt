@@ -346,6 +346,31 @@ public class EpochManagerTests
     }
 
     [Fact]
+    public void OnBlockFinalized_RespectsInactivityThresholdPercent_AtBoundary()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // Validator 2 (index 2) signs exactly 50 out of 100 blocks (50% == 50% threshold)
+        for (ulong i = 1; i <= 100; i++)
+        {
+            ulong bitmap = 0b1011; // validators 0, 1, 3 always sign
+            if (i <= 50)
+                bitmap |= 0b0100; // validator 2 signs first 50 blocks
+            mgr.RecordBlockSigners(i, bitmap);
+        }
+
+        mgr.OnBlockFinalized(100);
+
+        // Validator 2 (50% participation) should NOT be slashed at the exact threshold
+        var info2 = ss.GetStakeInfo(MakeAddr(3)); // index 2 = seed 3
+        Assert.NotNull(info2);
+        Assert.Equal(new UInt256(10000), info2!.TotalStake);
+    }
+
+    [Fact]
     public void OnBlockFinalized_ClearsBitmaps_AfterEpoch()
     {
         var ss = CreateStakingState(4, new UInt256(10000));
