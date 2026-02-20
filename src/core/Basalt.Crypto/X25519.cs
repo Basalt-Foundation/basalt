@@ -35,8 +35,9 @@ public static class X25519
     }
 
     /// <summary>
-    /// Derive raw X25519 shared secret from private key and peer's public key.
-    /// The caller must run HKDF on the result to derive actual encryption keys.
+    /// Perform X25519 key agreement and derive a 32-byte shared key via HKDF-SHA256.
+    /// TransportEncryption applies HKDF again with directional info strings to derive
+    /// separate initiator-to-responder and responder-to-initiator encryption keys.
     /// </summary>
     public static byte[] DeriveSharedSecret(ReadOnlySpan<byte> myPrivateKey, ReadOnlySpan<byte> theirPublicKey)
     {

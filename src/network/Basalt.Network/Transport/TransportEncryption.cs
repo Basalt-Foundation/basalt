@@ -59,14 +59,9 @@ public sealed class TransportEncryption : IDisposable
         _sendCipher = new AesGcm(sendKeyBytes, TagSize);
         _recvCipher = new AesGcm(recvKeyBytes, TagSize);
 
-        // Zero key material after creating ciphers
+        // Zero derived key material after creating ciphers (aliases cover both init/resp keys)
         CryptographicOperations.ZeroMemory(sendKeyBytes);
         CryptographicOperations.ZeroMemory(recvKeyBytes);
-        // Zero whichever wasn't used as send/recv (the other was already zeroed above)
-        if (isInitiator)
-            CryptographicOperations.ZeroMemory(respKey);
-        else
-            CryptographicOperations.ZeroMemory(initKey);
     }
 
     /// <summary>

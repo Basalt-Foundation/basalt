@@ -120,6 +120,8 @@ public sealed class HandshakeProtocol
 
                 // NET-C02: Derive shared secret from X25519 key exchange
                 var sharedSecret = DeriveSharedSecret(ack.X25519PublicKey, ack.NodePublicKey, ack.X25519KeySignature);
+                if (sharedSecret == null)
+                    return HandshakeResult.Failed("X25519 key exchange failed");
 
                 var remotePeerId = PeerId.FromPublicKey(ack.NodePublicKey);
                 return HandshakeResult.Success(
@@ -151,9 +153,16 @@ public sealed class HandshakeProtocol
                 // NET-C02: Derive shared secret from peer's Hello X25519 key
                 var sharedSecret = DeriveSharedSecret(
                     peerHello.X25519PublicKey, peerHello.NodePublicKey, peerHello.X25519KeySignature);
+                if (sharedSecret == null)
+                    return HandshakeResult.Failed("X25519 key exchange failed");
+
+                // Deterministic initiator role: smaller PeerId = initiator
+                // Prevents both sides using the same directional keys
+                var remotePeerId = PeerId.FromPublicKey(peerHello.NodePublicKey);
+                var isInit = _localPeerId.AsHash256().CompareTo(remotePeerId.AsHash256()) < 0;
 
                 return HandshakeResult.Success(
-                    PeerId.FromPublicKey(peerHello.NodePublicKey),
+                    remotePeerId,
                     peerHello.NodePublicKey,
                     peerHello.BlsPublicKey,
                     peerHello.ListenAddress,
@@ -161,7 +170,7 @@ public sealed class HandshakeProtocol
                     peerHello.BestBlockNumber,
                     peerHello.BestBlockHash,
                     sharedSecret,
-                    isInitiator: true);
+                    isInitiator: isInit);
             }
 
             return HandshakeResult.Failed($"Unexpected message type: {msg.Type}");
@@ -218,6 +227,8 @@ public sealed class HandshakeProtocol
             // NET-C02: Derive shared secret from initiator's X25519 key
             var sharedSecret = DeriveSharedSecret(
                 hello.X25519PublicKey, hello.NodePublicKey, hello.X25519KeySignature);
+            if (sharedSecret == null)
+                return HandshakeResult.Failed("X25519 key exchange failed");
 
             var peerId = PeerId.FromPublicKey(hello.NodePublicKey);
             return HandshakeResult.Success(

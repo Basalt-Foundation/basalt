@@ -140,9 +140,11 @@ public sealed class PeerConnection : IDisposable
         if (data.Length == 0)
             throw new ArgumentException("Cannot send an empty message.", nameof(data));
 
-        if (data.Length > MaxMessageSize)
+        // NET-C02: Account for encryption overhead so the wire frame stays within MaxMessageSize
+        var maxPlaintext = _encryption != null ? MaxMessageSize - TransportEncryption.Overhead : MaxMessageSize;
+        if (data.Length > maxPlaintext)
             throw new ArgumentException(
-                $"Message size {data.Length} exceeds maximum of {MaxMessageSize} bytes.", nameof(data));
+                $"Message size {data.Length} exceeds maximum of {maxPlaintext} bytes.", nameof(data));
 
         ObjectDisposedException.ThrowIf(IsDisposed, this);
 
