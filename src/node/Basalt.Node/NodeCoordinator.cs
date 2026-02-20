@@ -82,10 +82,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-14: Cap block request count to prevent resource exhaustion
     private const int MaxBlockRequestCount = 100;
 
-    // N-17: Thread-safe validator activity tracking (for inactivity slashing)
-    private readonly ConcurrentDictionary<Address, ulong> _lastActiveBlock = new();
-    private const ulong InactivityThresholdBlocks = 100; // ~40 seconds at 400ms
-
     // N-17: Thread-safe double-sign detection: keyed by (view, proposer) to avoid false positives
     // when different proposers propose for the same view after a view change.
     private readonly ConcurrentDictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
@@ -282,14 +278,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
         validators.Sort((a, b) => a.Index.CompareTo(b.Index));
         _validatorSet = new ValidatorSet(validators);
 
-        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
-        var currentBlock = _chainManager.LatestBlock?.Header.Number ?? 0;
-        foreach (var v in _validatorSet.Validators)
-        {
-            if (!_lastActiveBlock.ContainsKey(v.Address))
-                _lastActiveBlock[v.Address] = currentBlock;
-        }
-
         _logger.LogInformation("Validator set: {Count} validators, quorum: {Quorum}",
             _validatorSet.Count, _validatorSet.QuorumThreshold);
     }
@@ -346,12 +334,20 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // Wire weighted leader selection if staking is available
         if (_stakingState != null)
         {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet!, _stakingState);
+            _leaderSelector = new WeightedLeaderSelector(_validatorSet!);
             _validatorSet!.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
             _logger.LogInformation("Consensus: using stake-weighted leader selection");
 
             // Setup epoch manager for dynamic validator set transitions
-            _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner);
+            _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner,
+                _slashingEngine, _loggerFactory.CreateLogger<EpochManager>());
+
+            // Seed epoch state from chain height and replay persisted commit bitmaps
+            // so that epoch-boundary slashing is deterministic across restarts
+            var chainHeight = _chainManager.LatestBlockNumber;
+            if (chainHeight > 0)
+                _epochManager.SeedFromChainHeight(chainHeight, blockNum => _blockStore?.GetCommitBitmap(blockNum));
+
             _logger.LogInformation("Epoch manager: epoch length={EpochLength}, validator set size={SetSize}",
                 _chainParams.EpochLength, _chainParams.ValidatorSetSize);
         }
@@ -431,7 +427,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
     }
 
-    private void HandleBlockFinalized(Hash256 hash, byte[] blockData)
+    private void HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
     {
         try
         {
@@ -483,12 +479,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // peer and validators that fall behind are unable to catch up.
                 _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
 
-                // Persist to RocksDB if available
-                PersistBlock(block, blockData);
+                // Persist block + commit bitmap atomically to RocksDB
+                PersistBlock(block, blockData, commitBitmap);
                 PersistReceipts(block.Receipts);
 
-                // Check for inactive validators and slash
-                CheckInactiveValidators(block.Number);
+                // Record commit participation for deterministic epoch-boundary slashing
+                _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
 
                 // Check for epoch transition — rebuild validator set if at boundary
                 var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -902,11 +898,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-14: Cap block request count to prevent resource exhaustion
         var count = Math.Min(request.Count, MaxBlockRequestCount);
         var blockDataList = new List<byte[]>();
+        var bitmapList = new List<ulong>();
         for (ulong i = request.StartNumber; i < request.StartNumber + (ulong)count; i++)
         {
             var block = _chainManager.GetBlockByNumber(i);
             if (block != null)
+            {
                 blockDataList.Add(BlockCodec.SerializeBlock(block));
+                bitmapList.Add(_blockStore?.GetCommitBitmap(i) ?? 0UL);
+            }
             else
                 break;
         }
@@ -918,6 +918,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 SenderId = _localPeerId,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
+                CommitBitmaps = bitmapList.ToArray(),
             };
             _gossip!.SendToPeer(sender, payload);
         }
@@ -950,8 +951,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
         }
 
-        foreach (var blockBytes in payload.Blocks)
+        for (int idx = 0; idx < payload.Blocks.Length; idx++)
         {
+            var blockBytes = payload.Blocks[idx];
             try
             {
                 var block = BlockCodec.DeserializeBlock(blockBytes);
@@ -976,8 +978,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (result.IsSuccess)
                 {
                     _mempool.RemoveConfirmed(block.Transactions);
-                    PersistBlock(block, blockBytes);
+                    var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
+                    PersistBlock(block, blockBytes, bitmap);
                     PersistReceipts(block.Receipts);
+
+                    // Use propagated commit bitmap from the serving peer
+                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
 
                     // Apply epoch transitions for blocks received via gossip
                     var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -999,6 +1005,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
         var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);
         var blockDataList = new List<byte[]>();
+        var bitmapList = new List<ulong>();
         for (ulong i = request.FromBlock; i < request.FromBlock + (ulong)maxBlocks; i++)
         {
             // Try to serve from BlockStore (raw bytes) first, fall back to ChainManager
@@ -1015,6 +1022,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 else
                     break;
             }
+            bitmapList.Add(_blockStore?.GetCommitBitmap(i) ?? 0UL);
         }
 
         if (blockDataList.Count > 0)
@@ -1024,6 +1032,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 SenderId = _localPeerId,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
+                CommitBitmaps = bitmapList.ToArray(),
             };
             _gossip!.SendToPeer(sender, response);
             _logger.LogInformation("Served {Count} blocks to syncing peer {PeerId} (from #{From})",
@@ -1038,10 +1047,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-05: Fork state for sync — execute all blocks on a forked state database.
         // Only replace canonical state if all blocks in the batch succeed.
         var forkedState = _stateDb.Fork();
-        var blocksToApply = new List<(Block Block, byte[] Raw)>();
+        var blocksToApply = new List<(Block Block, byte[] Raw, int OrigIdx)>();
 
-        foreach (var blockBytes in response.Blocks)
+        for (int idx = 0; idx < response.Blocks.Length; idx++)
         {
+            var blockBytes = response.Blocks[idx];
             try
             {
                 var block = BlockCodec.DeserializeBlock(blockBytes);
@@ -1065,7 +1075,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     block.Receipts = receipts;
                 }
 
-                blocksToApply.Add((block, blockBytes));
+                blocksToApply.Add((block, blockBytes, idx));
             }
             catch (Exception ex)
             {
@@ -1075,15 +1085,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
 
         // Apply all successfully executed blocks to the chain
-        foreach (var (block, blockBytes) in blocksToApply)
+        foreach (var (block, blockBytes, origIdx) in blocksToApply)
         {
             var result = _chainManager.AddBlock(block);
             if (result.IsSuccess)
             {
                 _mempool.RemoveConfirmed(block.Transactions);
-                PersistBlock(block, blockBytes);
+                var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
+                PersistBlock(block, blockBytes, bitmap);
                 PersistReceipts(block.Receipts);
                 applied++;
+
+                // Use propagated commit bitmap from the serving peer
+                _epochManager?.RecordBlockSigners(block.Number, bitmap);
 
                 // Apply epoch transitions for synced blocks — without this,
                 // nodes that sync across epoch boundaries would have a stale
@@ -1160,11 +1174,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleConsensusVote(PeerId sender, ConsensusVoteMessage vote)
     {
-        // Track validator activity for inactivity slashing
-        var voterInfo = _validatorSet?.GetByPeerId(vote.SenderId);
-        if (voterInfo != null)
-            _lastActiveBlock[voterInfo.Address] = _chainManager.LatestBlockNumber;
-
         if (_config.UsePipelining)
         {
             var response = _pipelinedConsensus!.HandleVote(vote);
@@ -1543,26 +1552,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
         return best;
     }
 
-    private void CheckInactiveValidators(ulong currentBlock)
-    {
-        if (_slashingEngine == null || _validatorSet == null || currentBlock < InactivityThresholdBlocks)
-            return;
-
-        foreach (var validator in _validatorSet.Validators)
-        {
-            if (validator.PeerId == _localPeerId)
-                continue; // Don't slash ourselves
-
-            if (!_lastActiveBlock.TryGetValue(validator.Address, out var lastActive))
-                lastActive = 0;
-
-            if (currentBlock - lastActive > InactivityThresholdBlocks)
-            {
-                _slashingEngine.SlashInactivity(validator.Address, lastActive, currentBlock);
-            }
-        }
-    }
-
     /// <summary>
     /// Apply an epoch transition: swap the validator set, rewire consensus and leader selection.
     /// </summary>
@@ -1571,10 +1560,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         var oldCount = _validatorSet?.Count ?? 0;
         _validatorSet = newSet;
 
-        // Rewire leader selector with new set
+        // Rewire leader selector with new set (reads snapshotted stakes from ValidatorInfo.Stake)
         if (_stakingState != null)
         {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet, _stakingState);
+            _leaderSelector = new WeightedLeaderSelector(_validatorSet);
             _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
         }
 
@@ -1583,11 +1572,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _pipelinedConsensus?.UpdateValidatorSet(newSet);
         else
             _consensus?.UpdateValidatorSet(newSet);
-
-        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
-        _lastActiveBlock.Clear();
-        foreach (var v in newSet.Validators)
-            _lastActiveBlock[v.Address] = blockNumber;
 
         // N-10: Sliding window — retain evidence for last 10 views on epoch transition
         {
@@ -1601,7 +1585,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
     }
 
-    private void PersistBlock(Block block, byte[] serializedBlockData)
+    private void PersistBlock(Block block, byte[] serializedBlockData, ulong? commitBitmap = null)
     {
         if (_blockStore == null)
             return;
@@ -1626,7 +1610,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 ExtraData = block.Header.ExtraData,
                 TransactionHashes = block.Transactions.Select(t => t.Hash).ToArray(),
             };
-            _blockStore.PutFullBlock(blockData, serializedBlockData);
+            _blockStore.PutFullBlock(blockData, serializedBlockData, commitBitmap);
             _blockStore.SetLatestBlockNumber(block.Number);
         }
         catch (Exception ex)

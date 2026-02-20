@@ -39,10 +39,10 @@ public sealed class PipelinedConsensus
 
     // Finalization ordering
     private ulong _lastFinalizedBlock;
-    private readonly ConcurrentDictionary<ulong, (Hash256 Hash, byte[] Data)> _pendingFinalizations = new();
+    private readonly ConcurrentDictionary<ulong, (Hash256 Hash, byte[] Data, ulong Bitmap)> _pendingFinalizations = new();
 
     // Callbacks
-    public event Action<Hash256, byte[]>? OnBlockFinalized;
+    public event Action<Hash256, byte[], ulong>? OnBlockFinalized;
     public event Action<ulong>? OnViewChange;
 
     /// <summary>
@@ -469,34 +469,34 @@ public sealed class PipelinedConsensus
                 round.State = ConsensusState.Finalized;
                 _logger.LogInformation("Block {Block} reached COMMIT quorum via pipeline", round.BlockNumber);
 
-                // Enforce sequential finalization ordering
-                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? []);
+                var commitBitmap = ComputeCommitBitmap(round.CommitVotes);
+                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? [], commitBitmap);
             }
         }
 
         return null;
     }
 
-    private void TryFinalizeSequential(ulong blockNumber, Hash256 hash, byte[] data)
+    private void TryFinalizeSequential(ulong blockNumber, Hash256 hash, byte[] data, ulong commitBitmap)
     {
         // If this is the next expected block, finalize immediately
         if (blockNumber == _lastFinalizedBlock + 1)
         {
             _lastFinalizedBlock = blockNumber;
-            OnBlockFinalized?.Invoke(hash, data);
+            OnBlockFinalized?.Invoke(hash, data, commitBitmap);
 
             // Drain any buffered blocks that are now sequential
             while (_pendingFinalizations.TryRemove(_lastFinalizedBlock + 1, out var pending))
             {
                 _lastFinalizedBlock = _lastFinalizedBlock + 1;
-                OnBlockFinalized?.Invoke(pending.Hash, pending.Data);
+                OnBlockFinalized?.Invoke(pending.Hash, pending.Data, pending.Bitmap);
                 _logger.LogInformation("Drained buffered finalization for block {Block}", _lastFinalizedBlock);
             }
         }
         else if (blockNumber > _lastFinalizedBlock + 1)
         {
             // Buffer for later — a previous block hasn't finalized yet
-            _pendingFinalizations.TryAdd(blockNumber, (hash, data));
+            _pendingFinalizations.TryAdd(blockNumber, (hash, data, commitBitmap));
             _logger.LogDebug("Buffered finalization for block {Block} (waiting for {Expected})",
                 blockNumber, _lastFinalizedBlock + 1);
         }
@@ -538,9 +538,26 @@ public sealed class PipelinedConsensus
             {
                 round.State = ConsensusState.Finalized;
                 _logger.LogInformation("Block {Block} reached COMMIT quorum via pipeline (cascade)", round.BlockNumber);
-                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? []);
+                var commitBitmap = ComputeCommitBitmap(round.CommitVotes);
+                TryFinalizeSequential(round.BlockNumber, round.BlockHash, round.BlockData ?? [], commitBitmap);
             }
         }
+    }
+
+    /// <summary>
+    /// Compute a voter bitmap from the set of commit voters.
+    /// Bit i is set if the validator at index i committed.
+    /// </summary>
+    private ulong ComputeCommitBitmap(HashSet<PeerId> commitVoters)
+    {
+        ulong bitmap = 0;
+        foreach (var voter in commitVoters)
+        {
+            var idx = _validatorSet.GetValidatorIndex(voter);
+            if (idx >= 0 && idx < 64)
+                bitmap |= 1UL << idx;
+        }
+        return bitmap;
     }
 
     private void RecordSelfVote(ConsensusRound round, VotePhase phase)

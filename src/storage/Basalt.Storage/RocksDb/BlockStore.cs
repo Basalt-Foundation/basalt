@@ -58,7 +58,7 @@ public sealed class BlockStore
     /// Store a block with dual indexing plus its raw serialized form.
     /// Used by consensus finalization to persist blocks that can be served to syncing peers.
     /// </summary>
-    public void PutFullBlock(BlockData block, byte[] serializedBlock)
+    public void PutFullBlock(BlockData block, byte[] serializedBlock, ulong? commitBitmap = null)
     {
         var encoded = block.Encode();
         var hashKey = HashToKey(block.Hash);
@@ -69,6 +69,12 @@ public sealed class BlockStore
         batch.Put(RocksDbStore.CF.Blocks, hashKey, encoded);
         batch.Put(RocksDbStore.CF.BlockIndex, numberKey, hashKey);
         batch.Put(RocksDbStore.CF.Blocks, rawKey, serializedBlock);
+        if (commitBitmap.HasValue)
+        {
+            var bmpValue = new byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(bmpValue, commitBitmap.Value);
+            batch.Put(RocksDbStore.CF.Blocks, BitmapKey(block.Number), bmpValue);
+        }
         batch.Commit();
     }
 
@@ -138,11 +144,41 @@ public sealed class BlockStore
         return key;
     }
 
+    /// <summary>
+    /// Store the commit voter bitmap for a block.
+    /// </summary>
+    public void PutCommitBitmap(ulong blockNumber, ulong commitBitmap)
+    {
+        var key = BitmapKey(blockNumber);
+        var value = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(value, commitBitmap);
+        _store.Put(RocksDbStore.CF.Blocks, key, value);
+    }
+
+    /// <summary>
+    /// Get the commit voter bitmap for a block, or null if not stored.
+    /// </summary>
+    public ulong? GetCommitBitmap(ulong blockNumber)
+    {
+        var data = _store.Get(RocksDbStore.CF.Blocks, BitmapKey(blockNumber));
+        if (data == null || data.Length < 8)
+            return null;
+        return BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
     private static byte[] RawBlockKey(Hash256 hash)
     {
         var key = new byte[4 + Hash256.Size];
         "raw:"u8.CopyTo(key);
         hash.WriteTo(key.AsSpan(4));
+        return key;
+    }
+
+    private static byte[] BitmapKey(ulong blockNumber)
+    {
+        var key = new byte[4 + 8];
+        "bmp:"u8.CopyTo(key);
+        BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(4), blockNumber);
         return key;
     }
 }

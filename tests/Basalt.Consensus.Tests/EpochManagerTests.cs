@@ -2,6 +2,7 @@ using Basalt.Consensus.Staking;
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Network;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Basalt.Consensus.Tests;
@@ -48,6 +49,7 @@ public class EpochManagerTests
         EpochLength = 100,
         ValidatorSetSize = 4,
         MinValidatorStake = new UInt256(1000),
+        InactivityThresholdPercent = 50,
     };
 
     [Fact]
@@ -237,5 +239,198 @@ public class EpochManagerTests
         // Non-boundary doesn't transition
         Assert.Null(mgr.OnBlockFinalized(250));
         Assert.Equal(2UL, mgr.CurrentEpoch);
+    }
+
+    // ==========================================
+    // New tests for deterministic inactivity slashing
+    // ==========================================
+
+    [Fact]
+    public void RecordBlockSigners_StoresEntries()
+    {
+        var ss = CreateStakingState(4);
+        var set = CreatePlaceholderSet(4);
+        var mgr = new EpochManager(DevnetParams, ss, set);
+
+        // Record bitmaps — should not throw
+        for (ulong i = 1; i <= 100; i++)
+            mgr.RecordBlockSigners(i, 0b1111); // All 4 validators signed
+
+        // At epoch boundary, these will be used for inactivity computation
+        var newSet = mgr.OnBlockFinalized(100);
+        Assert.NotNull(newSet);
+        // All validators signed all blocks → no slashing → all 4 remain active
+        Assert.Equal(4, newSet!.Count);
+    }
+
+    [Fact]
+    public void OnBlockFinalized_SlashesInactiveValidators_AtBoundary()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // Validator 3 (index 3, bit 3) never signs any block.
+        // Validators 0, 1, 2 sign all blocks.
+        ulong bitmapWithout3 = 0b0111; // bits 0,1,2 set; bit 3 not set
+        for (ulong i = 1; i <= 100; i++)
+            mgr.RecordBlockSigners(i, bitmapWithout3);
+
+        var newSet = mgr.OnBlockFinalized(100);
+        Assert.NotNull(newSet);
+
+        // Validator 3 should have been slashed (5% of 10000 = 500, remaining 9500 > MinValidatorStake)
+        var info = ss.GetStakeInfo(MakeAddr(4)); // validator index 3 = address seed 4
+        Assert.NotNull(info);
+        Assert.True(info!.TotalStake < new UInt256(10000),
+            "Inactive validator should have reduced stake after slashing");
+    }
+
+    [Fact]
+    public void OnBlockFinalized_DoesNotSlash_ActiveValidators()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // All 4 validators sign all blocks
+        ulong allSigned = 0b1111;
+        for (ulong i = 1; i <= 100; i++)
+            mgr.RecordBlockSigners(i, allSigned);
+
+        mgr.OnBlockFinalized(100);
+
+        // No validator should have been slashed
+        for (byte v = 1; v <= 4; v++)
+        {
+            var info = ss.GetStakeInfo(MakeAddr(v));
+            Assert.NotNull(info);
+            Assert.Equal(new UInt256(10000), info!.TotalStake);
+        }
+    }
+
+    [Fact]
+    public void OnBlockFinalized_RespectsInactivityThresholdPercent()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // Validator 2 (index 2) signs only 40 out of 100 blocks (40% < 50% threshold)
+        // Validator 3 (index 3) signs 60 out of 100 blocks (60% >= 50% threshold)
+        for (ulong i = 1; i <= 100; i++)
+        {
+            ulong bitmap = 0b0011; // validators 0, 1 always sign
+            if (i <= 40)
+                bitmap |= 0b0100; // validator 2 signs first 40 blocks
+            if (i <= 60)
+                bitmap |= 0b1000; // validator 3 signs first 60 blocks
+            mgr.RecordBlockSigners(i, bitmap);
+        }
+
+        mgr.OnBlockFinalized(100);
+
+        // Validator 2 (40% participation) should be slashed
+        var info2 = ss.GetStakeInfo(MakeAddr(3)); // index 2 = seed 3
+        Assert.NotNull(info2);
+        Assert.True(info2!.TotalStake < new UInt256(10000),
+            "Validator with 40% participation should be slashed");
+
+        // Validator 3 (60% participation) should NOT be slashed
+        var info3 = ss.GetStakeInfo(MakeAddr(4)); // index 3 = seed 4
+        Assert.NotNull(info3);
+        Assert.Equal(new UInt256(10000), info3!.TotalStake);
+    }
+
+    [Fact]
+    public void OnBlockFinalized_RespectsInactivityThresholdPercent_AtBoundary()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // Validator 2 (index 2) signs exactly 50 out of 100 blocks (50% == 50% threshold)
+        for (ulong i = 1; i <= 100; i++)
+        {
+            ulong bitmap = 0b1011; // validators 0, 1, 3 always sign
+            if (i <= 50)
+                bitmap |= 0b0100; // validator 2 signs first 50 blocks
+            mgr.RecordBlockSigners(i, bitmap);
+        }
+
+        mgr.OnBlockFinalized(100);
+
+        // Validator 2 (50% participation) should NOT be slashed at the exact threshold
+        var info2 = ss.GetStakeInfo(MakeAddr(3)); // index 2 = seed 3
+        Assert.NotNull(info2);
+        Assert.Equal(new UInt256(10000), info2!.TotalStake);
+    }
+
+    [Fact]
+    public void OnBlockFinalized_ClearsBitmaps_AfterEpoch()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // First epoch: validator 3 is inactive
+        for (ulong i = 1; i <= 100; i++)
+            mgr.RecordBlockSigners(i, 0b0111);
+
+        mgr.OnBlockFinalized(100);
+        var stakeAfterEpoch1 = ss.GetStakeInfo(MakeAddr(4))!.TotalStake;
+
+        // Second epoch: all validators sign all blocks
+        for (ulong i = 101; i <= 200; i++)
+            mgr.RecordBlockSigners(i, 0b1111);
+
+        mgr.OnBlockFinalized(200);
+        var stakeAfterEpoch2 = ss.GetStakeInfo(MakeAddr(4))!.TotalStake;
+
+        // Stake should not decrease further in epoch 2 (bitmaps were cleared, all signed)
+        Assert.Equal(stakeAfterEpoch1, stakeAfterEpoch2);
+    }
+
+    [Fact]
+    public void OnBlockFinalized_NoSlashing_WhenNoBitmaps()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        var engine = new SlashingEngine(ss, NullLogger<SlashingEngine>.Instance);
+        var mgr = new EpochManager(DevnetParams, ss, set, slashingEngine: engine);
+
+        // No bitmaps recorded (first epoch, no blocks processed yet)
+        var newSet = mgr.OnBlockFinalized(100);
+
+        Assert.NotNull(newSet);
+        // No validator should have been slashed
+        for (byte v = 1; v <= 4; v++)
+        {
+            var info = ss.GetStakeInfo(MakeAddr(v));
+            Assert.Equal(new UInt256(10000), info!.TotalStake);
+        }
+    }
+
+    [Fact]
+    public void OnBlockFinalized_SlashingEngine_Null_DoesNotThrow()
+    {
+        var ss = CreateStakingState(4, new UInt256(10000));
+        var set = CreatePlaceholderSet(4);
+        // No slashing engine provided
+        var mgr = new EpochManager(DevnetParams, ss, set);
+
+        // Record bitmaps where a validator is absent
+        for (ulong i = 1; i <= 100; i++)
+            mgr.RecordBlockSigners(i, 0b0111);
+
+        // Should not throw even though validator 3 is inactive
+        var newSet = mgr.OnBlockFinalized(100);
+        Assert.NotNull(newSet);
+        Assert.Equal(4, newSet!.Count); // No slashing occurred, all still active
     }
 }

@@ -27,6 +27,11 @@ public sealed class SyncResponseMessage : NetworkMessage
 {
     public override MessageType Type => MessageType.SyncResponse;
     public byte[][] Blocks { get; init; } = [];
+    /// <summary>
+    /// Commit voter bitmaps parallel to Blocks. Each bitmap records which validators
+    /// signed the commit phase for the corresponding block (bit i = validator at index i).
+    /// </summary>
+    public ulong[] CommitBitmaps { get; init; } = [];
 }
 
 /// <summary>
@@ -127,6 +132,7 @@ public static class MessageCodec
 
             case BlockPayloadMessage blockPayload:
                 WriteByteArrays(ref writer, blockPayload.Blocks);
+                WriteUInt64Array(ref writer, blockPayload.CommitBitmaps);
                 break;
 
             case ConsensusProposalMessage proposal:
@@ -151,6 +157,7 @@ public static class MessageCodec
 
             case SyncResponseMessage syncResp:
                 WriteByteArrays(ref writer, syncResp.Blocks);
+                WriteUInt64Array(ref writer, syncResp.CommitBitmaps);
                 break;
 
             case IHaveMessage iHave:
@@ -234,21 +241,13 @@ public static class MessageCodec
             },
             MessageType.BlockAnnounce => ReadBlockAnnounce(ref reader, senderId, timestamp),
             MessageType.BlockRequest => ReadBlockRequest(ref reader, senderId, timestamp),
-            MessageType.BlockPayload => new BlockPayloadMessage
-            {
-                SenderId = senderId, Timestamp = timestamp,
-                Blocks = ReadByteArrays(ref reader),
-            },
+            MessageType.BlockPayload => ReadBlockPayload(ref reader, senderId, timestamp),
             MessageType.ConsensusProposal => ReadConsensusProposal(ref reader, senderId, timestamp),
             MessageType.ConsensusVote => ReadConsensusVote(ref reader, senderId, timestamp),
             MessageType.ConsensusViewChange => ReadViewChange(ref reader, senderId, timestamp),
             MessageType.ConsensusAggregateVote => ReadAggregateVote(ref reader, senderId, timestamp),
             MessageType.SyncRequest => ReadSyncRequest(ref reader, senderId, timestamp),
-            MessageType.SyncResponse => new SyncResponseMessage
-            {
-                SenderId = senderId, Timestamp = timestamp,
-                Blocks = ReadByteArrays(ref reader),
-            },
+            MessageType.SyncResponse => ReadSyncResponse(ref reader, senderId, timestamp),
             MessageType.IHave => new IHaveMessage
             {
                 SenderId = senderId, Timestamp = timestamp,
@@ -394,6 +393,13 @@ public static class MessageCodec
         {
             writer.WriteBytes(item);
         }
+    }
+
+    private static void WriteUInt64Array(ref BasaltWriter writer, ulong[] values)
+    {
+        writer.WriteVarInt((ulong)values.Length);
+        foreach (var v in values)
+            writer.WriteUInt64(v);
     }
 
     // --- Read helpers ---
@@ -616,6 +622,48 @@ public static class MessageCodec
         return arrays;
     }
 
+    private static ulong[] ReadUInt64Array(ref BasaltReader reader)
+    {
+        var rawCount = reader.ReadVarInt();
+        if (rawCount > MaxArrayCount)
+            throw new InvalidOperationException($"UInt64 array count {rawCount} exceeds limit {MaxArrayCount}");
+        var count = (int)rawCount;
+        var values = new ulong[count];
+        for (int i = 0; i < count; i++)
+            values[i] = reader.ReadUInt64();
+        return values;
+    }
+
+    private static BlockPayloadMessage ReadBlockPayload(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        var blocks = ReadByteArrays(ref reader);
+        var bitmaps = reader.Remaining > 0 ? ReadUInt64Array(ref reader) : [];
+        // Discard mismatched bitmap arrays to prevent silent data corruption
+        if (bitmaps.Length != 0 && bitmaps.Length != blocks.Length)
+            bitmaps = [];
+        return new BlockPayloadMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            Blocks = blocks,
+            CommitBitmaps = bitmaps,
+        };
+    }
+
+    private static SyncResponseMessage ReadSyncResponse(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        var blocks = ReadByteArrays(ref reader);
+        var bitmaps = reader.Remaining > 0 ? ReadUInt64Array(ref reader) : [];
+        // Discard mismatched bitmap arrays to prevent silent data corruption
+        if (bitmaps.Length != 0 && bitmaps.Length != blocks.Length)
+            bitmaps = [];
+        return new SyncResponseMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            Blocks = blocks,
+            CommitBitmaps = bitmaps,
+        };
+    }
+
     // --- Size estimation ---
 
     /// <summary>
@@ -639,13 +687,13 @@ public static class MessageCodec
             TxPayloadMessage m => EstimateByteArraysSize(m.Transactions),
             BlockAnnounceMessage => 8 + 32 + 32,
             BlockRequestMessage => 8 + 4,
-            BlockPayloadMessage m => EstimateByteArraysSize(m.Blocks),
+            BlockPayloadMessage m => EstimateByteArraysSize(m.Blocks) + 10 + (m.CommitBitmaps.Length * 8),
             ConsensusProposalMessage m => 8 + 8 + 32 + 10 + m.BlockData.Length + BlsSignature.Size,
             ConsensusVoteMessage => 8 + 8 + 32 + 1 + BlsSignature.Size + BlsPublicKey.Size,
             ViewChangeMessage => 8 + 8 + BlsSignature.Size + BlsPublicKey.Size,
             AggregateVoteMessage => 8 + 8 + 32 + 1 + BlsSignature.Size + 8,
             SyncRequestMessage => 8 + 4,
-            SyncResponseMessage m => EstimateByteArraysSize(m.Blocks),
+            SyncResponseMessage m => EstimateByteArraysSize(m.Blocks) + 10 + (m.CommitBitmaps.Length * 8),
             IHaveMessage m => 10 + (m.MessageIds.Length * Hash256.Size),
             IWantMessage m => 10 + (m.MessageIds.Length * Hash256.Size),
             GraftMessage => 0,

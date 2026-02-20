@@ -47,7 +47,7 @@ public sealed class BasaltBft
     public event Action<byte[]>? OnBlockProposal;
     public event Action<ConsensusVoteMessage>? OnVote;
 #pragma warning restore CS0067
-    public event Action<Hash256, byte[]>? OnBlockFinalized;
+    public event Action<Hash256, byte[], ulong>? OnBlockFinalized;
     public event Action<AggregateVoteMessage>? OnAggregateVote;
     public event Action<ulong>? OnViewChange;
 
@@ -521,7 +521,7 @@ public sealed class BasaltBft
                 if (aggregate != null)
                     OnAggregateVote?.Invoke(aggregate);
 
-                OnBlockFinalized?.Invoke(blockHash, _currentProposalData ?? []);
+                OnBlockFinalized?.Invoke(blockHash, _currentProposalData ?? [], aggregate?.VoterBitmap ?? 0UL);
                 return null;
             }
         }
@@ -689,7 +689,7 @@ public sealed class BasaltBft
         _state = ConsensusState.Finalized;
         _logger.LogInformation("COMMIT QC received — block {Hash} finalized at height {Height}",
             aggregate.BlockHash, _currentBlockNumber);
-        OnBlockFinalized?.Invoke(aggregate.BlockHash, _currentProposalData ?? []);
+        OnBlockFinalized?.Invoke(aggregate.BlockHash, _currentProposalData ?? [], aggregate.VoterBitmap);
         return null;
     }
 
