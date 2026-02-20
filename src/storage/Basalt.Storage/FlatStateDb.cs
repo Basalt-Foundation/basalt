@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Storage.Trie;
+using Microsoft.Extensions.Logging;
 
 namespace Basalt.Storage;
 
@@ -8,6 +9,12 @@ namespace Basalt.Storage;
 /// Reads hit the in-memory dictionaries first; writes go to both
 /// the cache and the underlying trie so ComputeStateRoot() stays correct.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread safety:</b> This class is <b>not</b> thread-safe.
+/// It is designed for single-threaded execution within a block processing pipeline.
+/// API handlers or concurrent readers should call <see cref="Fork"/> to obtain an
+/// isolated snapshot before reading state.</para>
+/// </remarks>
 public sealed class FlatStateDb : IStateDatabase
 {
     private readonly TrieStateDb _trie;
@@ -16,11 +23,21 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly HashSet<Address> _deletedAccounts;
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly IFlatStatePersistence? _persistence;
+    private readonly ILogger? _logger;
+
+    /// <summary>
+    /// Warning threshold for cache size. When either cache exceeds this number
+    /// of entries a warning is logged to alert operators about potential memory pressure.
+    /// </summary>
+    private const int CacheSizeWarningThreshold = 1_000_000;
 
     /// <summary>
     /// Wrap an existing TrieStateDb with an empty flat cache.
     /// </summary>
-    public FlatStateDb(TrieStateDb trie, IFlatStatePersistence? persistence = null)
+    /// <param name="trie">The underlying Merkle Patricia Trie state database.</param>
+    /// <param name="persistence">Optional persistence layer for flush/load (e.g., RocksDB).</param>
+    /// <param name="logger">Optional logger for cache size warnings and diagnostics.</param>
+    public FlatStateDb(TrieStateDb trie, IFlatStatePersistence? persistence = null, ILogger? logger = null)
     {
         _trie = trie;
         _accountCache = new Dictionary<Address, AccountState>();
@@ -28,10 +45,12 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts = new HashSet<Address>();
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _persistence = persistence;
+        _logger = logger;
     }
 
     /// <summary>
     /// Internal constructor for Fork() -- copies cache dictionaries.
+    /// Forked instances never persist (no IFlatStatePersistence).
     /// </summary>
     private FlatStateDb(
         TrieStateDb trie,
@@ -54,6 +73,10 @@ public sealed class FlatStateDb : IStateDatabase
     /// </summary>
     public TrieStateDb InnerTrie => _trie;
 
+    /// <summary>
+    /// Get the account state for the given address, or <c>null</c> if the account does not exist.
+    /// Results from the trie are cached on first read.
+    /// </summary>
     public AccountState? GetAccount(Address address)
     {
         if (_deletedAccounts.Contains(address))
@@ -70,13 +93,21 @@ public sealed class FlatStateDb : IStateDatabase
         return fromTrie;
     }
 
+    /// <summary>
+    /// Set (or overwrite) the account state at the given address.
+    /// Writes go to both the flat cache and the underlying trie.
+    /// </summary>
     public void SetAccount(Address address, AccountState state)
     {
         _accountCache[address] = state;
         _deletedAccounts.Remove(address);
         _trie.SetAccount(address, state);
+        CheckCacheSize();
     }
 
+    /// <summary>
+    /// Returns <c>true</c> if an account exists at the given address (checked in cache first, then trie).
+    /// </summary>
     public bool AccountExists(Address address)
     {
         if (_deletedAccounts.Contains(address))
@@ -86,6 +117,9 @@ public sealed class FlatStateDb : IStateDatabase
         return _trie.AccountExists(address);
     }
 
+    /// <summary>
+    /// Delete the account at the given address and all its storage entries from the cache.
+    /// </summary>
     public void DeleteAccount(Address address)
     {
         _accountCache.Remove(address);
@@ -107,6 +141,10 @@ public sealed class FlatStateDb : IStateDatabase
         _trie.DeleteAccount(address);
     }
 
+    /// <summary>
+    /// Get a storage value for a contract slot, or <c>null</c> if not set.
+    /// Results from the trie are cached on first read.
+    /// </summary>
     public byte[]? GetStorage(Address contract, Hash256 key)
     {
         var cacheKey = (contract, key);
@@ -125,14 +163,22 @@ public sealed class FlatStateDb : IStateDatabase
         return fromTrie;
     }
 
+    /// <summary>
+    /// Set a storage value for a contract slot.
+    /// Writes go to both the flat cache and the underlying trie.
+    /// </summary>
     public void SetStorage(Address contract, Hash256 key, byte[] value)
     {
         var cacheKey = (contract, key);
         _storageCache[cacheKey] = value;
         _deletedStorage.Remove(cacheKey);
         _trie.SetStorage(contract, key, value);
+        CheckCacheSize();
     }
 
+    /// <summary>
+    /// Delete a storage slot for a contract.
+    /// </summary>
     public void DeleteStorage(Address contract, Hash256 key)
     {
         var cacheKey = (contract, key);
@@ -146,6 +192,16 @@ public sealed class FlatStateDb : IStateDatabase
         return _trie.ComputeStateRoot();
     }
 
+    /// <summary>
+    /// Returns all accounts currently in the flat cache, excluding deleted accounts.
+    /// </summary>
+    /// <remarks>
+    /// <b>Important:</b> This method only returns accounts that have been loaded into
+    /// the in-memory cache (via <see cref="SetAccount"/> or a prior <see cref="GetAccount"/>
+    /// that hit the trie). It does <b>not</b> enumerate the full set of accounts in the
+    /// underlying <see cref="TrieStateDb"/>. For a complete account enumeration, iterate
+    /// the trie directly.
+    /// </remarks>
     public IEnumerable<(Address Address, AccountState State)> GetAllAccounts()
     {
         foreach (var (addr, state) in _accountCache)
@@ -155,16 +211,31 @@ public sealed class FlatStateDb : IStateDatabase
         }
     }
 
+    /// <summary>
+    /// Create a snapshot fork of this state database.
+    /// The forked instance has independent cache dictionaries and a forked trie overlay,
+    /// so writes to the fork do not affect the parent.
+    /// </summary>
+    /// <remarks>
+    /// <para>Storage byte[] values are deep-copied to prevent cross-fork mutation.</para>
+    /// <para>The forked instance does not have a persistence layer (forks never persist).</para>
+    /// <para>Note: in-progress storage tries in the underlying TrieStateDb are not carried
+    /// over to the fork — this is an accepted design trade-off (S-10).</para>
+    /// </remarks>
     public IStateDatabase Fork()
     {
         // Fork the inner trie (creates OverlayTrieNodeStore)
         var forkedTrie = (TrieStateDb)_trie.Fork();
 
-        // Shallow-copy the cache dictionaries
+        // Deep-copy the storage cache to prevent cross-fork byte[] mutation
+        var storageClone = new Dictionary<(Address, Hash256), byte[]>(_storageCache.Count);
+        foreach (var (key, value) in _storageCache)
+            storageClone[key] = (byte[])value.Clone();
+
         return new FlatStateDb(
             forkedTrie,
             new Dictionary<Address, AccountState>(_accountCache),
-            new Dictionary<(Address, Hash256), byte[]>(_storageCache),
+            storageClone,
             new HashSet<Address>(_deletedAccounts),
             new HashSet<(Address, Hash256)>(_deletedStorage));
     }
@@ -186,12 +257,19 @@ public sealed class FlatStateDb : IStateDatabase
     }
 
     /// <summary>
-    /// Flush the current flat cache to persistent storage.
+    /// Flush the current flat cache to persistent storage, including deletions.
     /// Call on shutdown or periodically after block finalization.
     /// </summary>
     public void FlushToPersistence()
     {
-        _persistence?.Flush(_accountCache, _storageCache);
+        if (_persistence == null) return;
+
+        _persistence.Flush(_accountCache, _storageCache, _deletedAccounts, _deletedStorage);
+
+        // Clear the deletion sets after successful flush — persisted deletions
+        // have been applied, so they no longer need to be tracked.
+        _deletedAccounts.Clear();
+        _deletedStorage.Clear();
     }
 
     /// <summary>
@@ -207,5 +285,33 @@ public sealed class FlatStateDb : IStateDatabase
             _accountCache.TryAdd(addr, state);
         foreach (var (key, value) in storage)
             _storageCache.TryAdd(key, value);
+    }
+
+    /// <summary>
+    /// Log a warning if either cache exceeds the size threshold.
+    /// This is a monitoring aid — no eviction is performed.
+    /// </summary>
+    private void CheckCacheSize()
+    {
+        if (_logger == null) return;
+
+        int accountCount = _accountCache.Count;
+        int storageCount = _storageCache.Count;
+
+        if (accountCount > CacheSizeWarningThreshold)
+        {
+            _logger.LogWarning(
+                "FlatStateDb account cache size ({Count}) exceeds warning threshold ({Threshold}). " +
+                "Consider implementing cache eviction or increasing available memory.",
+                accountCount, CacheSizeWarningThreshold);
+        }
+
+        if (storageCount > CacheSizeWarningThreshold)
+        {
+            _logger.LogWarning(
+                "FlatStateDb storage cache size ({Count}) exceeds warning threshold ({Threshold}). " +
+                "Consider implementing cache eviction or increasing available memory.",
+                storageCount, CacheSizeWarningThreshold);
+        }
     }
 }

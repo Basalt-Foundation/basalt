@@ -139,14 +139,15 @@ public sealed class BasaltBft
         _currentProposalData = blockData;
         _state = ConsensusState.Preparing;
 
-        // Sign the proposal
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        blockHash.WriteTo(hashBytes);
-        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, hashBytes));
+        // Sign the proposal (domain-separated: phase || view || blockNumber || blockHash)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, _currentView, _currentBlockNumber, blockHash);
+        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, sigPayload));
 
         var proposal = new ConsensusProposalMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ViewNumber = _currentView,
             BlockNumber = _currentBlockNumber,
             BlockHash = blockHash,
@@ -199,10 +200,10 @@ public sealed class BasaltBft
                     return null;
                 }
 
-                // Verify signature before fast-forwarding
-                Span<byte> ffHash = stackalloc byte[Hash256.Size];
-                proposal.BlockHash.WriteTo(ffHash);
-                if (!_blsSigner.Verify(futureLeader.BlsPublicKey.ToArray(), ffHash, proposal.ProposerSignature.ToArray()))
+                // Verify signature before fast-forwarding (domain-separated)
+                Span<byte> ffPayload = stackalloc byte[ConsensusPayloadSize];
+                WriteConsensusSigningPayload(ffPayload, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
+                if (!_blsSigner.Verify(futureLeader.BlsPublicKey.ToArray(), ffPayload, proposal.ProposerSignature.ToArray()))
                 {
                     _logger.LogWarning("Invalid proposal signature for future view {View}", proposal.ViewNumber);
                     return null;
@@ -259,11 +260,11 @@ public sealed class BasaltBft
             return null;
         }
 
-        // Verify leader's signature (may already be verified for fast-forwarded proposals,
-        // but the cost is negligible and keeps the code straightforward)
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        proposal.BlockHash.WriteTo(hashBytes);
-        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), hashBytes, proposal.ProposerSignature.ToArray()))
+        // Verify leader's signature (domain-separated; may already be verified for fast-forwarded
+        // proposals, but the cost is negligible and keeps the code straightforward)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, _currentView, _currentBlockNumber, proposal.BlockHash);
+        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
         {
             _logger.LogWarning("Invalid proposal signature from {Sender}", proposal.SenderId);
             return null;
@@ -292,11 +293,11 @@ public sealed class BasaltBft
         if (!IsLeaderForView(vote.ViewNumber))
             return null;
 
-        // Accept votes within ±2 of our current view to tolerate view divergence.
+        // Accept votes within ±1 of our current view to tolerate minor divergence.
         var diff = vote.ViewNumber > _currentView
             ? vote.ViewNumber - _currentView
             : _currentView - vote.ViewNumber;
-        if (diff > 2)
+        if (diff > 1)
             return null;
 
         if (!_validatorSet.IsValidator(vote.SenderId))
@@ -305,10 +306,17 @@ public sealed class BasaltBft
             return null;
         }
 
-        // Verify vote signature
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        vote.BlockHash.WriteTo(hashBytes);
-        if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), hashBytes, vote.VoterSignature.ToArray()))
+        // F-CON-02: Verify vote is for the correct block hash
+        if (vote.BlockHash != _currentProposalHash)
+        {
+            _logger.LogWarning("Vote from {Sender} has mismatched block hash", vote.SenderId);
+            return null;
+        }
+
+        // Verify vote signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, vote.Phase, vote.ViewNumber, vote.BlockNumber, vote.BlockHash);
+        if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), sigPayload, vote.VoterSignature.ToArray()))
         {
             _logger.LogWarning("Invalid vote signature from {Sender}", vote.SenderId);
             return null;
@@ -414,14 +422,15 @@ public sealed class BasaltBft
         // parity split where two groups of validators alternate even/odd views.
         if (newAutoJoin)
         {
-            Span<byte> viewBytes = stackalloc byte[8];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, viewChange.ProposedView);
-            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+            Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
+            WriteViewChangeSigningPayload(viewPayload, viewChange.ProposedView);
+            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
             var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
             return new ViewChangeMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 CurrentView = _currentView,
                 ProposedView = viewChange.ProposedView,
                 VoterSignature = signature,
@@ -522,9 +531,9 @@ public sealed class BasaltBft
 
     private ConsensusVoteMessage CreateVote(VotePhase phase, Hash256 blockHash)
     {
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        blockHash.WriteTo(hashBytes);
-        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, phase, _currentView, _currentBlockNumber, blockHash);
+        var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
@@ -539,6 +548,7 @@ public sealed class BasaltBft
         return new ConsensusVoteMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ViewNumber = _currentView,
             BlockNumber = _currentBlockNumber,
             BlockHash = blockHash,
@@ -581,6 +591,7 @@ public sealed class BasaltBft
         return new AggregateVoteMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ViewNumber = view,
             BlockNumber = _currentBlockNumber,
             BlockHash = blockHash,
@@ -605,11 +616,11 @@ public sealed class BasaltBft
             return null;
         }
 
-        // Accept within ±2 view window
+        // Accept within ±1 view window
         var diff = aggregate.ViewNumber > _currentView
             ? aggregate.ViewNumber - _currentView
             : _currentView - aggregate.ViewNumber;
-        if (diff > 2)
+        if (diff > 1)
             return null;
 
         // Verify quorum: bitmap must have >= QuorumThreshold bits set
@@ -625,10 +636,10 @@ public sealed class BasaltBft
         var voters = _validatorSet.GetValidatorsFromBitmap(aggregate.VoterBitmap).ToArray();
         var publicKeys = voters.Select(v => v.BlsPublicKey.ToArray()).ToArray();
 
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        aggregate.BlockHash.WriteTo(hashBytes);
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, aggregate.Phase, aggregate.ViewNumber, aggregate.BlockNumber, aggregate.BlockHash);
 
-        if (!_blsSigner.VerifyAggregate(publicKeys, hashBytes, aggregate.AggregateSignature.ToArray()))
+        if (!_blsSigner.VerifyAggregate(publicKeys, sigPayload, aggregate.AggregateSignature.ToArray()))
         {
             _logger.LogWarning("Invalid aggregate signature for view {View} phase {Phase}",
                 aggregate.ViewNumber, aggregate.Phase);
@@ -682,17 +693,45 @@ public sealed class BasaltBft
         return null;
     }
 
+    /// <summary>
+    /// Build the domain-separated signing payload for BLS consensus signatures.
+    /// Format: [1-byte phase tag || 8-byte view LE || 8-byte blockNumber LE || 32-byte blockHash]
+    /// This prevents cross-phase and cross-view signature replay attacks (F-CON-01).
+    /// </summary>
+    private const int ConsensusPayloadSize = 1 + 8 + 8 + Hash256.Size; // 49 bytes
+
+    private static void WriteConsensusSigningPayload(Span<byte> buffer, VotePhase phase, ulong view, ulong blockNumber, Hash256 blockHash)
+    {
+        buffer[0] = (byte)phase;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], view);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[9..], blockNumber);
+        blockHash.WriteTo(buffer[17..]);
+    }
+
+    /// <summary>
+    /// Build the domain-separated signing payload for view change messages.
+    /// Format: [0xFF tag || 8-byte proposedView LE]
+    /// </summary>
+    private const int ViewChangePayloadSize = 1 + 8; // 9 bytes
+
+    private static void WriteViewChangeSigningPayload(Span<byte> buffer, ulong proposedView)
+    {
+        buffer[0] = 0xFF;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], proposedView);
+    }
+
     private ViewChangeMessage RequestViewChange()
     {
         var proposedView = _currentView + 1;
-        Span<byte> viewBytes = stackalloc byte[8];
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, proposedView);
-        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+        Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
+        WriteViewChangeSigningPayload(viewPayload, proposedView);
+        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
         return new ViewChangeMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             CurrentView = _currentView,
             ProposedView = proposedView,
             VoterSignature = signature,

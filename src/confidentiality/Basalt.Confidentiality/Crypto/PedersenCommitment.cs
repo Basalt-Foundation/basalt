@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Basalt.Core;
 
@@ -52,20 +53,11 @@ public static class PedersenCommitment
                 $"Blinding factor must be {PairingEngine.ScalarSize} bytes.",
                 nameof(blindingFactor));
 
-        // Compute value * G
-        byte[] vG;
-        if (value.IsZero)
-        {
-            // Scalar multiplication by zero yields the identity point.
-            // Skip the multiplication and use identity directly.
-            vG = IdentityG1();
-        }
-        else
-        {
-            Span<byte> scalar = stackalloc byte[PairingEngine.ScalarSize];
-            value.WriteTo(scalar, isBigEndian: true);
-            vG = PairingEngine.ScalarMultG1(PairingEngine.G1Generator, scalar);
-        }
+        // F-13: Always perform scalar multiplication (constant-time, no branching on secret value).
+        // The blst library handles zero scalars correctly, returning the identity point.
+        Span<byte> scalar = stackalloc byte[PairingEngine.ScalarSize];
+        value.WriteTo(scalar, isBigEndian: true);
+        byte[] vG = PairingEngine.ScalarMultG1(PairingEngine.G1Generator, scalar);
 
         // Compute blindingFactor * H
         byte[] rH = PairingEngine.ScalarMultG1(s_hGenerator, blindingFactor);
@@ -97,6 +89,24 @@ public static class PedersenCommitment
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// F-10: Generate a Pedersen commitment with a securely random blinding factor.
+    /// This prevents accidental reuse of blinding factors, which would leak
+    /// the difference of committed values.
+    /// </summary>
+    /// <param name="value">The value to commit to.</param>
+    /// <returns>
+    /// A tuple of (commitment, blindingFactor) where the blinding factor was
+    /// generated from a cryptographic random source.
+    /// </returns>
+    public static (byte[] Commitment, byte[] BlindingFactor) CommitRandom(UInt256 value)
+    {
+        var blindingFactor = new byte[PairingEngine.ScalarSize];
+        RandomNumberGenerator.Fill(blindingFactor);
+        var commitment = Commit(value, blindingFactor);
+        return (commitment, blindingFactor);
     }
 
     /// <summary>

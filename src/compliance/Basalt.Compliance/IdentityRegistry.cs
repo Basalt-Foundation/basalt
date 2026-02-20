@@ -13,15 +13,30 @@ public sealed class IdentityRegistry
     private readonly HashSet<string> _approvedProviders = new();
     private readonly List<ComplianceEvent> _auditLog = new();
     private readonly object _lock = new();
+    private readonly string? _governanceAddress;
+
+    public IdentityRegistry() { }
+
+    /// <summary>
+    /// Create an IdentityRegistry with governance access control.
+    /// Only the governance address can approve/revoke providers (COMPL-03).
+    /// </summary>
+    public IdentityRegistry(byte[] governanceAddress)
+    {
+        _governanceAddress = ToHex(governanceAddress);
+    }
 
     /// <summary>
     /// Register an approved KYC provider address.
-    /// In production, this requires governance approval + collateral bond.
+    /// Requires governance authorization (COMPL-03).
     /// </summary>
-    public void ApproveProvider(byte[] providerAddress)
+    public bool ApproveProvider(byte[] providerAddress, byte[]? caller = null)
     {
         lock (_lock)
         {
+            if (_governanceAddress != null && (caller == null || ToHex(caller) != _governanceAddress))
+                return false;
+
             _approvedProviders.Add(ToHex(providerAddress));
             _auditLog.Add(new ComplianceEvent
             {
@@ -30,16 +45,22 @@ public sealed class IdentityRegistry
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Details = "KYC provider approved",
             });
+
+            return true;
         }
     }
 
     /// <summary>
     /// Revoke a KYC provider's approval.
+    /// Requires governance authorization (COMPL-03).
     /// </summary>
-    public void RevokeProvider(byte[] providerAddress)
+    public bool RevokeProvider(byte[] providerAddress, byte[]? caller = null)
     {
         lock (_lock)
         {
+            if (_governanceAddress != null && (caller == null || ToHex(caller) != _governanceAddress))
+                return false;
+
             _approvedProviders.Remove(ToHex(providerAddress));
             _auditLog.Add(new ComplianceEvent
             {
@@ -48,6 +69,8 @@ public sealed class IdentityRegistry
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Details = "KYC provider revoked",
             });
+
+            return true;
         }
     }
 

@@ -40,6 +40,21 @@ public sealed class TransactionExecutor
     /// </summary>
     public TransactionReceipt Execute(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
+        // COMPL-06: Compliance check before tx type dispatch — covers all transaction types
+        if (_complianceVerifier != null)
+        {
+            // COMPL-01: Look up actual policy requirements for the target address
+            var requirements = _complianceVerifier.GetRequirements(tx.To.ToArray());
+
+            // COMPL-14: Verify ZK proofs if requirements exist or proofs are attached
+            if (requirements.Length > 0 || tx.ComplianceProofs.Length > 0)
+            {
+                var outcome = _complianceVerifier.VerifyProofs(tx.ComplianceProofs, requirements, blockHeader.Timestamp);
+                if (!outcome.Allowed)
+                    return CreateReceipt(tx, blockHeader, txIndex, 0, false, outcome.ErrorCode, stateDb);
+            }
+        }
+
         return tx.Type switch
         {
             TransactionType.Transfer => ExecuteTransfer(tx, stateDb, blockHeader, txIndex),
@@ -68,17 +83,9 @@ public sealed class TransactionExecutor
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
         }
 
-        // ZK compliance check (if verifier configured and tx carries proofs)
-        if (_complianceVerifier != null && tx.ComplianceProofs.Length > 0)
-        {
-            var outcome = _complianceVerifier.VerifyProofs(tx.ComplianceProofs, [], blockHeader.Timestamp);
-            if (!outcome.Allowed)
-                return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);
-        }
-
         senderState = senderState with
         {
-            Balance = senderState.Balance - totalDebit,
+            Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
             Nonce = senderState.Nonce + 1,
         };
         stateDb.SetAccount(tx.Sender, senderState);
@@ -114,9 +121,17 @@ public sealed class TransactionExecutor
             // Debit sender upfront (gas limit * effective max fee + value)
             var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
             var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+            var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
+
+            if (senderState.Balance < totalDebit)
+            {
+                return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+                    BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+            }
+
             senderState = senderState with
             {
-                Balance = senderState.Balance - maxGasFee - tx.Value,
+                Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
                 Nonce = senderState.Nonce + 1,
             };
             stateDb.SetAccount(tx.Sender, senderState);
@@ -218,9 +233,17 @@ public sealed class TransactionExecutor
             // Debit sender upfront (gas limit * effective max fee + value)
             var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
             var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+            var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
+
+            if (senderState.Balance < totalDebit)
+            {
+                return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+                    BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+            }
+
             senderState = senderState with
             {
-                Balance = senderState.Balance - maxGasFee - tx.Value,
+                Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
                 Nonce = senderState.Nonce + 1,
             };
             stateDb.SetAccount(tx.Sender, senderState);
@@ -253,6 +276,18 @@ public sealed class TransactionExecutor
             var code = stateDb.GetStorage(tx.To, codeStorageKey) ?? [];
 
             var result = _contractRuntime.Execute(code, tx.Data, ctx);
+
+            // On failure, revert value transfer (sender keeps their value, contract gives it back)
+            if (!result.Success && tx.Value > UInt256.Zero)
+            {
+                var cs = stateDb.GetAccount(tx.To)!.Value;
+                cs = cs with { Balance = UInt256.CheckedSub(cs.Balance, tx.Value) };
+                stateDb.SetAccount(tx.To, cs);
+
+                senderState = stateDb.GetAccount(tx.Sender)!.Value;
+                senderState = senderState with { Balance = senderState.Balance + tx.Value };
+                stateDb.SetAccount(tx.Sender, senderState);
+            }
 
             // Refund unused gas (refund based on effective gas price, not max fee)
             var effectiveGas = gasMeter.EffectiveGasUsed();
@@ -318,7 +353,7 @@ public sealed class TransactionExecutor
         // Debit sender
         senderState = senderState with
         {
-            Balance = senderState.Balance - totalDebit,
+            Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
             Nonce = senderState.Nonce + 1,
         };
         stateDb.SetAccount(tx.Sender, senderState);
@@ -354,7 +389,7 @@ public sealed class TransactionExecutor
         // Debit gas fee
         senderState = senderState with
         {
-            Balance = senderState.Balance - gasFee,
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
             Nonce = senderState.Nonce + 1,
         };
         stateDb.SetAccount(tx.Sender, senderState);
@@ -386,7 +421,7 @@ public sealed class TransactionExecutor
         // Debit sender
         senderState = senderState with
         {
-            Balance = senderState.Balance - totalDebit,
+            Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
             Nonce = senderState.Nonce + 1,
         };
         stateDb.SetAccount(tx.Sender, senderState);
@@ -417,7 +452,7 @@ public sealed class TransactionExecutor
         // Debit gas fee only (staked funds enter unbonding queue)
         senderState = senderState with
         {
-            Balance = senderState.Balance - gasFee,
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
             Nonce = senderState.Nonce + 1,
         };
         stateDb.SetAccount(tx.Sender, senderState);

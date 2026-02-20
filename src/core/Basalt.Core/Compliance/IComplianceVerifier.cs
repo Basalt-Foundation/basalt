@@ -17,6 +17,18 @@ public interface IComplianceVerifier
         ComplianceProof[] proofs,
         ProofRequirement[] requirements,
         long blockTimestamp);
+
+    /// <summary>
+    /// Get the proof requirements for a given contract/token address.
+    /// Returns the required schemas from the compliance policy, if any.
+    /// </summary>
+    ProofRequirement[] GetRequirements(byte[] contractAddress);
+
+    /// <summary>
+    /// Reset the nullifier set. Called at block boundaries to bound memory usage
+    /// and allow cross-block proof reuse (COMPL-07).
+    /// </summary>
+    void ResetNullifiers();
 }
 
 /// <summary>

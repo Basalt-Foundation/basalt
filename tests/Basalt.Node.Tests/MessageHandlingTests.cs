@@ -14,12 +14,15 @@ public class MessageHandlingTests
         return PeerId.FromPublicKey(pub);
     }
 
+    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
     [Fact]
     public void TxAnnounceMessage_RoundTrips()
     {
         var msg = new TxAnnounceMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             TransactionHashes = [Blake3Hasher.Hash([1]), Blake3Hasher.Hash([2])],
         };
         var bytes = MessageCodec.Serialize(msg);
@@ -35,6 +38,7 @@ public class MessageHandlingTests
         var msg = new BlockAnnounceMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             BlockNumber = 42,
             BlockHash = Blake3Hasher.Hash([1, 2, 3]),
             ParentHash = Blake3Hasher.Hash([0]),
@@ -53,6 +57,7 @@ public class MessageHandlingTests
         var msg = new BlockRequestMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             StartNumber = 10,
             Count = 5,
         };
@@ -71,6 +76,7 @@ public class MessageHandlingTests
         var msg = new TxRequestMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             TransactionHashes = [hash],
         };
         var bytes = MessageCodec.Serialize(msg);
@@ -85,6 +91,7 @@ public class MessageHandlingTests
         var msg = new SyncRequestMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             FromBlock = 100,
             MaxBlocks = 50,
         };
@@ -99,7 +106,7 @@ public class MessageHandlingTests
     [Fact]
     public void PingMessage_RoundTrips()
     {
-        var msg = new PingMessage { SenderId = MakePeerId() };
+        var msg = new PingMessage { SenderId = MakePeerId(), Timestamp = Now() };
         var bytes = MessageCodec.Serialize(msg);
         var deserialized = MessageCodec.Deserialize(bytes);
         deserialized.Should().BeOfType<PingMessage>();
@@ -108,7 +115,7 @@ public class MessageHandlingTests
     [Fact]
     public void PongMessage_RoundTrips()
     {
-        var msg = new PongMessage { SenderId = MakePeerId() };
+        var msg = new PongMessage { SenderId = MakePeerId(), Timestamp = Now() };
         var bytes = MessageCodec.Serialize(msg);
         var deserialized = MessageCodec.Deserialize(bytes);
         deserialized.Should().BeOfType<PongMessage>();
@@ -120,6 +127,7 @@ public class MessageHandlingTests
         var msg = new ConsensusProposalMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             ViewNumber = 1,
             BlockNumber = 1,
             BlockHash = Blake3Hasher.Hash([1]),
@@ -141,6 +149,7 @@ public class MessageHandlingTests
         var msg = new ConsensusVoteMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             BlockNumber = 5,
             BlockHash = Blake3Hasher.Hash([5]),
             Phase = VotePhase.Prepare,
@@ -161,6 +170,7 @@ public class MessageHandlingTests
         var msg = new ViewChangeMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             CurrentView = 1,
             ProposedView = 5,
             VoterSignature = new BlsSignature(new byte[96]),
@@ -180,6 +190,7 @@ public class MessageHandlingTests
         var msg = new IHaveMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             MessageIds = [Blake3Hasher.Hash([1]), Blake3Hasher.Hash([2])],
         };
         var bytes = MessageCodec.Serialize(msg);
@@ -194,6 +205,7 @@ public class MessageHandlingTests
         var msg = new IWantMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             MessageIds = [Blake3Hasher.Hash([3])],
         };
         var bytes = MessageCodec.Serialize(msg);
@@ -205,7 +217,7 @@ public class MessageHandlingTests
     [Fact]
     public void GraftMessage_RoundTrips()
     {
-        var msg = new GraftMessage { SenderId = MakePeerId() };
+        var msg = new GraftMessage { SenderId = MakePeerId(), Timestamp = Now() };
         var bytes = MessageCodec.Serialize(msg);
         var deserialized = MessageCodec.Deserialize(bytes);
         deserialized.Should().BeOfType<GraftMessage>();
@@ -214,7 +226,7 @@ public class MessageHandlingTests
     [Fact]
     public void PruneMessage_RoundTrips()
     {
-        var msg = new PruneMessage { SenderId = MakePeerId() };
+        var msg = new PruneMessage { SenderId = MakePeerId(), Timestamp = Now() };
         var bytes = MessageCodec.Serialize(msg);
         var deserialized = MessageCodec.Deserialize(bytes);
         deserialized.Should().BeOfType<PruneMessage>();
@@ -226,6 +238,7 @@ public class MessageHandlingTests
         var msg = new BlockPayloadMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             Blocks = [new byte[] { 1, 2, 3 }, new byte[] { 4, 5, 6 }],
         };
         var bytes = MessageCodec.Serialize(msg);
@@ -240,6 +253,7 @@ public class MessageHandlingTests
         var msg = new TxPayloadMessage
         {
             SenderId = MakePeerId(),
+            Timestamp = Now(),
             Transactions = [new byte[] { 10, 20 }],
         };
         var bytes = MessageCodec.Serialize(msg);

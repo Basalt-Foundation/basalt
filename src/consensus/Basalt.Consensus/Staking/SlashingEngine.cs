@@ -89,39 +89,18 @@ public sealed class SlashingEngine
     private SlashingResult ApplySlash(Address validator, UInt256 penalty, SlashingReason reason,
         ulong blockNumber, string description)
     {
-        var info = _stakingState.GetStakeInfo(validator);
-        if (info == null)
+        // F-CON-03: Delegate the entire read-modify-write to StakingState.ApplySlash
+        // which runs atomically under the lock. This prevents race conditions where
+        // concurrent slashing operations read stale StakeInfo and double-slash.
+        var appliedPenalty = _stakingState.ApplySlash(validator, penalty);
+        if (appliedPenalty == null)
             return SlashingResult.Error("Validator not found");
-
-        // Cap penalty at total stake
-        if (penalty > info.TotalStake)
-            penalty = info.TotalStake;
-
-        // Apply penalty to self-stake first, then delegated
-        if (penalty <= info.SelfStake)
-        {
-            info.SelfStake -= penalty;
-        }
-        else
-        {
-            var remaining = penalty - info.SelfStake;
-            info.SelfStake = UInt256.Zero;
-            info.DelegatedStake = info.DelegatedStake > remaining
-                ? info.DelegatedStake - remaining
-                : UInt256.Zero;
-        }
-
-        info.TotalStake = info.SelfStake + info.DelegatedStake;
-
-        // Deactivate if stake is too low
-        if (info.TotalStake < _stakingState.MinValidatorStake)
-            info.IsActive = false;
 
         var evt = new SlashingEvent
         {
             Validator = validator,
             Reason = reason,
-            Penalty = penalty,
+            Penalty = appliedPenalty.Value,
             BlockNumber = blockNumber,
             Description = description,
             Timestamp = DateTimeOffset.UtcNow,
@@ -129,11 +108,12 @@ public sealed class SlashingEngine
 
         _slashingHistory.Add(evt);
 
+        var remainingStake = _stakingState.GetStakeInfo(validator)?.TotalStake ?? UInt256.Zero;
         _logger.LogWarning(
             "Slashed validator {Validator} for {Reason}: {Penalty} tokens. Remaining: {Remaining}",
-            validator, reason, penalty, info.TotalStake);
+            validator, reason, appliedPenalty.Value, remainingStake);
 
-        return SlashingResult.Success(penalty);
+        return SlashingResult.Success(appliedPenalty.Value);
     }
 }
 

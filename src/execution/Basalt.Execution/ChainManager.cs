@@ -25,7 +25,13 @@ public sealed class ChainManager
     /// <summary>
     /// Add a block to the chain. Must be a valid extension of the current chain tip.
     /// </summary>
-    public BasaltResult AddBlock(Block block)
+    public BasaltResult AddBlock(Block block) => AddBlock(block, null);
+
+    /// <summary>
+    /// Add a block to the chain with optional state root validation.
+    /// If computedStateRoot is provided, it must match the block header's StateRoot.
+    /// </summary>
+    public BasaltResult AddBlock(Block block, Hash256? computedStateRoot)
     {
         lock (_lock)
         {
@@ -38,6 +44,11 @@ public sealed class ChainManager
                 if (block.Number != _latestBlock.Number + 1)
                     return BasaltResult.Error(BasaltErrorCode.InvalidBlockNumber,
                         $"Expected block number {_latestBlock.Number + 1}, got {block.Number}.");
+
+                // Validate timestamp monotonicity (non-genesis blocks)
+                if (block.Header.Timestamp <= _latestBlock.Header.Timestamp)
+                    return BasaltResult.Error(BasaltErrorCode.InvalidBlockNumber,
+                        $"Block timestamp {block.Header.Timestamp} must be after parent timestamp {_latestBlock.Header.Timestamp}.");
             }
             else
             {
@@ -46,6 +57,11 @@ public sealed class ChainManager
                     return BasaltResult.Error(BasaltErrorCode.InvalidBlockNumber,
                         "First block must be genesis (number 0).");
             }
+
+            // Validate state root if the caller provides a computed one
+            if (computedStateRoot.HasValue && block.Header.StateRoot != computedStateRoot.Value)
+                return BasaltResult.Error(BasaltErrorCode.InvalidStateRoot,
+                    $"Block state root mismatch: header={block.Header.StateRoot.ToHexString()}, computed={computedStateRoot.Value.ToHexString()}.");
 
             _blocksByHash[block.Hash] = block;
             _blocksByNumber[block.Number] = block;

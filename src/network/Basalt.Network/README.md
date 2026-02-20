@@ -41,9 +41,9 @@ TCP transport with length-prefixed framing for peer connections.
 
 ```csharp
 var transport = new TcpTransport(logger);
-transport.OnMessageReceived = (peerId, data) => { /* handle */ };
-transport.OnPeerConnected = (connection) => { /* handshake */ };
-transport.OnPeerDisconnected = (peerId) => { /* cleanup */ };
+transport.OnMessageReceived += (peerId, data) => { /* handle */ };
+transport.OnPeerConnected += (connection) => { /* handshake */ };
+transport.OnPeerDisconnected += (peerId) => { /* cleanup */ };
 
 await transport.StartAsync(port, cancellationToken);
 PeerConnection conn = await transport.ConnectAsync(host, port);

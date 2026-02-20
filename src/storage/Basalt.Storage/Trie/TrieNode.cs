@@ -178,6 +178,9 @@ public sealed class TrieNode
     /// </summary>
     public static TrieNode Decode(byte[] data)
     {
+        if (data.Length == 0)
+            throw new InvalidDataException("Cannot decode trie node from empty data.");
+
         int pos = 0;
         var type = (TrieNodeType)data[pos++];
 
@@ -189,11 +192,13 @@ public sealed class TrieNode
             case TrieNodeType.Leaf:
             {
                 int pathLen = ReadLength(data, ref pos);
+                EnsureBounds(data, pos, pathLen, "leaf path");
                 var encodedPath = data.AsSpan(pos, pathLen).ToArray();
                 pos += pathLen;
                 var (path, _) = NibblePath.FromCompactEncoding(encodedPath);
 
                 int valueLen = ReadLength(data, ref pos);
+                EnsureBounds(data, pos, valueLen, "leaf value");
                 var value = data.AsSpan(pos, valueLen).ToArray();
                 pos += valueLen;
 
@@ -209,10 +214,12 @@ public sealed class TrieNode
             case TrieNodeType.Extension:
             {
                 int pathLen = ReadLength(data, ref pos);
+                EnsureBounds(data, pos, pathLen, "extension path");
                 var encodedPath = data.AsSpan(pos, pathLen).ToArray();
                 pos += pathLen;
                 var (path, _) = NibblePath.FromCompactEncoding(encodedPath);
 
+                EnsureBounds(data, pos, Hash256.Size, "extension child hash");
                 var hash = new Hash256(data.AsSpan(pos, Hash256.Size));
                 pos += Hash256.Size;
 
@@ -227,6 +234,7 @@ public sealed class TrieNode
 
             case TrieNodeType.Branch:
             {
+                EnsureBounds(data, pos, 2, "branch bitmap");
                 ushort bitmap = (ushort)((data[pos] << 8) | data[pos + 1]);
                 pos += 2;
 
@@ -236,15 +244,18 @@ public sealed class TrieNode
                 {
                     if ((bitmap & (1 << i)) != 0)
                     {
+                        EnsureBounds(data, pos, Hash256.Size, $"branch child[{i}] hash");
                         node.Children[i] = new Hash256(data.AsSpan(pos, Hash256.Size));
                         pos += Hash256.Size;
                     }
                 }
 
+                EnsureBounds(data, pos, 1, "branch hasValue flag");
                 byte hasValue = data[pos++];
                 if (hasValue == 1)
                 {
                     int valueLen = ReadLength(data, ref pos);
+                    EnsureBounds(data, pos, valueLen, "branch value");
                     node.BranchValue = data.AsSpan(pos, valueLen).ToArray();
                     pos += valueLen;
                 }
@@ -256,6 +267,17 @@ public sealed class TrieNode
             default:
                 throw new InvalidDataException($"Unknown trie node type: {type}");
         }
+    }
+
+    /// <summary>
+    /// Validate that <paramref name="count"/> bytes are available at <paramref name="pos"/>.
+    /// </summary>
+    private static void EnsureBounds(byte[] data, int pos, int count, string fieldName)
+    {
+        if (pos + count > data.Length)
+            throw new InvalidDataException(
+                $"Trie node decode: not enough data for {fieldName} " +
+                $"(need {count} bytes at offset {pos}, but data length is {data.Length}).");
     }
 
     private static void WriteLength(MemoryStream ms, int length)
@@ -272,15 +294,40 @@ public sealed class TrieNode
 
     private static int ReadLength(byte[] data, ref int pos)
     {
+        // Varint decoding with bounds checks:
+        // - Maximum 5 bytes for a 32-bit value (4 continuation + 1 terminal)
+        // - At shift=28 (5th byte), only the low 4 bits are valid
+        // - pos must be within data.Length before each read
+        const int MaxVarintBytes = 5;
+
         uint result = 0;
         int shift = 0;
-        byte b;
-        do
+
+        for (int i = 0; i < MaxVarintBytes; i++)
         {
-            b = data[pos++];
+            if (pos >= data.Length)
+                throw new InvalidDataException("Unexpected end of data while reading varint length.");
+
+            byte b = data[pos++];
+
+            if (shift == 28)
+            {
+                // 5th byte: only low 4 bits are valid for a 32-bit value,
+                // and continuation bit must not be set.
+                if ((b & 0xF0) != 0)
+                    throw new InvalidDataException("Varint length overflow: value exceeds 32 bits.");
+
+                result |= (uint)b << 28;
+                return (int)result;
+            }
+
             result |= (uint)(b & 0x7F) << shift;
             shift += 7;
-        } while ((b & 0x80) != 0);
-        return (int)result;
+
+            if ((b & 0x80) == 0)
+                return (int)result;
+        }
+
+        throw new InvalidDataException("Varint length exceeds maximum of 5 bytes.");
     }
 }

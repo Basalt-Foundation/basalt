@@ -36,9 +36,19 @@ try
     BlockStore? blockStore = null;
     ReceiptStore? receiptStore = null;
 
-    // Deterministic faucet key — all validators derive the same address
-    var faucetPrivateKey = new byte[32];
-    faucetPrivateKey[31] = 0xFF;
+    // N-06: Load faucet key from environment or fallback with warning
+    var faucetKeyHex = Environment.GetEnvironmentVariable("BASALT_FAUCET_KEY");
+    byte[] faucetPrivateKey;
+    if (!string.IsNullOrEmpty(faucetKeyHex))
+    {
+        faucetPrivateKey = Convert.FromHexString(faucetKeyHex);
+    }
+    else
+    {
+        Log.Warning("N-06: BASALT_FAUCET_KEY not set; using deterministic dev-mode faucet key. DO NOT use in production.");
+        faucetPrivateKey = new byte[32];
+        faucetPrivateKey[31] = 0xFF;
+    }
     var faucetPublicKey = Ed25519Signer.GetPublicKey(faucetPrivateKey);
     var faucetAddr = Ed25519Signer.DeriveAddress(faucetPublicKey);
 
@@ -87,9 +97,29 @@ try
             {
                 var genesisBlock = BlockCodec.DeserializeBlock(genesisRaw);
                 var latestBlock = BlockCodec.DeserializeBlock(latestRaw);
+
+                // N-20: Verify genesis block matches configured chain
+                if (genesisBlock.Header.ChainId != chainParams.ChainId)
+                {
+                    Log.Fatal("Genesis block chain ID {Stored} does not match configured chain ID {Configured}",
+                        genesisBlock.Header.ChainId, chainParams.ChainId);
+                    throw new InvalidOperationException("Data directory contains genesis from a different chain");
+                }
+
                 var recoveredTrie = new TrieStateDb(trieNodeStore, latestBlock.Header.StateRoot);
                 var recoveredFlat = new FlatStateDb(recoveredTrie, new RocksDbFlatStatePersistence(rocksDbStore));
                 recoveredFlat.LoadFromPersistence();
+
+                // N-11: Verify state root consistency after recovery
+                var computedRoot = recoveredFlat.ComputeStateRoot();
+                var expectedRoot = latestBlock.Header.StateRoot;
+                if (computedRoot != expectedRoot)
+                {
+                    Log.Fatal("State root mismatch after recovery: computed={ComputedRoot}, expected={ExpectedRoot}",
+                        computedRoot, expectedRoot);
+                    throw new InvalidOperationException("Corrupted state: state root does not match latest block after recovery");
+                }
+
                 stateDb = recoveredFlat;
                 chainManager.ResumeFromBlock(genesisBlock, latestBlock);
                 Log.Information("Recovered from persistent storage. Latest block: #{Number}, Hash: {Hash}",
@@ -128,6 +158,12 @@ try
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
 
+    // INFO-2: Limit request body size to 512KB
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        options.Limits.MaxRequestBodySize = 512 * 1024;
+    });
+
     // Configure JSON serialization for AOT-compatible Minimal APIs
     builder.Services.ConfigureHttpJsonOptions(options =>
     {
@@ -164,6 +200,23 @@ try
     // Map Prometheus metrics endpoint
     MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
 
+    // N-19: Health endpoint with meaningful status info (AOT-safe string formatting)
+    app.MapGet("/v1/health", (HttpContext ctx) =>
+    {
+        var lastBlock = chainManager.LatestBlock;
+        var blockAge = lastBlock != null
+            ? (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastBlock.Header.Timestamp) / 1000.0
+            : -1;
+        var healthy = blockAge >= 0 && blockAge < 60;
+        ctx.Response.StatusCode = healthy ? 200 : 503;
+        ctx.Response.ContentType = "application/json";
+        return ctx.Response.WriteAsync(
+            "{\"status\":\"" + (healthy ? "healthy" : "degraded") +
+            "\",\"lastBlockNumber\":" + (lastBlock?.Header.Number ?? 0) +
+            ",\"lastBlockAgeSeconds\":" + blockAge.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) +
+            ",\"chainId\":" + chainParams.ChainId + "}");
+    });
+
     // Map validators endpoint (uses stakingState from consensus layer)
     app.MapGet("/v1/validators", () =>
     {
@@ -187,12 +240,21 @@ try
             stakingState,
             app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
 
-        // ZK compliance verifier (optional — verifies Groth16 proofs on transactions)
+        // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
+        var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
         var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
         {
-            // Lookup VK from SchemaRegistry contract storage (on-chain)
-            // SchemaRegistry stores VK at key "scr_vk:{schemaIdHex}"
-            return null; // VK lookup wired via SchemaRegistry contract calls
+            // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
+            var storageKey = "scr_vk:" + schemaId.ToHexString();
+            var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
+            var raw = stateDb.GetStorage(schemaRegistryAddress, slot);
+            if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
+                return null;
+            var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
+            if (string.IsNullOrEmpty(hexVk))
+                return null;
+            try { return Convert.FromHexString(hexVk); }
+            catch { return null; }
         });
         var complianceEngine = new Basalt.Compliance.ComplianceEngine(
             new Basalt.Compliance.IdentityRegistry(),
@@ -230,7 +292,11 @@ try
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             Log.Information("Shutting down consensus coordinator...");
-            coordinator.StopAsync().GetAwaiter().GetResult();
+            // N-18: Timeout to prevent shutdown deadlock
+            if (!coordinator.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+            {
+                Log.Warning("Node coordinator did not stop within 10 seconds; forcing exit");
+            }
         });
     }
     else
@@ -258,7 +324,11 @@ try
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             Log.Information("Shutting down block production...");
-            blockProduction.StopAsync().GetAwaiter().GetResult();
+            // N-18: Timeout to prevent shutdown deadlock
+            if (!blockProduction.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+            {
+                Log.Warning("Block production did not stop within 10 seconds; forcing exit");
+            }
         });
     }
 

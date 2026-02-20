@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using Basalt.Core;
+using Basalt.Crypto;
 using Microsoft.Extensions.Logging;
 
 namespace Basalt.Network.Transport;
@@ -6,10 +8,13 @@ namespace Basalt.Network.Transport;
 /// <summary>
 /// Handshake protocol for establishing peer identity after TCP connection.
 /// Exchanges Hello/HelloAck messages and validates chain compatibility.
+/// NET-C01: Mutual Ed25519 challenge-response authentication.
+/// NET-H03: Genesis hash cross-validation.
 /// </summary>
 public sealed class HandshakeProtocol
 {
     private readonly uint _chainId;
+    private readonly byte[] _localPrivateKey;
     private readonly PublicKey _localPublicKey;
     private readonly BlsPublicKey _localBlsPublicKey;
     private readonly PeerId _localPeerId;
@@ -20,10 +25,17 @@ public sealed class HandshakeProtocol
     private readonly string _listenAddress;
     private readonly ILogger _logger;
 
+    /// <summary>NET-C01: Domain separation prefix for Hello auth signatures.</summary>
+    private static readonly byte[] HelloDomain = "basalt-hello-v1"u8.ToArray();
+
+    /// <summary>NET-C01: Domain separation prefix for HelloAck challenge-response signatures.</summary>
+    private static readonly byte[] AckDomain = "basalt-ack-v1"u8.ToArray();
+
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(5);
 
     public HandshakeProtocol(
         uint chainId,
+        byte[] localPrivateKey,
         PublicKey localPublicKey,
         BlsPublicKey localBlsPublicKey,
         PeerId localPeerId,
@@ -35,6 +47,7 @@ public sealed class HandshakeProtocol
         string? listenAddress = null)
     {
         _chainId = chainId;
+        _localPrivateKey = localPrivateKey;
         _localPublicKey = localPublicKey;
         _localBlsPublicKey = localBlsPublicKey;
         _localPeerId = localPeerId;
@@ -48,7 +61,9 @@ public sealed class HandshakeProtocol
 
     /// <summary>
     /// Perform handshake as the initiator (outbound connection).
-    /// Sends Hello, waits for HelloAck.
+    /// Sends Hello (with challenge nonce + auth signature), waits for HelloAck.
+    /// NET-C01: Verifies responder's challenge-response signature.
+    /// NET-H03: Verifies responder's genesis hash.
     /// </summary>
     public async Task<HandshakeResult> InitiateAsync(
         PeerConnection connection,
@@ -59,7 +74,7 @@ public sealed class HandshakeProtocol
 
         try
         {
-            // Send Hello
+            // Send Hello with challenge nonce
             var hello = CreateHello();
             var helloBytes = MessageCodec.Serialize(hello);
             await connection.SendAsync(helloBytes, timeoutCts.Token);
@@ -74,6 +89,23 @@ public sealed class HandshakeProtocol
             {
                 if (!ack.Accepted)
                     return HandshakeResult.Failed($"Rejected: {ack.RejectReason}");
+
+                // NET-C01: Verify responder signed our challenge nonce
+                var ackPayload = BuildChallengePayload(AckDomain, hello.ChallengeNonce, _chainId);
+                if (!Ed25519Signer.Verify(ack.NodePublicKey, ackPayload, ack.ChallengeResponse))
+                {
+                    _logger.LogWarning("HelloAck challenge-response verification failed");
+                    return HandshakeResult.Failed("Challenge-response verification failed");
+                }
+
+                // NET-H03: Verify genesis hash matches
+                var localGenesis = _getGenesisHash();
+                if (ack.GenesisHash != localGenesis)
+                {
+                    _logger.LogWarning("Genesis hash mismatch in HelloAck: local={Local}, remote={Remote}",
+                        localGenesis.ToHexString()[..16], ack.GenesisHash.ToHexString()[..16]);
+                    return HandshakeResult.Failed("Genesis hash mismatch");
+                }
 
                 var remotePeerId = PeerId.FromPublicKey(ack.NodePublicKey);
                 return HandshakeResult.Success(
@@ -92,12 +124,12 @@ public sealed class HandshakeProtocol
                 var validation = ValidateHello(peerHello);
                 if (!validation.IsAccepted)
                 {
-                    var rejectAck = CreateAck(false, validation.RejectReason);
+                    var rejectAck = CreateAck(false, validation.RejectReason, peerHello.ChallengeNonce);
                     await connection.SendAsync(MessageCodec.Serialize(rejectAck), timeoutCts.Token);
                     return HandshakeResult.Failed(validation.RejectReason);
                 }
 
-                var acceptAck = CreateAck(true, "");
+                var acceptAck = CreateAck(true, "", peerHello.ChallengeNonce);
                 await connection.SendAsync(MessageCodec.Serialize(acceptAck), timeoutCts.Token);
 
                 return HandshakeResult.Success(
@@ -120,7 +152,7 @@ public sealed class HandshakeProtocol
 
     /// <summary>
     /// Perform handshake as the responder (inbound connection).
-    /// Waits for Hello, validates, sends HelloAck.
+    /// Waits for Hello, validates (including NET-C01 auth), sends HelloAck.
     /// </summary>
     public async Task<HandshakeResult> RespondAsync(
         PeerConnection connection,
@@ -140,17 +172,17 @@ public sealed class HandshakeProtocol
             if (msg is not HelloMessage hello)
                 return HandshakeResult.Failed($"Expected Hello, got {msg.Type}");
 
-            // Validate
+            // Validate (includes NET-C01 auth verification + NET-H03 genesis hash)
             var validation = ValidateHello(hello);
             if (!validation.IsAccepted)
             {
-                var rejectAck = CreateAck(false, validation.RejectReason);
+                var rejectAck = CreateAck(false, validation.RejectReason, hello.ChallengeNonce);
                 await connection.SendAsync(MessageCodec.Serialize(rejectAck), timeoutCts.Token);
                 return HandshakeResult.Failed(validation.RejectReason);
             }
 
-            // Send HelloAck
-            var ack = CreateAck(true, "");
+            // Send HelloAck with challenge-response (sign initiator's nonce)
+            var ack = CreateAck(true, "", hello.ChallengeNonce);
             await connection.SendAsync(MessageCodec.Serialize(ack), timeoutCts.Token);
 
             var peerId = PeerId.FromPublicKey(hello.NodePublicKey);
@@ -171,9 +203,18 @@ public sealed class HandshakeProtocol
 
     private HelloMessage CreateHello()
     {
+        // NET-C01: Generate 32-byte random challenge nonce
+        var nonce = new byte[32];
+        RandomNumberGenerator.Fill(nonce);
+
+        // NET-C01: Sign BLAKE3("basalt-hello-v1" || nonce || chainId) to prove identity
+        var payload = BuildChallengePayload(HelloDomain, nonce, _chainId);
+        var authSig = Ed25519Signer.Sign(_localPrivateKey, payload);
+
         return new HelloMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ProtocolVersion = 1,
             ChainId = _chainId,
             BestBlockNumber = _getBestBlockNumber(),
@@ -183,14 +224,28 @@ public sealed class HandshakeProtocol
             BlsPublicKey = _localBlsPublicKey,
             ListenAddress = _listenAddress,
             ListenPort = _listenPort,
+            ChallengeNonce = nonce,
+            AuthSignature = authSig,
         };
     }
 
-    private HelloAckMessage CreateAck(bool accepted, string reason)
+    /// <summary>
+    /// Create a HelloAck message, optionally signing the initiator's challenge nonce.
+    /// </summary>
+    private HelloAckMessage CreateAck(bool accepted, string reason, byte[]? initiatorNonce = null)
     {
+        // NET-C01: Sign the initiator's nonce to prove our identity
+        var challengeResponse = default(Signature);
+        if (accepted && initiatorNonce is { Length: > 0 })
+        {
+            var payload = BuildChallengePayload(AckDomain, initiatorNonce, _chainId);
+            challengeResponse = Ed25519Signer.Sign(_localPrivateKey, payload);
+        }
+
         return new HelloAckMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Accepted = accepted,
             RejectReason = reason,
             NodePublicKey = _localPublicKey,
@@ -198,6 +253,8 @@ public sealed class HandshakeProtocol
             ListenPort = _listenPort,
             BestBlockNumber = _getBestBlockNumber(),
             BestBlockHash = _getBestBlockHash(),
+            ChallengeResponse = challengeResponse,
+            GenesisHash = _getGenesisHash(),
         };
     }
 
@@ -209,7 +266,34 @@ public sealed class HandshakeProtocol
         if (hello.ProtocolVersion < 1)
             return new HelloValidation(false, $"Unsupported protocol version: {hello.ProtocolVersion}");
 
+        // NET-H03: Validate genesis hash
+        var localGenesis = _getGenesisHash();
+        if (hello.GenesisHash != localGenesis)
+            return new HelloValidation(false,
+                $"Genesis hash mismatch: expected {localGenesis.ToHexString()[..16]}..., got {hello.GenesisHash.ToHexString()[..16]}...");
+
+        // NET-C01: Verify initiator's auth signature proves ownership of NodePublicKey
+        if (hello.ChallengeNonce is not { Length: 32 })
+            return new HelloValidation(false, "Missing or invalid challenge nonce (expected 32 bytes)");
+
+        var helloPayload = BuildChallengePayload(HelloDomain, hello.ChallengeNonce, hello.ChainId);
+        if (!Ed25519Signer.Verify(hello.NodePublicKey, helloPayload, hello.AuthSignature))
+            return new HelloValidation(false, "Hello auth signature verification failed");
+
         return new HelloValidation(true, "");
+    }
+
+    /// <summary>
+    /// NET-C01: Build the BLAKE3 challenge payload: domain || nonce || chainId (LE 4 bytes).
+    /// </summary>
+    private static byte[] BuildChallengePayload(byte[] domain, byte[] nonce, uint chainId)
+    {
+        var payload = new byte[domain.Length + nonce.Length + 4];
+        domain.CopyTo(payload, 0);
+        nonce.CopyTo(payload, domain.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(
+            payload.AsSpan(domain.Length + nonce.Length), chainId);
+        return Blake3Hasher.Hash(payload).ToArray();
     }
 
     private readonly record struct HelloValidation(bool IsAccepted, string RejectReason);

@@ -65,7 +65,7 @@ public class TcpTransportTests : IAsyncLifetime
         var peerConnectedTcs = new TaskCompletionSource<PeerConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             peerConnectedTcs.TrySetResult(connection);
         };
@@ -104,7 +104,7 @@ public class TcpTransportTests : IAsyncLifetime
         var peerConnectedTcs = new TaskCompletionSource<PeerConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             peerConnectedTcs.TrySetResult(connection);
         };
@@ -140,7 +140,7 @@ public class TcpTransportTests : IAsyncLifetime
         var serverInboundTcs = new TaskCompletionSource<PeerConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             serverInboundTcs.TrySetResult(connection);
         };
@@ -148,7 +148,7 @@ public class TcpTransportTests : IAsyncLifetime
         var messageReceivedTcs = new TaskCompletionSource<(PeerId, byte[])>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnMessageReceived = (peerId, data) =>
+        server.OnMessageReceived += (peerId, data) =>
         {
             messageReceivedTcs.TrySetResult((peerId, data));
         };
@@ -184,7 +184,7 @@ public class TcpTransportTests : IAsyncLifetime
         var serverInboundTcs = new TaskCompletionSource<PeerConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             serverInboundTcs.TrySetResult(connection);
         };
@@ -192,7 +192,7 @@ public class TcpTransportTests : IAsyncLifetime
         var messageReceivedTcs = new TaskCompletionSource<(PeerId, byte[])>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnMessageReceived = (peerId, data) =>
+        server.OnMessageReceived += (peerId, data) =>
         {
             messageReceivedTcs.TrySetResult((peerId, data));
         };
@@ -232,7 +232,7 @@ public class TcpTransportTests : IAsyncLifetime
         var inboundConnections = new List<PeerConnection>();
         var inboundSemaphore = new SemaphoreSlim(0);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             lock (inboundConnections)
             {
@@ -271,7 +271,7 @@ public class TcpTransportTests : IAsyncLifetime
         for (int i = 0; i < clientCount; i++)
         {
             int index = i;
-            clients[i].OnMessageReceived = (_, _) =>
+            clients[i].OnMessageReceived += (_, _) =>
             {
                 Interlocked.Increment(ref receivedMessages[index]);
                 if (Interlocked.Increment(ref totalReceived) == clientCount)
@@ -324,7 +324,7 @@ public class TcpTransportTests : IAsyncLifetime
         var serverInboundTcs = new TaskCompletionSource<PeerConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnPeerConnected = connection =>
+        server.OnPeerConnected += connection =>
         {
             serverInboundTcs.TrySetResult(connection);
         };
@@ -332,7 +332,7 @@ public class TcpTransportTests : IAsyncLifetime
         var messageReceivedTcs = new TaskCompletionSource<(PeerId, byte[])>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        server.OnMessageReceived = (peerId, data) =>
+        server.OnMessageReceived += (peerId, data) =>
         {
             messageReceivedTcs.TrySetResult((peerId, data));
         };
@@ -374,7 +374,7 @@ public class TcpTransportTests : IAsyncLifetime
         // Verify server can send to the peer using the new real id
         var serverMessageTcs = new TaskCompletionSource<(PeerId, byte[])>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        client.OnMessageReceived = (peerId, data) =>
+        client.OnMessageReceived += (peerId, data) =>
         {
             serverMessageTcs.TrySetResult((peerId, data));
         };

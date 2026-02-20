@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Basalt.Consensus;
 using Basalt.Consensus.Staking;
 using Basalt.Core;
@@ -25,7 +27,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private readonly ChainParameters _chainParams;
     private readonly ChainManager _chainManager;
     private readonly Mempool _mempool;
-    private readonly IStateDatabase _stateDb;
+    // N-05: Non-readonly to allow fork-and-swap during sync
+    private IStateDatabase _stateDb;
     private readonly TransactionValidator _txValidator;
     private readonly WebSocketHandler _wsHandler;
     private readonly ILoggerFactory _loggerFactory;
@@ -68,17 +71,24 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private long _lastBlockFinalizedAtMs;
 
     // Sync state
-    private bool _isSyncing;
+    // N-09: Atomic sync guard — use int + Interlocked.CompareExchange instead of bool
+    private int _isSyncing;
     private TaskCompletionSource<bool>? _syncBatchTcs;
     private const int SyncBatchSize = 50;
 
-    // Validator activity tracking (for inactivity slashing)
-    private readonly Dictionary<Address, ulong> _lastActiveBlock = new();
+    // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
+    private const int MaxSyncResponseBlocks = 100;
+
+    // N-14: Cap block request count to prevent resource exhaustion
+    private const int MaxBlockRequestCount = 100;
+
+    // N-17: Thread-safe validator activity tracking (for inactivity slashing)
+    private readonly ConcurrentDictionary<Address, ulong> _lastActiveBlock = new();
     private const ulong InactivityThresholdBlocks = 100; // ~40 seconds at 400ms
 
-    // Double-sign detection: keyed by (view, proposer) to avoid false positives
+    // N-17: Thread-safe double-sign detection: keyed by (view, proposer) to avoid false positives
     // when different proposers propose for the same view after a view change.
-    private readonly Dictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
+    private readonly ConcurrentDictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
 
     // Identity
     private byte[] _privateKey = [];
@@ -180,9 +190,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         if (string.IsNullOrEmpty(_config.ValidatorKeyHex))
         {
-            // Generate a random key for development
+            // N-01: Use cryptographically secure RNG for dev mode key generation
             _privateKey = new byte[32];
-            Random.Shared.NextBytes(_privateKey);
+            RandomNumberGenerator.Fill(_privateKey);
             _logger.LogWarning("No validator key configured, using random key (dev mode)");
         }
         else
@@ -191,11 +201,27 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 ? _config.ValidatorKeyHex[2..]
                 : _config.ValidatorKeyHex;
             _privateKey = Convert.FromHexString(hex);
+
+            // N-13: Validate key length — Ed25519 private keys must be exactly 32 bytes
+            if (_privateKey.Length != 32)
+                throw new InvalidOperationException($"BASALT_VALIDATOR_KEY must be exactly 32 bytes (64 hex chars), got {_privateKey.Length} bytes");
+
+            // N-07: Reject trivially weak validator keys
+            ValidateKeyEntropy(_privateKey, "BASALT_VALIDATOR_KEY");
         }
 
         _publicKey = Ed25519Signer.GetPublicKey(_privateKey);
         _localBlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
         _localPeerId = PeerId.FromPublicKey(_publicKey);
+    }
+
+    // N-07: Reject trivially weak validator keys (all zeros, all same byte, sequential)
+    private static void ValidateKeyEntropy(byte[] key, string keyName)
+    {
+        if (key.All(b => b == 0))
+            throw new InvalidOperationException($"{keyName} is all zeros — this is not a valid key");
+        if (key.Distinct().Count() <= 2)
+            throw new InvalidOperationException($"{keyName} has very low entropy (<=2 distinct bytes) — generate a proper key");
     }
 
     private void SetupValidatorSet()
@@ -256,6 +282,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
         validators.Sort((a, b) => a.Index.CompareTo(b.Index));
         _validatorSet = new ValidatorSet(validators);
 
+        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
+        var currentBlock = _chainManager.LatestBlock?.Header.Number ?? 0;
+        foreach (var v in _validatorSet.Validators)
+        {
+            if (!_lastActiveBlock.ContainsKey(v.Address))
+                _lastActiveBlock[v.Address] = currentBlock;
+        }
+
         _logger.LogInformation("Validator set: {Count} validators, quorum: {Quorum}",
             _validatorSet.Count, _validatorSet.QuorumThreshold);
     }
@@ -272,6 +306,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         _handshake = new HandshakeProtocol(
             _config.ChainId,
+            _privateKey,
             _publicKey,
             _localBlsPublicKey,
             _localPeerId,
@@ -286,6 +321,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _transport.OnMessageReceived += HandleRawMessage;
         _transport.OnPeerConnected += HandleNewConnection;
         _transport.OnPeerDisconnected += HandlePeerDisconnected;
+
+        // NET-C04: Wire peer ban → transport disconnect
+        _peerManager.OnPeerBanned += peerId => _transport.DisconnectPeer(peerId);
 
         // Wire episub → transport (outbound messages)
         _episub.OnSendMessage += (peerId, data) =>
@@ -399,6 +437,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
+            // COMPL-07: Reset nullifiers at block boundary to bound memory and prevent same-block replay
+            _complianceVerifier?.ResetNullifiers();
+
             // All validators execute finalized transactions against canonical state.
             // Proposals use a forked state, so the leader's live state is never speculatively mutated.
             if (block.Transactions.Count > 0)
@@ -427,10 +468,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-                // Clear proposal history to prevent false double-sign detection.
-                // View numbers reset with each new block (StartRound sets view = blockNumber),
-                // so proposals from previous blocks' view changes must not carry over.
-                _proposalsByView.Clear();
+                // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
+                // This preserves recent evidence for double-sign detection while preventing unbounded growth.
+                {
+                    var currentView = block.Number;
+                    var cutoff = currentView > 10 ? currentView - 10 : 0;
+                    var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff);
+                    foreach (var key in oldKeys)
+                        _proposalsByView.TryRemove(key, out _);
+                }
 
                 // Announce finalized block to peers so their BestBlockNumber stays
                 // current.  Without this, TrySyncFromPeers can't find an up-to-date
@@ -533,7 +579,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (parentBlock == null)
             return;
 
-        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock);
+        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
         var proposalState = _stateDb.Fork();
         var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
@@ -567,7 +613,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (parentBlock == null)
             return;
 
-        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock);
+        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
         var proposalState = _stateDb.Fork();
         var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
@@ -758,7 +804,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 break;
 
             case PingMessage:
-                var pong = new PongMessage { SenderId = _localPeerId };
+                var pong = new PongMessage { SenderId = _localPeerId, Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
                 _ = _transport!.SendAsync(sender, MessageCodec.Serialize(pong));
                 break;
 
@@ -783,6 +829,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var request = new TxRequestMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 TransactionHashes = missing.ToArray(),
             };
             _gossip!.SendToPeer(sender, request);
@@ -834,6 +881,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var payload = new TxPayloadMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Transactions = txDataList.ToArray(),
             };
             _gossip!.SendToPeer(sender, payload);
@@ -842,8 +890,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleBlockRequest(PeerId sender, BlockRequestMessage request)
     {
+        // N-14: Cap block request count to prevent resource exhaustion
+        var count = Math.Min(request.Count, MaxBlockRequestCount);
         var blockDataList = new List<byte[]>();
-        for (ulong i = request.StartNumber; i < request.StartNumber + (ulong)request.Count; i++)
+        for (ulong i = request.StartNumber; i < request.StartNumber + (ulong)count; i++)
         {
             var block = _chainManager.GetBlockByNumber(i);
             if (block != null)
@@ -857,6 +907,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var payload = new BlockPayloadMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
             };
             _gossip!.SendToPeer(sender, payload);
@@ -871,6 +922,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var request = new BlockRequestMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 StartNumber = announce.BlockNumber,
                 Count = 1,
             };
@@ -882,6 +934,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleBlockPayload(PeerId sender, BlockPayloadMessage payload)
     {
+        // N-04: Only accept block payloads during active sync to prevent unsolicited block injection
+        if (Volatile.Read(ref _isSyncing) == 0)
+        {
+            _logger.LogWarning("Received unsolicited block payload from {Sender}; ignoring", sender);
+            return;
+        }
+
         foreach (var blockBytes in payload.Blocks)
         {
             try
@@ -928,8 +987,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleSyncRequest(PeerId sender, SyncRequestMessage request)
     {
+        // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
+        var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);
         var blockDataList = new List<byte[]>();
-        for (ulong i = request.FromBlock; i < request.FromBlock + (ulong)request.MaxBlocks; i++)
+        for (ulong i = request.FromBlock; i < request.FromBlock + (ulong)maxBlocks; i++)
         {
             // Try to serve from BlockStore (raw bytes) first, fall back to ChainManager
             byte[]? rawBlock = _blockStore?.GetRawBlockByNumber(i);
@@ -952,6 +1013,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var response = new SyncResponseMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
             };
             _gossip!.SendToPeer(sender, response);
@@ -963,51 +1025,38 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void HandleSyncResponse(PeerId sender, SyncResponseMessage response)
     {
         var applied = 0;
+
+        // N-05: Fork state for sync — execute all blocks on a forked state database.
+        // Only replace canonical state if all blocks in the batch succeed.
+        var forkedState = _stateDb.Fork();
+        var blocksToApply = new List<(Block Block, byte[] Raw)>();
+
         foreach (var blockBytes in response.Blocks)
         {
             try
             {
                 var block = BlockCodec.DeserializeBlock(blockBytes);
 
-                if (block.Number != _chainManager.LatestBlockNumber + 1)
+                if (block.Number != _chainManager.LatestBlockNumber + (ulong)blocksToApply.Count + 1)
                 {
                     _logger.LogDebug("Skipping synced block #{Number} (expected #{Expected})",
-                        block.Number, _chainManager.LatestBlockNumber + 1);
+                        block.Number, _chainManager.LatestBlockNumber + (ulong)blocksToApply.Count + 1);
                     continue;
                 }
 
-                // Execute transactions and capture receipts
+                // Execute transactions against the forked state
                 if (block.Transactions.Count > 0)
                 {
                     var receipts = new List<TransactionReceipt>(block.Transactions.Count);
                     for (int i = 0; i < block.Transactions.Count; i++)
                     {
-                        var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
+                        var receipt = _txExecutor!.Execute(block.Transactions[i], forkedState, block.Header, i);
                         receipts.Add(receipt);
                     }
                     block.Receipts = receipts;
                 }
 
-                var result = _chainManager.AddBlock(block);
-                if (result.IsSuccess)
-                {
-                    _mempool.RemoveConfirmed(block.Transactions);
-                    PersistBlock(block, blockBytes);
-                    PersistReceipts(block.Receipts);
-                    applied++;
-
-                    // Apply epoch transitions for synced blocks — without this,
-                    // nodes that sync across epoch boundaries would have a stale
-                    // ValidatorSet and disagree on leader selection.
-                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                    if (newSet != null)
-                        ApplyEpochTransition(newSet, block.Number);
-                }
-                else
-                {
-                    _logger.LogWarning("Failed to apply synced block #{Number}: {Error}", block.Number, result.Message);
-                    break;
-                }
+                blocksToApply.Add((block, blockBytes));
             }
             catch (Exception ex)
             {
@@ -1016,9 +1065,40 @@ public sealed class NodeCoordinator : IAsyncDisposable
             }
         }
 
-        if (applied > 0)
+        // Apply all successfully executed blocks to the chain
+        foreach (var (block, blockBytes) in blocksToApply)
         {
+            var result = _chainManager.AddBlock(block);
+            if (result.IsSuccess)
+            {
+                _mempool.RemoveConfirmed(block.Transactions);
+                PersistBlock(block, blockBytes);
+                PersistReceipts(block.Receipts);
+                applied++;
+
+                // Apply epoch transitions for synced blocks — without this,
+                // nodes that sync across epoch boundaries would have a stale
+                // ValidatorSet and disagree on leader selection.
+                var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                if (newSet != null)
+                    ApplyEpochTransition(newSet, block.Number);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to apply synced block #{Number}: {Error}", block.Number, result.Message);
+                break;
+            }
+        }
+
+        // N-05: Only adopt the forked state if all blocks were applied successfully
+        if (applied == blocksToApply.Count && applied > 0)
+        {
+            _stateDb = forkedState;
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}", applied, _chainManager.LatestBlockNumber);
+        }
+        else if (applied > 0)
+        {
+            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — discarding forked state", applied, blocksToApply.Count);
         }
 
         // Signal the sync loop: true = progress made, false = stalled (no blocks applied)
@@ -1244,7 +1324,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 await Task.Delay(200, ct);
 
-                if (_isSyncing)
+                // N-09: Use Volatile.Read for atomic sync check
+                if (Volatile.Read(ref _isSyncing) != 0)
                     continue;
 
                 TryProposeBlock();
@@ -1279,7 +1360,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 await Task.Delay(200, ct);
 
-                if (_isSyncing)
+                // N-09: Use Volatile.Read for atomic sync check
+                if (Volatile.Read(ref _isSyncing) != 0)
                     continue;
 
                 // In pipelined mode, try to propose next block if pipeline has capacity
@@ -1313,23 +1395,26 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private async Task TrySyncFromPeers(CancellationToken ct)
     {
-        // Prevent concurrent sync attempts — OnBehindDetected fires from the
-        // message handler (not the consensus loop), so multiple proposals for
-        // future blocks can each spawn a sync task.
-        if (_isSyncing) return;
+        // N-09: Atomic sync guard — use Interlocked.CompareExchange to prevent TOCTOU race
+        if (Interlocked.CompareExchange(ref _isSyncing, 1, 0) != 0) return;
 
         // Find the best block among connected peers
         var bestPeer = GetBestPeer();
         if (bestPeer == null)
+        {
+            Interlocked.Exchange(ref _isSyncing, 0);
             return;
+        }
 
         var localHeight = _chainManager.LatestBlockNumber;
         var peerHeight = bestPeer.BestBlockNumber;
 
         if (peerHeight <= localHeight)
+        {
+            Interlocked.Exchange(ref _isSyncing, 0);
             return;
+        }
 
-        _isSyncing = true;
         _logger.LogInformation("Starting sync from block #{Local} to #{Peer} from peer {PeerId}",
             localHeight, peerHeight, bestPeer.Id);
 
@@ -1344,6 +1429,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var request = new SyncRequestMessage
                 {
                     SenderId = _localPeerId,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     FromBlock = currentBlock,
                     MaxBlocks = batchCount,
                 };
@@ -1392,7 +1478,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
         finally
         {
-            _isSyncing = false;
+            Interlocked.Exchange(ref _isSyncing, 0);
             _syncBatchTcs = null;
 
             // Restart consensus from the correct block — HandleSyncResponse applies
@@ -1422,14 +1508,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// </summary>
     private void PruneProposalsByView(ulong currentView)
     {
-        var staleKeys = new List<(ulong, PeerId)>();
-        foreach (var key in _proposalsByView.Keys)
-        {
-            if (key.View < currentView)
-                staleKeys.Add(key);
-        }
+        // N-17: Thread-safe iteration with .ToArray() on ConcurrentDictionary
+        var staleKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < currentView);
         foreach (var key in staleKeys)
-            _proposalsByView.Remove(key);
+            _proposalsByView.TryRemove(key, out _);
     }
 
     private PeerInfo? GetBestPeer()
@@ -1484,13 +1566,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
         else
             _consensus?.UpdateValidatorSet(newSet);
 
-        // Reset activity tracking for new set
+        // N-15: Initialize all validators as active at current block to prevent false-positive slashing
         _lastActiveBlock.Clear();
         foreach (var v in newSet.Validators)
             _lastActiveBlock[v.Address] = blockNumber;
 
-        // Clear stale proposal history
-        _proposalsByView.Clear();
+        // N-10: Sliding window — retain evidence for last 10 views on epoch transition
+        {
+            var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
+            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
+            foreach (var key in oldKeys)
+                _proposalsByView.TryRemove(key, out _);
+        }
 
         _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",
             blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
@@ -1569,5 +1656,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
+
+        // N-16: Zero private key on disposal to prevent memory scraping
+        CryptographicOperations.ZeroMemory(_privateKey);
     }
 }

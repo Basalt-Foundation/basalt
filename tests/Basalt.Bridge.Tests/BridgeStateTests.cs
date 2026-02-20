@@ -188,11 +188,12 @@ public class BridgeStateTests
     }
 
     [Fact]
-    public void ConfirmDeposit_Idempotent()
+    public void ConfirmDeposit_AlreadyConfirmed_Returns_False()
     {
+        // BRIDGE-05: re-confirm is no longer allowed
         _bridge.Lock(Addr(1), Addr(2), 100);
         _bridge.ConfirmDeposit(0, 42).Should().BeTrue();
-        _bridge.ConfirmDeposit(0, 43).Should().BeTrue(); // re-confirm is allowed
+        _bridge.ConfirmDeposit(0, 43).Should().BeFalse(); // already confirmed
         _bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Confirmed);
     }
 
@@ -214,12 +215,12 @@ public class BridgeStateTests
     }
 
     [Fact]
-    public void FinalizeDeposit_Without_Prior_Confirm_Still_Works()
+    public void FinalizeDeposit_Without_Prior_Confirm_Returns_False()
     {
-        // FinalizeDeposit does not enforce the Pending->Confirmed->Finalized order
+        // BRIDGE-05: FinalizeDeposit enforces the Pending->Confirmed->Finalized order
         _bridge.Lock(Addr(1), Addr(2), 100);
-        _bridge.FinalizeDeposit(0).Should().BeTrue();
-        _bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Finalized);
+        _bridge.FinalizeDeposit(0).Should().BeFalse(); // must be Confirmed first
+        _bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Pending);
     }
 
     // ── GetPendingDeposits ───────────────────────────────────────────────
@@ -229,6 +230,7 @@ public class BridgeStateTests
     {
         _bridge.Lock(Addr(1), Addr(2), 100);
         _bridge.Lock(Addr(1), Addr(2), 200);
+        _bridge.ConfirmDeposit(0, 10); // BRIDGE-05: must confirm before finalize
         _bridge.FinalizeDeposit(0);
 
         var pending = _bridge.GetPendingDeposits();
@@ -241,8 +243,9 @@ public class BridgeStateTests
     {
         _bridge.Lock(Addr(1), Addr(2), 100); // Pending
         _bridge.Lock(Addr(1), Addr(2), 200); // Pending -> Confirmed
-        _bridge.Lock(Addr(1), Addr(2), 300); // Pending -> Finalized
+        _bridge.Lock(Addr(1), Addr(2), 300); // Pending -> Confirmed -> Finalized
         _bridge.ConfirmDeposit(1, 10);
+        _bridge.ConfirmDeposit(2, 11); // BRIDGE-05: must confirm before finalize
         _bridge.FinalizeDeposit(2);
 
         var pending = _bridge.GetPendingDeposits();
@@ -270,6 +273,8 @@ public class BridgeStateTests
     {
         _bridge.Lock(Addr(1), Addr(2), 100);
         _bridge.Lock(Addr(1), Addr(2), 200);
+        _bridge.ConfirmDeposit(0, 10); // BRIDGE-05: must confirm before finalize
+        _bridge.ConfirmDeposit(1, 11);
         _bridge.FinalizeDeposit(0);
         _bridge.FinalizeDeposit(1);
 

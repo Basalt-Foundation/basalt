@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using Basalt.Core;
 using Basalt.Crypto;
 
@@ -8,6 +8,11 @@ namespace Basalt.Storage;
 /// In-memory state database for development and testing.
 /// Uses Dictionary-based storage with naive state root computation.
 /// </summary>
+/// <remarks>
+/// <b>Thread safety:</b> This class is <b>not</b> thread-safe.
+/// It is designed for single-threaded execution within a block processing pipeline.
+/// Concurrent readers should call <see cref="Fork"/> to obtain an isolated snapshot.
+/// </remarks>
 public sealed class InMemoryStateDb : IStateDatabase
 {
     private readonly Dictionary<Address, AccountState> _accounts = new();
@@ -47,7 +52,7 @@ public sealed class InMemoryStateDb : IStateDatabase
             address.WriteTo(addrBytes);
             hasher.Update(addrBytes);
 
-            BitConverter.TryWriteBytes(buffer.AsSpan(), state.Nonce);
+            BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(), state.Nonce);
             state.Balance.WriteTo(buffer.AsSpan(8));
             state.StorageRoot.WriteTo(buffer.AsSpan(40));
             state.CodeHash.WriteTo(buffer.AsSpan(72));
@@ -59,13 +64,17 @@ public sealed class InMemoryStateDb : IStateDatabase
         return hasher.Finalize();
     }
 
+    /// <summary>
+    /// Create a snapshot fork of this state database.
+    /// Storage byte[] values are deep-copied to prevent cross-fork mutation.
+    /// </summary>
     public IStateDatabase Fork()
     {
         var fork = new InMemoryStateDb();
         foreach (var (addr, state) in _accounts)
             fork._accounts[addr] = state;
         foreach (var (key, value) in _storage)
-            fork._storage[key] = value;
+            fork._storage[key] = (byte[])value.Clone();
         return fork;
     }
 

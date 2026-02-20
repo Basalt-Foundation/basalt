@@ -54,13 +54,42 @@ public sealed class ComplianceEngine : IComplianceVerifier
     }
 
     /// <summary>
-    /// Register or update a compliance policy for a token.
-    /// Only callable by the token issuer/owner.
+    /// Get the proof requirements for a given contract/token address.
+    /// Returns the RequiredProofs from the compliance policy, or empty if no policy.
     /// </summary>
-    public void SetPolicy(byte[] tokenAddress, CompliancePolicy policy)
+    public ProofRequirement[] GetRequirements(byte[] contractAddress)
     {
         lock (_lock)
         {
+            if (_policies.TryGetValue(ToHex(contractAddress), out var policy))
+                return policy.RequiredProofs;
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Reset nullifiers in the underlying ZK verifier (COMPL-07).
+    /// Called at block boundaries to bound memory usage.
+    /// </summary>
+    public void ResetNullifiers()
+    {
+        (_zkVerifier as ZkComplianceVerifier)?.ResetNullifiers();
+    }
+
+    /// <summary>
+    /// Register or update a compliance policy for a token.
+    /// Only callable by the token issuer/owner (COMPL-05).
+    /// </summary>
+    public bool SetPolicy(byte[] tokenAddress, CompliancePolicy policy, byte[]? caller = null)
+    {
+        lock (_lock)
+        {
+            // COMPL-05: If a policy already exists, verify the caller is the original issuer
+            if (caller != null && _policies.TryGetValue(ToHex(tokenAddress), out var existing)
+                && existing.Issuer != null && ToHex(existing.Issuer) != ToHex(caller))
+                return false;
+
+            policy.Issuer ??= caller;
             _policies[ToHex(tokenAddress)] = policy;
             _auditLog.Add(new ComplianceEvent
             {
@@ -69,6 +98,8 @@ public sealed class ComplianceEngine : IComplianceVerifier
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Details = $"Policy updated: KYC={policy.RequiredSenderKycLevel}/{policy.RequiredReceiverKycLevel}",
             });
+
+            return true;
         }
     }
 

@@ -20,6 +20,9 @@ public static class FaucetEndpoint
 {
     private static readonly ConcurrentDictionary<string, DateTimeOffset> _lastRequest = new();
 
+    /// <summary>Maximum number of tracked rate-limit entries.</summary>
+    private const int MaxRateLimitEntries = 100_000;
+
     /// <summary>Drip amount: 100 BSLT (100 * 10^18 base units).</summary>
     public static readonly UInt256 DripAmount = UInt256.Parse("100000000000000000000");
 
@@ -94,6 +97,17 @@ public static class FaucetEndpoint
                 }
             }
 
+            // HIGH-3: Evict stale entries to prevent unbounded memory growth
+            if (_lastRequest.Count > MaxRateLimitEntries)
+            {
+                var cutoff = DateTimeOffset.UtcNow.AddSeconds(-CooldownSeconds * 2);
+                foreach (var kvp in _lastRequest)
+                {
+                    if (kvp.Value < cutoff)
+                        _lastRequest.TryRemove(kvp.Key, out _);
+                }
+            }
+
             // Use the higher of MinGasPrice and current base fee
             var baseFee = chainManager?.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
             var gasPrice = chainParams.MinGasPrice > baseFee ? chainParams.MinGasPrice : baseFee;
@@ -109,7 +123,7 @@ public static class FaucetEndpoint
                     Message = "Faucet is empty.",
                 });
 
-            // Get the next nonce (track locally for rapid requests)
+            // HIGH-5: Reserve nonce but only commit after successful mempool.Add()
             ulong nonce;
             lock (_nonceLock)
             {
@@ -119,7 +133,7 @@ public static class FaucetEndpoint
                     _pendingNonce = onChainNonce;
                     _nonceInitialized = true;
                 }
-                nonce = _pendingNonce++;
+                nonce = _pendingNonce; // Don't increment yet
             }
 
             // Create and sign a proper transaction
@@ -154,6 +168,12 @@ public static class FaucetEndpoint
                     Success = false,
                     Message = "Transaction rejected by mempool.",
                 });
+            }
+
+            // HIGH-5: Only increment nonce after successful mempool addition
+            lock (_nonceLock)
+            {
+                _pendingNonce = nonce + 1;
             }
 
             _logger?.LogInformation("Faucet tx {Hash} added to mempool (size={Size})",

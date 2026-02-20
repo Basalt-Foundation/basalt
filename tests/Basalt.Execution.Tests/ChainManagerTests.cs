@@ -9,10 +9,14 @@ namespace Basalt.Execution.Tests;
 public class ChainManagerTests
 {
     private readonly ChainParameters _chainParams = ChainParameters.Devnet;
+    private long _nextTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     private Block CreateBlock(ulong number, Hash256 parentHash, uint chainId = 0)
     {
         if (chainId == 0) chainId = _chainParams.ChainId;
+
+        // Ensure strictly increasing timestamps for monotonicity validation
+        var timestamp = _nextTimestamp++;
 
         return new Block
         {
@@ -23,7 +27,7 @@ public class ChainManagerTests
                 StateRoot = Hash256.Zero,
                 TransactionsRoot = Hash256.Zero,
                 ReceiptsRoot = Hash256.Zero,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Timestamp = timestamp,
                 Proposer = Address.Zero,
                 ChainId = chainId,
                 GasUsed = 0,

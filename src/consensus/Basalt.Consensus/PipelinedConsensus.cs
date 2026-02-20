@@ -150,10 +150,10 @@ public sealed class PipelinedConsensus
 
         round.State = ConsensusState.Preparing;
 
-        // Sign and propose
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        blockHash.WriteTo(hashBytes);
-        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        // Sign and propose (domain-separated: phase || view || blockNumber || blockHash)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, round.View, blockNumber, blockHash);
+        var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
 
         // Self-vote PREPARE with signature tracking
@@ -166,6 +166,7 @@ public sealed class PipelinedConsensus
         return new ConsensusProposalMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ViewNumber = round.View,
             BlockNumber = blockNumber,
             BlockHash = blockHash,
@@ -207,10 +208,10 @@ public sealed class PipelinedConsensus
         if (proposal.SenderId != leader.PeerId)
             return null;
 
-        // Verify signature
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        proposal.BlockHash.WriteTo(hashBytes);
-        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), hashBytes, proposal.ProposerSignature.ToArray()))
+        // Verify signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
+        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
             return null;
 
         round.BlockHash = proposal.BlockHash;
@@ -238,10 +239,14 @@ public sealed class PipelinedConsensus
         if (!_validatorSet.IsValidator(vote.SenderId))
             return null;
 
-        // Verify signature
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        vote.BlockHash.WriteTo(hashBytes);
-        if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), hashBytes, vote.VoterSignature.ToArray()))
+        // F-CON-02: Verify vote is for the correct block hash
+        if (vote.BlockHash != round.BlockHash)
+            return null;
+
+        // Verify signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, vote.Phase, vote.ViewNumber, vote.BlockNumber, vote.BlockHash);
+        if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), sigPayload, vote.VoterSignature.ToArray()))
             return null;
 
         // Record vote with signature for aggregation
@@ -347,14 +352,15 @@ public sealed class PipelinedConsensus
         // Broadcast auto-join to make the vote visible to other nodes
         if (newAutoJoin)
         {
-            Span<byte> viewBytes = stackalloc byte[8];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, viewChange.ProposedView);
-            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+            Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
+            WriteViewChangeSigningPayload(viewPayload, viewChange.ProposedView);
+            var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
             var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
             return new ViewChangeMessage
             {
                 SenderId = _localPeerId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 CurrentView = 0, // Not meaningful in pipelined mode
                 ProposedView = viewChange.ProposedView,
                 VoterSignature = signature,
@@ -539,18 +545,18 @@ public sealed class PipelinedConsensus
 
     private void RecordSelfVote(ConsensusRound round, VotePhase phase)
     {
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        round.BlockHash.WriteTo(hashBytes);
-        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, phase, round.View, round.BlockNumber, round.BlockHash);
+        var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
         RecordVote(round, phase, _localPeerId, signatureBytes, publicKeyBytes);
     }
 
     private ConsensusVoteMessage CreateVote(ConsensusRound round, VotePhase phase)
     {
-        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-        round.BlockHash.WriteTo(hashBytes);
-        var signatureBytes = _blsSigner.Sign(_privateKey, hashBytes);
+        Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
+        WriteConsensusSigningPayload(sigPayload, phase, round.View, round.BlockNumber, round.BlockHash);
+        var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
         var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
         var publicKey = new BlsPublicKey(publicKeyBytes);
@@ -558,6 +564,7 @@ public sealed class PipelinedConsensus
         var vote = new ConsensusVoteMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ViewNumber = round.View,
             BlockNumber = round.BlockNumber,
             BlockHash = round.BlockHash,
@@ -575,19 +582,47 @@ public sealed class PipelinedConsensus
     private ViewChangeMessage RequestViewChange(ConsensusRound round)
     {
         var proposedView = round.View + 1;
-        Span<byte> viewBytes = stackalloc byte[8];
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(viewBytes, proposedView);
-        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewBytes));
+        Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
+        WriteViewChangeSigningPayload(viewPayload, proposedView);
+        var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
         return new ViewChangeMessage
         {
             SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             CurrentView = round.View,
             ProposedView = proposedView,
             VoterSignature = signature,
             VoterPublicKey = publicKey,
         };
+    }
+
+    /// <summary>
+    /// Build the domain-separated signing payload for BLS consensus signatures.
+    /// Format: [1-byte phase tag || 8-byte view LE || 8-byte blockNumber LE || 32-byte blockHash]
+    /// This prevents cross-phase and cross-view signature replay attacks (F-CON-01).
+    /// </summary>
+    private const int ConsensusPayloadSize = 1 + 8 + 8 + Hash256.Size; // 49 bytes
+
+    private static void WriteConsensusSigningPayload(Span<byte> buffer, VotePhase phase, ulong view, ulong blockNumber, Hash256 blockHash)
+    {
+        buffer[0] = (byte)phase;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], view);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[9..], blockNumber);
+        blockHash.WriteTo(buffer[17..]);
+    }
+
+    /// <summary>
+    /// Build the domain-separated signing payload for view change messages.
+    /// Format: [0xFF tag || 8-byte proposedView LE]
+    /// </summary>
+    private const int ViewChangePayloadSize = 1 + 8; // 9 bytes
+
+    private static void WriteViewChangeSigningPayload(Span<byte> buffer, ulong proposedView)
+    {
+        buffer[0] = 0xFF;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], proposedView);
     }
 
     /// <summary>

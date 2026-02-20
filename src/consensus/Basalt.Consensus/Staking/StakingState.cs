@@ -164,6 +164,47 @@ public sealed class StakingState : IStakingState
     }
 
     /// <summary>
+    /// Atomically apply a slash to a validator's stake under the lock.
+    /// This prevents race conditions where concurrent slashing operations
+    /// read stale StakeInfo and double-slash (F-CON-03).
+    /// </summary>
+    /// <returns>The actual penalty applied, or null if validator not found.</returns>
+    public UInt256? ApplySlash(Address validatorAddress, UInt256 penalty)
+    {
+        lock (_lock)
+        {
+            if (!_stakes.TryGetValue(validatorAddress, out var info))
+                return null;
+
+            // Cap penalty at total stake
+            if (penalty > info.TotalStake)
+                penalty = info.TotalStake;
+
+            // Apply penalty to self-stake first, then delegated
+            if (penalty <= info.SelfStake)
+            {
+                info.SelfStake -= penalty;
+            }
+            else
+            {
+                var remaining = penalty - info.SelfStake;
+                info.SelfStake = UInt256.Zero;
+                info.DelegatedStake = info.DelegatedStake > remaining
+                    ? info.DelegatedStake - remaining
+                    : UInt256.Zero;
+            }
+
+            info.TotalStake = info.SelfStake + info.DelegatedStake;
+
+            // Deactivate if stake is too low
+            if (info.TotalStake < MinValidatorStake)
+                info.IsActive = false;
+
+            return penalty;
+        }
+    }
+
+    /// <summary>
     /// Get the self-stake of a validator.
     /// </summary>
     public UInt256? GetSelfStake(Address validatorAddress)

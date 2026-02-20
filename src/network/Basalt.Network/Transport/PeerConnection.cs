@@ -7,6 +7,8 @@ using System.Net.Sockets;
 /// Wraps a single TCP connection to a remote peer.
 /// Uses length-prefixed framing: [4 bytes big-endian length][N bytes payload].
 /// Thread-safe for concurrent sends via an internal semaphore.
+/// NET-M02: Thread-safe dispose with Interlocked.
+/// NET-H02: Per-frame read timeout.
 /// </summary>
 public sealed class PeerConnection : IDisposable
 {
@@ -17,12 +19,16 @@ public sealed class PeerConnection : IDisposable
 
     private const int LengthPrefixSize = 4;
 
+    /// <summary>NET-H02: Per-frame read timeout (120 seconds).</summary>
+    private static readonly TimeSpan FrameReadTimeout = TimeSpan.FromSeconds(120);
+
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
     private readonly Action<PeerId, byte[]> _onMessageReceived;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
-    private volatile bool _disposed;
+    /// <summary>NET-M02: Use int + Interlocked for thread-safe dispose.</summary>
+    private int _disposed;
 
     public PeerConnection(TcpClient client, PeerId peerId, Action<PeerId, byte[]> onMessageReceived)
     {
@@ -34,17 +40,22 @@ public sealed class PeerConnection : IDisposable
 
     /// <summary>
     /// The identifier of the remote peer on this connection.
+    /// NET-L01: Setter is internal to prevent external mutation.
     /// </summary>
-    public PeerId PeerId { get; set; }
+    public PeerId PeerId { get; internal set; }
+
+    private bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     /// <summary>
     /// Whether the underlying TCP connection is still alive.
     /// </summary>
-    public bool IsConnected => !_disposed && _client.Connected;
+    public bool IsConnected => !IsDisposed && _client.Connected;
 
     /// <summary>
     /// Starts the asynchronous read loop that continuously reads length-prefixed messages
     /// and invokes the message callback for each complete frame.
+    /// NET-H02: Each frame read has a 120s timeout to detect stale connections.
+    /// NET-M06: Length is validated as uint before int cast.
     /// </summary>
     public async Task StartReadLoopAsync(CancellationToken cancellationToken)
     {
@@ -52,26 +63,37 @@ public sealed class PeerConnection : IDisposable
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested && !_disposed)
+            while (!cancellationToken.IsCancellationRequested && !IsDisposed)
             {
+                // NET-H02: Per-frame read timeout
+                using var frameCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                frameCts.CancelAfter(FrameReadTimeout);
+
                 // Read the 4-byte length header.
-                await ReadExactAsync(_stream, headerBuffer, cancellationToken).ConfigureAwait(false);
+                await ReadExactAsync(_stream, headerBuffer, frameCts.Token).ConfigureAwait(false);
 
-                int messageLength = (int)BinaryPrimitives.ReadUInt32BigEndian(headerBuffer);
-
-                if (messageLength <= 0 || messageLength > MaxMessageSize)
+                // NET-M06: Read as uint first, validate range, then cast to int
+                uint rawLength = BinaryPrimitives.ReadUInt32BigEndian(headerBuffer);
+                if (rawLength == 0 || rawLength > MaxMessageSize)
                 {
                     throw new InvalidOperationException(
-                        $"Invalid message length {messageLength} from peer {PeerId}. " +
+                        $"Invalid message length {rawLength} from peer {PeerId}. " +
                         $"Must be between 1 and {MaxMessageSize} bytes.");
                 }
 
+                int messageLength = (int)rawLength;
+
                 // Read the payload.
+                // NET-L04: Consider ArrayPool for large payloads in future optimization
                 var payload = new byte[messageLength];
-                await ReadExactAsync(_stream, payload, cancellationToken).ConfigureAwait(false);
+                await ReadExactAsync(_stream, payload, frameCts.Token).ConfigureAwait(false);
 
                 _onMessageReceived(PeerId, payload);
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // NET-H02: Frame read timeout — treat as stale connection.
         }
         catch (OperationCanceledException)
         {
@@ -94,6 +116,7 @@ public sealed class PeerConnection : IDisposable
     /// <summary>
     /// Sends a length-prefixed message to the remote peer.
     /// Thread-safe: concurrent callers are serialized through an internal semaphore.
+    /// NET-M03: Header and payload combined into a single write to avoid TCP fragmentation.
     /// </summary>
     public async Task SendAsync(byte[] data, CancellationToken cancellationToken = default)
     {
@@ -106,16 +129,17 @@ public sealed class PeerConnection : IDisposable
             throw new ArgumentException(
                 $"Message size {data.Length} exceeds maximum of {MaxMessageSize} bytes.", nameof(data));
 
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
 
-        var header = new byte[LengthPrefixSize];
-        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)data.Length);
+        // NET-M03: Combine header + payload into single buffer to avoid TCP fragmentation
+        var frame = new byte[LengthPrefixSize + data.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(frame, (uint)data.Length);
+        data.CopyTo(frame.AsSpan(LengthPrefixSize));
 
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-            await _stream.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+            await _stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -127,10 +151,11 @@ public sealed class PeerConnection : IDisposable
     /// <summary>
     /// Receive a single length-prefixed message synchronously (for handshake).
     /// Returns the payload bytes, or null if the connection was closed.
+    /// NET-M06: Length validated as uint before int cast.
     /// </summary>
     public async Task<byte[]?> ReceiveOneAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
 
         var headerBuffer = new byte[LengthPrefixSize];
         try
@@ -142,12 +167,20 @@ public sealed class PeerConnection : IDisposable
             return null;
         }
 
-        int messageLength = (int)BinaryPrimitives.ReadUInt32BigEndian(headerBuffer);
-        if (messageLength <= 0 || messageLength > MaxMessageSize)
+        uint rawLength = BinaryPrimitives.ReadUInt32BigEndian(headerBuffer);
+        if (rawLength == 0 || rawLength > MaxMessageSize)
             return null;
 
-        var payload = new byte[messageLength];
-        await ReadExactAsync(_stream, payload, cancellationToken).ConfigureAwait(false);
+        int messageLength = (int)rawLength;
+        var payload = new byte[messageLength]; // NET-L04: Consider ArrayPool for large payloads in future optimization
+        try
+        {
+            await ReadExactAsync(_stream, payload, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return null; // NET-L03: Consistent IOException handling for payload read
+        }
         return payload;
     }
 
@@ -172,12 +205,13 @@ public sealed class PeerConnection : IDisposable
         }
     }
 
+    /// <summary>
+    /// NET-M02: Thread-safe dispose using Interlocked.Exchange.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        _disposed = true;
 
         try
         {
@@ -197,6 +231,13 @@ public sealed class PeerConnection : IDisposable
             // Best-effort cleanup.
         }
 
-        _sendLock.Dispose();
+        try
+        {
+            _sendLock.Dispose();
+        }
+        catch
+        {
+            // Best-effort cleanup — may already be disposed.
+        }
     }
 }

@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace Basalt.Confidentiality.Crypto;
 
 /// <summary>
@@ -126,8 +128,13 @@ public static class Groth16Codec
         var deltaG2 = data.Slice(offset, PairingEngine.G2CompressedSize).ToArray();
         offset += PairingEngine.G2CompressedSize;
 
-        int icCount = BitConverter.ToInt32(data.Slice(offset, sizeof(int)));
+        // F-12: Use explicit endianness and validate IC count bounds.
+        int icCount = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(offset, sizeof(int)));
         offset += sizeof(int);
+
+        // F-12: Validate IC count to prevent negative values or absurd allocations.
+        if (icCount < 0 || icCount > 1024)
+            throw new ArgumentException($"Invalid IC count: {icCount}");
 
         int expectedRemaining = icCount * PairingEngine.G1CompressedSize;
         if (data.Length - offset < expectedRemaining)

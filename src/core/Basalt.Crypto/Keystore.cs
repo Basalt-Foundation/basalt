@@ -31,32 +31,39 @@ public static class Keystore
         var nonce = RandomNumberGenerator.GetBytes(NonceSize);
 
         var derivedKey = DeriveKey(password, salt);
-
-        var ciphertext = new byte[privateKey.Length];
-        var tag = new byte[TagSize];
-
-        using var aes = new AesGcm(derivedKey, TagSize);
-        aes.Encrypt(nonce, privateKey, ciphertext, tag);
-
-        return new KeystoreFile
+        try
         {
-            Version = 1,
-            Crypto = new KeystoreCrypto
+            var ciphertext = new byte[privateKey.Length];
+            var tag = new byte[TagSize];
+
+            using var aes = new AesGcm(derivedKey, TagSize);
+            aes.Encrypt(nonce, privateKey, ciphertext, tag);
+
+            return new KeystoreFile
             {
-                Cipher = "aes-256-gcm",
-                CipherText = Convert.ToHexString(ciphertext).ToLowerInvariant(),
-                Nonce = Convert.ToHexString(nonce).ToLowerInvariant(),
-                Tag = Convert.ToHexString(tag).ToLowerInvariant(),
-                Kdf = "argon2id",
-                KdfParams = new KdfParams
+                Version = 1,
+                Crypto = new KeystoreCrypto
                 {
-                    Salt = Convert.ToHexString(salt).ToLowerInvariant(),
-                    Iterations = Argon2Iterations,
-                    MemoryKB = Argon2MemoryKB,
-                    Parallelism = Argon2Parallelism,
+                    Cipher = "aes-256-gcm",
+                    CipherText = Convert.ToHexString(ciphertext).ToLowerInvariant(),
+                    Nonce = Convert.ToHexString(nonce).ToLowerInvariant(),
+                    Tag = Convert.ToHexString(tag).ToLowerInvariant(),
+                    Kdf = "argon2id",
+                    KdfParams = new KdfParams
+                    {
+                        Salt = Convert.ToHexString(salt).ToLowerInvariant(),
+                        Iterations = Argon2Iterations,
+                        MemoryKB = Argon2MemoryKB,
+                        Parallelism = Argon2Parallelism,
+                    },
                 },
-            },
-        };
+            };
+        }
+        finally
+        {
+            // CORE-07: Zero derived key material after use
+            CryptographicOperations.ZeroMemory(derivedKey);
+        }
     }
 
     /// <summary>
@@ -75,12 +82,20 @@ public static class Keystore
             crypto.KdfParams.MemoryKB,
             crypto.KdfParams.Parallelism);
 
-        var plaintext = new byte[ciphertext.Length];
+        try
+        {
+            var plaintext = new byte[ciphertext.Length];
 
-        using var aes = new AesGcm(derivedKey, TagSize);
-        aes.Decrypt(nonce, ciphertext, tag, plaintext);
+            using var aes = new AesGcm(derivedKey, TagSize);
+            aes.Decrypt(nonce, ciphertext, tag, plaintext);
 
-        return plaintext;
+            return plaintext;
+        }
+        finally
+        {
+            // CORE-07: Zero derived key material after use
+            CryptographicOperations.ZeroMemory(derivedKey);
+        }
     }
 
     /// <summary>

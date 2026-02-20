@@ -16,26 +16,31 @@ public static class MetricsEndpoint
 {
     private static long _totalTransactionsProcessed;
     private static long _lastBlockTimestamp;
-    private static int _lastBlockTxCount;
-    private static double _currentTps;
+    private static long _lastBlockTxCount;
+    private static long _currentTpsTicks; // Store as ticks (long) for Interlocked
     private static readonly Stopwatch Uptime = Stopwatch.StartNew();
 
     /// <summary>
     /// Record a produced block for TPS calculation.
+    /// MEDIUM-6: All shared fields use Interlocked for thread safety.
     /// </summary>
     public static void RecordBlock(int txCount, long timestampMs)
     {
         Interlocked.Add(ref _totalTransactionsProcessed, txCount);
 
-        if (_lastBlockTimestamp > 0)
+        var prevTimestamp = Interlocked.Read(ref _lastBlockTimestamp);
+        if (prevTimestamp > 0)
         {
-            var elapsedMs = timestampMs - _lastBlockTimestamp;
+            var elapsedMs = timestampMs - prevTimestamp;
             if (elapsedMs > 0)
-                _currentTps = txCount * 1000.0 / elapsedMs;
+            {
+                var tps = txCount * 1000.0 / elapsedMs;
+                Interlocked.Exchange(ref _currentTpsTicks, BitConverter.DoubleToInt64Bits(tps));
+            }
         }
 
-        _lastBlockTimestamp = timestampMs;
-        _lastBlockTxCount = txCount;
+        Interlocked.Exchange(ref _lastBlockTimestamp, timestampMs);
+        Interlocked.Exchange(ref _lastBlockTxCount, txCount);
     }
 
     /// <summary>
@@ -61,7 +66,7 @@ public static class MetricsEndpoint
             // TPS metrics
             sb.AppendLine("# HELP basalt_tps Current transactions per second.");
             sb.AppendLine("# TYPE basalt_tps gauge");
-            sb.Append("basalt_tps ").AppendLine(_currentTps.ToString("F2", CultureInfo.InvariantCulture));
+            sb.Append("basalt_tps ").AppendLine(BitConverter.Int64BitsToDouble(Interlocked.Read(ref _currentTpsTicks)).ToString("F2", CultureInfo.InvariantCulture));
 
             // Total transactions processed
             sb.AppendLine("# HELP basalt_transactions_total Total transactions processed.");

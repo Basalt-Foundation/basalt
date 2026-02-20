@@ -41,16 +41,26 @@ public class EpisubIWantTests
     {
         var service = CreateService();
         var msgId = MakeMessageId(2);
-        var data = new byte[] { 0xAA, 0xBB };
 
-        service.CacheMessage(msgId, data);
-
+        // NET-M16: Set up IHAVE correlation by broadcasting to the peer first.
+        // The sender must be a lazy peer so BroadcastPriority sends IHAVE and records it.
         var sender = new PeerId(new Hash256(new byte[32]));
+        // Fill eager slots so sender gets placed in the lazy tier
+        for (var i = 0; i < 6; i++)
+        {
+            var filler = new byte[32];
+            filler[0] = (byte)(i + 10);
+            service.OnPeerConnected(new PeerId(new Hash256(filler)));
+        }
+        service.OnPeerConnected(sender); // goes to lazy tier
+        service.OnSendMessage += (_, _) => { }; // sink for serialized messages
+        service.BroadcastPriority(msgId, new PingMessage());
+
+        // The message is now cached and the IHAVE correlation is recorded for sender
         var results = service.HandleIWant(sender, [msgId]).ToList();
 
         results.Should().HaveCount(1);
         results[0].Id.Should().Be(msgId);
-        results[0].Data.Should().Equal(data);
     }
 
     [Fact]
@@ -71,11 +81,21 @@ public class EpisubIWantTests
         var service = CreateService();
         var knownId = MakeMessageId(1);
         var unknownId = MakeMessageId(2);
-        var data = new byte[] { 0xFF };
 
-        service.CacheMessage(knownId, data);
-
+        // NET-M16: Set up IHAVE correlation by broadcasting the known message to the peer.
         var sender = new PeerId(new Hash256(new byte[32]));
+        // Fill eager slots so sender gets placed in the lazy tier
+        for (var i = 0; i < 6; i++)
+        {
+            var filler = new byte[32];
+            filler[0] = (byte)(i + 10);
+            service.OnPeerConnected(new PeerId(new Hash256(filler)));
+        }
+        service.OnPeerConnected(sender); // goes to lazy tier
+        service.OnSendMessage += (_, _) => { }; // sink for serialized messages
+        service.BroadcastPriority(knownId, new PingMessage());
+        // unknownId is never broadcast, so no IHAVE correlation exists for it
+
         var results = service.HandleIWant(sender, [knownId, unknownId]).ToList();
 
         results.Should().HaveCount(1);

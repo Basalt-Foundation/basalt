@@ -52,15 +52,41 @@ public class BridgeETHTests : IDisposable
 
     /// <summary>
     /// Compute withdrawal hash using the same algorithm as BridgeETH.ComputeWithdrawalHash.
-    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
+    /// Format: BLAKE3(version || LE_u32(chainId) || contractAddress || LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
     /// </summary>
     private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, UInt256 amount, byte[] stateRoot)
     {
-        var data = new byte[8 + recipient.Length + 32 + stateRoot.Length];
-        BitConverter.TryWriteBytes(data.AsSpan(0, 8), nonce);
-        recipient.CopyTo(data.AsSpan(8));
-        amount.WriteTo(data.AsSpan(8 + recipient.Length, 32));
-        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 32));
+        // version(1) + chainId(4) + contractAddress(20) + nonce(8) + recipient(20) + amount(32) + stateRoot(32) = 117
+        var data = new byte[1 + 4 + 20 + 8 + 20 + 32 + 32];
+        var offset = 0;
+
+        // Version byte
+        data[offset] = 0x02;
+        offset += 1;
+
+        // Chain ID (Context.ChainId)
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), Context.ChainId);
+        offset += 4;
+
+        // Contract address (Context.Self)
+        Context.Self.CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Nonce
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), nonce);
+        offset += 8;
+
+        // Recipient (fixed 20 bytes)
+        recipient.AsSpan(0, Math.Min(recipient.Length, 20)).CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Amount (UInt256 LE, 32 bytes)
+        amount.WriteTo(data.AsSpan(offset, 32));
+        offset += 32;
+
+        // State root (fixed 32 bytes)
+        stateRoot.AsSpan(0, Math.Min(stateRoot.Length, 32)).CopyTo(data.AsSpan(offset, 32));
+
         return Blake3Hasher.Hash(data).ToArray();
     }
 
@@ -104,6 +130,16 @@ public class BridgeETHTests : IDisposable
         return transfers;
     }
 
+    /// <summary>
+    /// Create a 32-byte state root for testing.
+    /// </summary>
+    private static byte[] MakeStateRoot(byte seed = 0xAA)
+    {
+        var root = new byte[32];
+        root[0] = seed;
+        return root;
+    }
+
     // ==========================================================================
     // 1. Admin Tests (5 tests)
     // ==========================================================================
@@ -119,6 +155,15 @@ public class BridgeETHTests : IDisposable
     public void Constructor_SetsThreshold()
     {
         _host.Call(() => _bridge.GetThreshold()).Should().Be(2u);
+    }
+
+    [Fact]
+    public void Constructor_ThresholdBelowTwo_Reverts()
+    {
+        // BRIDGE-04: threshold must be >= 2
+        _host.SetCaller(_admin);
+        var msg = _host.ExpectRevert(() => new BridgeETH(threshold: 1));
+        msg.Should().Contain("threshold must be >= 2");
     }
 
     [Fact]
@@ -412,7 +457,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 5000;
         ulong depositNonce = 42;
-        var stateRoot = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
+        var stateRoot = MakeStateRoot(0xAA);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
         var sigs = PackSignatures(hash,
@@ -448,7 +493,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 3000;
         ulong depositNonce = 10;
-        var stateRoot = new byte[] { 0x11, 0x22, 0x33 };
+        var stateRoot = MakeStateRoot(0x11);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
         var sigs = PackSignatures(hash,
@@ -472,7 +517,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 1000;
         ulong depositNonce = 0;
-        var stateRoot = new byte[] { 0xFF };
+        var stateRoot = MakeStateRoot(0xFF);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
         // Only 1 signature, threshold is 2
@@ -495,7 +540,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, badSigs));
+            _bridge.Unlock(0, _alice, (UInt256)1000, MakeStateRoot(), badSigs));
         msg.Should().Contain("invalid signatures format");
     }
 
@@ -508,7 +553,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 5000;
         ulong depositNonce = 7;
-        var stateRoot = new byte[] { 0xAA };
+        var stateRoot = MakeStateRoot(0xAA);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
         var sigs = PackSignatures(hash,
@@ -537,7 +582,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 1000;
         ulong depositNonce = 0;
-        var stateRoot = new byte[] { 0x01 };
+        var stateRoot = MakeStateRoot(0x01);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
 
@@ -562,7 +607,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 1000;
         ulong depositNonce = 0;
-        var stateRoot = new byte[] { 0x01 };
+        var stateRoot = MakeStateRoot(0x01);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
 
@@ -586,7 +631,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _bob;
         UInt256 amount = 9999;
         ulong depositNonce = 100;
-        var stateRoot = new byte[] { 0xFE, 0xED };
+        var stateRoot = MakeStateRoot(0xFE);
 
         var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
         var sigs = PackSignatures(hash,
@@ -611,7 +656,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 5000;
         ulong nonce = 42;
-        var stateRoot = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
+        var stateRoot = MakeStateRoot(0xAA);
 
         var hash1 = ComputeWithdrawalHash(nonce, recipient, amount, stateRoot);
         var hash2 = ComputeWithdrawalHash(nonce, recipient, amount, stateRoot);
@@ -629,19 +674,46 @@ public class BridgeETHTests : IDisposable
         RegisterAllRelayers();
         SetupNativeTransferTracking();
 
-        var hash = ComputeWithdrawalHash(0, _alice, UInt256.Zero, new byte[] { 0x01 });
+        _host.SetCaller(_bob);
+        var msg = _host.ExpectRevert(() =>
+            _bridge.Unlock(0, _alice, UInt256.Zero, MakeStateRoot(), new byte[96]));
+        msg.Should().Contain("zero amount");
+    }
+
+    [Fact]
+    public void Unlock_DecrementsTotalLocked()
+    {
+        // BRIDGE-02: verify _totalLocked is decremented on Unlock
+        RegisterAllRelayers();
+        var transfers = SetupNativeTransferTracking();
+
+        // First lock some tokens
+        _host.SetCaller(_alice);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        _host.Call(() => _bridge.GetTotalLocked()).Should().Be((UInt256)5000);
+
+        // Now unlock some
+        var recipient = _alice;
+        UInt256 unlockAmount = 3000;
+        var stateRoot = MakeStateRoot();
+
+        var hash = ComputeWithdrawalHash(0, recipient, unlockAmount, stateRoot);
         var sigs = PackSignatures(hash,
             (_relayer1Pub, _relayer1Priv),
             (_relayer2Pub, _relayer2Priv));
 
         _host.SetCaller(_bob);
-        var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, UInt256.Zero, new byte[] { 0x01 }, sigs));
-        msg.Should().Contain("zero amount");
+        _host.Call(() => _bridge.Unlock(0, recipient, unlockAmount, stateRoot, sigs));
+
+        // Total locked should be decremented
+        _host.Call(() => _bridge.GetTotalLocked()).Should().Be((UInt256)2000);
     }
 
     // ==========================================================================
-    // 5. Pause Tests (4 tests)
+    // 5. Pause Tests (4 tests + event tests)
     // ==========================================================================
 
     [Fact]
@@ -665,15 +737,9 @@ public class BridgeETHTests : IDisposable
         _host.SetCaller(_admin);
         _host.Call(() => _bridge.Pause());
 
-        UInt256 amount = 1000;
-        var hash = ComputeWithdrawalHash(0, _alice, amount, new byte[] { 0x01 });
-        var sigs = PackSignatures(hash,
-            (_relayer1Pub, _relayer1Priv),
-            (_relayer2Pub, _relayer2Priv));
-
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, amount, new byte[] { 0x01 }, sigs));
+            _bridge.Unlock(0, _alice, (UInt256)1000, MakeStateRoot(), new byte[96]));
         msg.Should().Contain("paused");
     }
 
@@ -702,6 +768,33 @@ public class BridgeETHTests : IDisposable
         _host.SetCaller(_alice);
         var msg = _host.ExpectRevert(() => _bridge.Pause());
         msg.Should().Contain("not admin");
+    }
+
+    [Fact]
+    public void Pause_EmitsBridgePausedEvent()
+    {
+        // BRIDGE-07: verify pause emits event
+        _host.SetCaller(_admin);
+        _host.ClearEvents();
+        _host.Call(() => _bridge.Pause());
+
+        var events = _host.GetEvents<BridgePausedEvent>().ToList();
+        events.Should().HaveCount(1);
+        events[0].Admin.Should().BeEquivalentTo(_admin);
+    }
+
+    [Fact]
+    public void Unpause_EmitsBridgeUnpausedEvent()
+    {
+        // BRIDGE-07: verify unpause emits event
+        _host.SetCaller(_admin);
+        _host.Call(() => _bridge.Pause());
+        _host.ClearEvents();
+        _host.Call(() => _bridge.Unpause());
+
+        var events = _host.GetEvents<BridgeUnpausedEvent>().ToList();
+        events.Should().HaveCount(1);
+        events[0].Admin.Should().BeEquivalentTo(_admin);
     }
 
     // ==========================================================================
@@ -766,7 +859,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, badSigs));
+            _bridge.Unlock(0, _alice, (UInt256)1000, MakeStateRoot(), badSigs));
         msg.Should().Contain("invalid signatures format");
     }
 
@@ -778,35 +871,159 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, _alice, (UInt256)1000, new byte[] { 0x01 }, Array.Empty<byte>()));
+            _bridge.Unlock(0, _alice, (UInt256)1000, MakeStateRoot(), Array.Empty<byte>()));
         msg.Should().Contain("invalid signatures format");
     }
 
     [Fact]
-    public void Unlock_ThresholdOne_SingleSignatureSuffices()
+    public void Unlock_RecipientNot20Bytes_Reverts()
     {
-        // Add only 1 relayer and set threshold to 1
-        _host.SetCaller(_admin);
-        _host.Call(() => _bridge.AddRelayer(_relayer1Pub));
-        _host.Call(() => _bridge.SetThreshold(1));
+        // BRIDGE-03: recipient must be exactly 20 bytes
+        RegisterAllRelayers();
+        SetupNativeTransferTracking();
 
-        var transfers = SetupNativeTransferTracking();
-
-        var recipient = _alice;
-        UInt256 amount = 2000;
-        ulong depositNonce = 0;
-        var stateRoot = new byte[] { 0x01 };
-
-        var hash = ComputeWithdrawalHash(depositNonce, recipient, amount, stateRoot);
-        var sigs = PackSignatures(hash,
-            (_relayer1Pub, _relayer1Priv));
+        var shortRecipient = new byte[] { 0x01, 0x02, 0x03 };
 
         _host.SetCaller(_bob);
-        _host.Call(() => _bridge.Unlock(depositNonce, recipient, amount, stateRoot, sigs));
+        var msg = _host.ExpectRevert(() =>
+            _bridge.Unlock(0, shortRecipient, (UInt256)1000, MakeStateRoot(), new byte[96]));
+        msg.Should().Contain("recipient must be 20 bytes");
+    }
 
+    [Fact]
+    public void Unlock_StateRootNot32Bytes_Reverts()
+    {
+        // BRIDGE-03: stateRoot must be exactly 32 bytes
+        RegisterAllRelayers();
+        SetupNativeTransferTracking();
+
+        var shortRoot = new byte[] { 0x01 };
+
+        _host.SetCaller(_bob);
+        var msg = _host.ExpectRevert(() =>
+            _bridge.Unlock(0, _alice, (UInt256)1000, shortRoot, new byte[96]));
+        msg.Should().Contain("stateRoot must be 32 bytes");
+    }
+
+    // ==========================================================================
+    // 8. CancelDeposit Tests (BRIDGE-09)
+    // ==========================================================================
+
+    [Fact]
+    public void CancelDeposit_RefundsExpiredDeposit()
+    {
+        var transfers = SetupNativeTransferTracking();
+
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(100);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        _host.Call(() => _bridge.GetTotalLocked()).Should().Be((UInt256)5000);
+
+        // Advance past expiry
+        _host.SetBlockHeight(100 + 50400 + 1);
+
+        _host.ClearEvents();
+        _host.Call(() => _bridge.CancelDeposit(0));
+
+        // Verify refund
         transfers.Should().HaveCount(1);
-        transfers[0].to.Should().BeEquivalentTo(recipient);
-        transfers[0].amount.Should().Be(amount);
+        transfers[0].to.Should().BeEquivalentTo(_alice);
+        transfers[0].amount.Should().Be((UInt256)5000);
+
+        // Verify status
+        _host.Call(() => _bridge.GetDepositStatus(0)).Should().Be("cancelled");
+
+        // Verify total locked decremented
+        _host.Call(() => _bridge.GetTotalLocked()).Should().Be(UInt256.Zero);
+
+        // Verify event
+        var events = _host.GetEvents<DepositCancelledEvent>().ToList();
+        events.Should().HaveCount(1);
+        events[0].Nonce.Should().Be(0UL);
+        events[0].Sender.Should().BeEquivalentTo(_alice);
+        events[0].Amount.Should().Be((UInt256)5000);
+    }
+
+    [Fact]
+    public void CancelDeposit_NotExpired_Reverts()
+    {
+        SetupNativeTransferTracking();
+
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(100);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        // Not enough blocks have passed
+        _host.SetBlockHeight(100 + 50000);
+
+        var msg = _host.ExpectRevert(() => _bridge.CancelDeposit(0));
+        msg.Should().Contain("deposit not expired");
+    }
+
+    [Fact]
+    public void CancelDeposit_NotSender_Reverts()
+    {
+        SetupNativeTransferTracking();
+
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(100);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        // Bob tries to cancel Alice's deposit
+        _host.SetBlockHeight(100 + 50400 + 1);
+        _host.SetCaller(_bob);
+
+        var msg = _host.ExpectRevert(() => _bridge.CancelDeposit(0));
+        msg.Should().Contain("not deposit sender");
+    }
+
+    [Fact]
+    public void CancelDeposit_AlreadyConfirmed_Reverts()
+    {
+        SetupNativeTransferTracking();
+
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(100);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        _host.SetCaller(_admin);
+        _host.Call(() => _bridge.ConfirmDeposit(0));
+
+        _host.SetBlockHeight(100 + 50400 + 1);
+        _host.SetCaller(_alice);
+
+        var msg = _host.ExpectRevert(() => _bridge.CancelDeposit(0));
+        msg.Should().Contain("deposit not pending");
+    }
+
+    [Fact]
+    public void CancelDeposit_WhenPaused_Reverts()
+    {
+        SetupNativeTransferTracking();
+
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(100);
+        Context.TxValue = (UInt256)5000;
+        _host.Call(() => _bridge.Lock(new byte[] { 0x01 }));
+        Context.TxValue = UInt256.Zero;
+
+        _host.SetCaller(_admin);
+        _host.Call(() => _bridge.Pause());
+
+        _host.SetBlockHeight(100 + 50400 + 1);
+        _host.SetCaller(_alice);
+
+        var msg = _host.ExpectRevert(() => _bridge.CancelDeposit(0));
+        msg.Should().Contain("paused");
     }
 
     // ==========================================================================
@@ -919,16 +1136,10 @@ public class BridgeETHTests : IDisposable
         RegisterAllRelayers();
         SetupNativeTransferTracking();
 
-        UInt256 amount = 1000;
-        var hash = ComputeWithdrawalHash(0, Array.Empty<byte>(), amount, new byte[] { 0x01 });
-        var sigs = PackSignatures(hash,
-            (_relayer1Pub, _relayer1Priv),
-            (_relayer2Pub, _relayer2Priv));
-
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() =>
-            _bridge.Unlock(0, Array.Empty<byte>(), amount, new byte[] { 0x01 }, sigs));
-        msg.Should().Contain("invalid recipient");
+            _bridge.Unlock(0, Array.Empty<byte>(), (UInt256)1000, MakeStateRoot(), new byte[96]));
+        msg.Should().Contain("recipient must be 20 bytes");
     }
 
     [Fact]
@@ -940,7 +1151,7 @@ public class BridgeETHTests : IDisposable
         var recipient = _alice;
         UInt256 amount = 1000;
         ulong depositNonce = 0;
-        var stateRoot = new byte[] { 0x01 };
+        var stateRoot = MakeStateRoot(0x01);
 
         // Sign a DIFFERENT hash than what the contract will compute
         var wrongHash = new byte[32];

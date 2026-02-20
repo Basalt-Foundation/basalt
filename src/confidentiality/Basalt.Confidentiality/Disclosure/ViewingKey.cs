@@ -58,10 +58,11 @@ public static class ViewingKey
         // Generate ephemeral key pair for this encryption
         var (ephPrivKey, ephPubKey) = X25519KeyExchange.GenerateKeyPair();
 
+        byte[]? sharedSecret = null;
         try
         {
             // Derive shared secret
-            var sharedSecret = X25519KeyExchange.DeriveSharedSecret(ephPrivKey, viewerPublicKey);
+            sharedSecret = X25519KeyExchange.DeriveSharedSecret(ephPrivKey, viewerPublicKey);
 
             // Build plaintext: value (32 bytes BE) || blindingFactor (32 bytes)
             var plaintext = new byte[64];
@@ -86,6 +87,9 @@ public static class ViewingKey
         finally
         {
             CryptographicOperations.ZeroMemory(ephPrivKey);
+            // F-14: Zero shared secret after use
+            if (sharedSecret != null)
+                CryptographicOperations.ZeroMemory(sharedSecret);
         }
     }
 
@@ -110,16 +114,51 @@ public static class ViewingKey
         var nonce = encrypted.Slice(X25519KeyExchange.KeySize, ChannelEncryption.NonceSize);
         var ciphertextWithTag = encrypted[(X25519KeyExchange.KeySize + ChannelEncryption.NonceSize)..];
 
-        // Derive shared secret
-        var sharedSecret = X25519KeyExchange.DeriveSharedSecret(viewerPrivateKey, ephPubKey);
+        // F-14: Zero shared secret after use
+        byte[]? sharedSecret = null;
+        try
+        {
+            // Derive shared secret
+            sharedSecret = X25519KeyExchange.DeriveSharedSecret(viewerPrivateKey, ephPubKey);
 
-        // Decrypt
-        var plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
+            // Decrypt
+            var plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
 
-        // Parse: value (32 bytes BE) || blindingFactor (32 bytes)
-        var value = new UInt256(plaintext.AsSpan(0, 32), isBigEndian: true);
-        var blindingFactor = plaintext.AsSpan(32, 32).ToArray();
+            // Parse: value (32 bytes BE) || blindingFactor (32 bytes)
+            var value = new UInt256(plaintext.AsSpan(0, 32), isBigEndian: true);
+            var blindingFactor = plaintext.AsSpan(32, 32).ToArray();
 
-        return (value, blindingFactor);
+            return (value, blindingFactor);
+        }
+        finally
+        {
+            if (sharedSecret != null)
+                CryptographicOperations.ZeroMemory(sharedSecret);
+        }
     }
+}
+
+/// <summary>
+/// F-16: Viewing key with time-based validity window.
+/// Prevents indefinite access to confidential transaction data by
+/// binding the viewing key to a specific time range.
+/// </summary>
+public sealed class TimeBoundViewingKey
+{
+    /// <summary>32-byte X25519 public key of the viewer.</summary>
+    public required byte[] PublicKey { get; init; }
+
+    /// <summary>Start of validity window (Unix timestamp in milliseconds).</summary>
+    public required ulong ValidFrom { get; init; }
+
+    /// <summary>End of validity window (Unix timestamp in milliseconds).</summary>
+    public required ulong ValidUntil { get; init; }
+
+    /// <summary>
+    /// Check whether this viewing key is valid at the given timestamp.
+    /// </summary>
+    /// <param name="currentTimestamp">Current Unix timestamp in milliseconds.</param>
+    /// <returns><c>true</c> if the current time falls within [ValidFrom, ValidUntil].</returns>
+    public bool IsValid(ulong currentTimestamp) =>
+        currentTimestamp >= ValidFrom && currentTimestamp <= ValidUntil;
 }

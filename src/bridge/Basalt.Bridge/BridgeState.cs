@@ -85,12 +85,17 @@ public sealed class BridgeState
 
     /// <summary>
     /// Mark a deposit as confirmed (included in a finalized block).
+    /// BRIDGE-05: Only transitions from Pending to Confirmed.
     /// </summary>
     public bool ConfirmDeposit(ulong nonce, ulong blockHeight)
     {
         lock (_lock)
         {
             if (!_deposits.TryGetValue(nonce, out var deposit))
+                return false;
+
+            // BRIDGE-05: enforce state machine transition
+            if (deposit.Status != BridgeTransferStatus.Pending)
                 return false;
 
             deposit.Status = BridgeTransferStatus.Confirmed;
@@ -100,12 +105,17 @@ public sealed class BridgeState
 
     /// <summary>
     /// Mark a deposit as finalized (cross-chain proof submitted).
+    /// BRIDGE-05: Only transitions from Confirmed to Finalized.
     /// </summary>
     public bool FinalizeDeposit(ulong nonce)
     {
         lock (_lock)
         {
             if (!_deposits.TryGetValue(nonce, out var deposit))
+                return false;
+
+            // BRIDGE-05: enforce state machine transition
+            if (deposit.Status != BridgeTransferStatus.Confirmed)
                 return false;
 
             deposit.Status = BridgeTransferStatus.Finalized;
@@ -159,15 +169,46 @@ public sealed class BridgeState
 
     /// <summary>
     /// Compute the hash of a withdrawal message for signature verification.
+    /// Format: BLAKE3(version || LE_u32(chainId) || contractAddress || LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
+    /// BRIDGE-01: includes chain ID and contract address for cross-chain replay protection.
+    /// BRIDGE-03: enforces fixed-length recipient (20 bytes) and stateRoot (32 bytes).
+    /// BRIDGE-12: prepends version byte (0x02).
     /// </summary>
-    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal)
+    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal, uint chainId = 1, byte[]? contractAddress = null)
     {
-        // Deterministic encoding: nonce || recipient || amount || stateRoot
-        var data = new byte[8 + withdrawal.Recipient.Length + 32 + withdrawal.StateRoot.Length];
-        BitConverter.TryWriteBytes(data.AsSpan(0, 8), withdrawal.DepositNonce);
-        withdrawal.Recipient.CopyTo(data, 8);
-        withdrawal.Amount.WriteTo(data.AsSpan(8 + withdrawal.Recipient.Length, 32));
-        withdrawal.StateRoot.CopyTo(data, 8 + withdrawal.Recipient.Length + 32);
+        var contractAddr = contractAddress ?? new byte[20];
+
+        // version(1) + chainId(4) + contractAddress(20) + nonce(8) + recipient(20) + amount(32) + stateRoot(32) = 117
+        var data = new byte[1 + 4 + 20 + 8 + 20 + 32 + 32];
+        var offset = 0;
+
+        // Version byte (BRIDGE-12)
+        data[offset] = 0x02;
+        offset += 1;
+
+        // Chain ID (BRIDGE-01)
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), chainId);
+        offset += 4;
+
+        // Contract address (BRIDGE-01)
+        contractAddr.AsSpan(0, Math.Min(contractAddr.Length, 20)).CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Nonce
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), withdrawal.DepositNonce);
+        offset += 8;
+
+        // Recipient (fixed 20 bytes)
+        withdrawal.Recipient.AsSpan(0, Math.Min(withdrawal.Recipient.Length, 20)).CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Amount (UInt256 LE, 32 bytes)
+        withdrawal.Amount.WriteTo(data.AsSpan(offset, 32));
+        offset += 32;
+
+        // State root (fixed 32 bytes)
+        withdrawal.StateRoot.AsSpan(0, Math.Min(withdrawal.StateRoot.Length, 32)).CopyTo(data.AsSpan(offset, 32));
+
         return Blake3Hasher.Hash(data).ToArray();
     }
 }

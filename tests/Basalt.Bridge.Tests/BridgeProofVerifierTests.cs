@@ -9,11 +9,23 @@ public class BridgeProofVerifierTests
 {
     // ── VerifyMerkleProof: valid proofs ──────────────────────────────────
 
+    /// <summary>
+    /// Hash a leaf with domain separation prefix 0x00 (matching BridgeProofVerifier.HashLeaf).
+    /// </summary>
+    private static byte[] HashLeaf(byte[] leafData)
+    {
+        var prefixed = new byte[1 + leafData.Length];
+        prefixed[0] = 0x00;
+        leafData.CopyTo(prefixed, 1);
+        return Blake3Hasher.Hash(prefixed).ToArray();
+    }
+
     [Fact]
     public void SingleLeaf_Proof_Verifies()
     {
         var leaf = new byte[] { 1, 2, 3 };
-        var root = Blake3Hasher.Hash(leaf).ToArray();
+        // BRIDGE-06: leaf hash uses domain separation prefix 0x00
+        var root = HashLeaf(leaf);
 
         BridgeProofVerifier.VerifyMerkleProof(leaf, [], 0, root).Should().BeTrue();
     }
@@ -253,7 +265,8 @@ public class BridgeProofVerifierTests
     {
         var leaf = new byte[] { 42, 99 };
         var root = BridgeProofVerifier.ComputeMerkleRoot([leaf]);
-        var expectedHash = Blake3Hasher.Hash(leaf).ToArray();
+        // BRIDGE-06: leaf hash uses domain separation prefix 0x00
+        var expectedHash = HashLeaf(leaf);
 
         // Single leaf: root is hash of leaf paired with zero-padding
         // The implementation pads to power-of-2 (size=1), so the root is just the leaf hash

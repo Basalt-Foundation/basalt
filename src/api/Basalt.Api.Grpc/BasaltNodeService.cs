@@ -77,6 +77,10 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
     {
         try
         {
+            // MEDIUM-11: Validate TransactionType enum
+            if (!Enum.IsDefined(typeof(TransactionType), (TransactionType)request.Type))
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid transaction type"));
+
             var tx = new Transaction
             {
                 Type = (TransactionType)request.Type,
@@ -93,7 +97,9 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
                 SenderPublicKey = new PublicKey(request.SenderPublicKey.ToByteArray()),
             };
 
-            var validationResult = _validator.Validate(tx, _stateDb);
+            // MEDIUM-1: Pass current base fee to validation
+            var baseFee = _chainManager.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
+            var validationResult = _validator.Validate(tx, _stateDb, baseFee);
             if (!validationResult.IsSuccess)
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     validationResult.Message ?? validationResult.ErrorCode.ToString()));
@@ -112,9 +118,9 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            throw new RpcException(new Status(StatusCode.Internal, ex.Message));
+            throw new RpcException(new Status(StatusCode.Internal, "Transaction submission failed"));
         }
     }
 

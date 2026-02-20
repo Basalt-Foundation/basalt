@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Confidentiality.Crypto;
+using Basalt.Crypto;
 
 namespace Basalt.Confidentiality.Transactions;
 
@@ -73,31 +74,30 @@ public static class TransferValidator
     }
 
     /// <summary>
-    /// Validate the optional Groth16 range proof attached to the transfer.
-    /// If no range proof is present, returns <c>true</c> (range proofs are optional).
+    /// Validate the Groth16 range proof attached to the transfer.
+    /// F-02: Range proofs MUST be provided for confidential transfers to prevent hidden inflation.
     /// </summary>
     /// <param name="transfer">The confidential transfer containing the range proof.</param>
     /// <param name="rangeProofVk">
-    /// The verification key for the range proof circuit. Required if a range proof is present.
+    /// The verification key for the range proof circuit. Required.
     /// </param>
-    /// <returns><c>true</c> if no range proof exists or it verifies successfully.</returns>
+    /// <returns><c>true</c> if the range proof verifies successfully.</returns>
     public static bool ValidateRangeProof(ConfidentialTransfer transfer, VerificationKey? rangeProofVk)
     {
+        // F-02: Range proofs MUST be provided for confidential transfers
         if (transfer?.RangeProof == null)
-            return true;
+            return false;
 
         if (rangeProofVk == null)
             return false;
 
-        // The public inputs for the range proof are the output commitments
-        // (serialized as 32-byte scalars by taking the x-coordinate mod field order).
-        // For simplicity, we pass the first 32 bytes of each compressed commitment.
+        // F-04: Hash full 48-byte commitment to 32-byte scalar for sound binding.
+        // Truncating 48-byte commitments to 32 bytes is not a sound binding;
+        // instead we hash the full commitment to derive the public input scalar.
         var publicInputs = new byte[transfer.OutputCommitments.Length][];
         for (int i = 0; i < transfer.OutputCommitments.Length; i++)
         {
-            publicInputs[i] = new byte[PairingEngine.ScalarSize];
-            Buffer.BlockCopy(transfer.OutputCommitments[i], 0, publicInputs[i], 0,
-                Math.Min(transfer.OutputCommitments[i].Length, PairingEngine.ScalarSize));
+            publicInputs[i] = Blake3Hasher.Hash(transfer.OutputCommitments[i]).ToArray();
         }
 
         return Groth16Verifier.Verify(rangeProofVk, transfer.RangeProof, publicInputs);

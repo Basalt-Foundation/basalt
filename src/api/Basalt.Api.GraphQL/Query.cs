@@ -205,7 +205,7 @@ public class Query
         var latest = chainManager.LatestBlock;
         if (latest == null) return results;
 
-        var count = Math.Min(last, 100); // Cap at 100
+        var count = Math.Clamp(last, 1, 100);
         for (ulong i = latest.Number; i > 0 && results.Count < count; i--)
         {
             var block = chainManager.GetBlockByNumber(i);

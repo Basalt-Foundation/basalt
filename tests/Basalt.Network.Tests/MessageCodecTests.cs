@@ -21,6 +21,11 @@ public class MessageCodecTests
         return new Hash256(bytes);
     }
 
+    /// <summary>
+    /// Returns a valid current timestamp for NET-H05 timestamp validation.
+    /// </summary>
+    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
     private static (byte[] privateKey, PublicKey publicKey, Signature signature) MakeSignature()
     {
         var (priv, pub) = Ed25519Signer.GenerateKeyPair();
@@ -47,7 +52,7 @@ public class MessageCodecTests
         var original = new HelloMessage
         {
             SenderId = MakePeerId(1),
-            Timestamp = 1234567890L,
+            Timestamp = Now(),
             ProtocolVersion = 42,
             ChainId = 7,
             BestBlockNumber = 999UL,
@@ -80,7 +85,7 @@ public class MessageCodecTests
         var original = new HelloAckMessage
         {
             SenderId = MakePeerId(2),
-            Timestamp = 9876543210L,
+            Timestamp = Now(),
             Accepted = true,
             RejectReason = "",
             NodePublicKey = pubKey,
@@ -109,7 +114,7 @@ public class MessageCodecTests
         var original = new HelloAckMessage
         {
             SenderId = MakePeerId(3),
-            Timestamp = 1111111111L,
+            Timestamp = Now(),
             Accepted = false,
             RejectReason = "incompatible protocol version",
             NodePublicKey = pubKey,
@@ -137,7 +142,7 @@ public class MessageCodecTests
         var original = new PingMessage
         {
             SenderId = MakePeerId(4),
-            Timestamp = 5555555555L,
+            Timestamp = Now(),
         };
 
         var bytes = MessageCodec.Serialize(original);
@@ -153,7 +158,7 @@ public class MessageCodecTests
         var original = new PongMessage
         {
             SenderId = MakePeerId(5),
-            Timestamp = 6666666666L,
+            Timestamp = Now(),
         };
 
         var bytes = MessageCodec.Serialize(original);
@@ -169,7 +174,7 @@ public class MessageCodecTests
         var original = new TxAnnounceMessage
         {
             SenderId = MakePeerId(6),
-            Timestamp = 7777777777L,
+            Timestamp = Now(),
             TransactionHashes = new[] { MakeHash(1), MakeHash(2), MakeHash(3) },
         };
 
@@ -191,7 +196,7 @@ public class MessageCodecTests
         var original = new TxRequestMessage
         {
             SenderId = MakePeerId(7),
-            Timestamp = 8888888888L,
+            Timestamp = Now(),
             TransactionHashes = new[] { MakeHash(11), MakeHash(22) },
         };
 
@@ -213,7 +218,7 @@ public class MessageCodecTests
         var original = new TxPayloadMessage
         {
             SenderId = MakePeerId(8),
-            Timestamp = 9999999999L,
+            Timestamp = Now(),
             Transactions = new[]
             {
                 new byte[] { 0xAA, 0xBB, 0xCC },
@@ -240,7 +245,7 @@ public class MessageCodecTests
         var original = new BlockAnnounceMessage
         {
             SenderId = MakePeerId(9),
-            Timestamp = 1000000000L,
+            Timestamp = Now(),
             BlockNumber = 42UL,
             BlockHash = MakeHash(100),
             ParentHash = MakeHash(99),
@@ -262,7 +267,7 @@ public class MessageCodecTests
         var original = new BlockRequestMessage
         {
             SenderId = MakePeerId(10),
-            Timestamp = 2000000000L,
+            Timestamp = Now(),
             StartNumber = 100UL,
             Count = 50,
         };
@@ -282,7 +287,7 @@ public class MessageCodecTests
         var original = new BlockPayloadMessage
         {
             SenderId = MakePeerId(11),
-            Timestamp = 3000000000L,
+            Timestamp = Now(),
             Blocks = new[]
             {
                 new byte[] { 1, 2, 3, 4, 5 },
@@ -309,7 +314,7 @@ public class MessageCodecTests
         var original = new ConsensusProposalMessage
         {
             SenderId = MakePeerId(12),
-            Timestamp = 4000000000L,
+            Timestamp = Now(),
             ViewNumber = 5UL,
             BlockNumber = 101UL,
             BlockHash = MakeHash(50),
@@ -337,7 +342,7 @@ public class MessageCodecTests
         var original = new ConsensusVoteMessage
         {
             SenderId = MakePeerId(13),
-            Timestamp = 5000000000L,
+            Timestamp = Now(),
             ViewNumber = 10UL,
             BlockNumber = 200UL,
             BlockHash = MakeHash(60),
@@ -367,7 +372,7 @@ public class MessageCodecTests
         var original = new ConsensusVoteMessage
         {
             SenderId = MakePeerId(14),
-            Timestamp = 5100000000L,
+            Timestamp = Now(),
             ViewNumber = 1UL,
             BlockNumber = 1UL,
             BlockHash = MakeHash(70),
@@ -392,7 +397,7 @@ public class MessageCodecTests
         var original = new ConsensusVoteMessage
         {
             SenderId = MakePeerId(15),
-            Timestamp = 5200000000L,
+            Timestamp = Now(),
             ViewNumber = 3UL,
             BlockNumber = 3UL,
             BlockHash = MakeHash(80),
@@ -417,7 +422,7 @@ public class MessageCodecTests
         var original = new ViewChangeMessage
         {
             SenderId = MakePeerId(16),
-            Timestamp = 6000000000L,
+            Timestamp = Now(),
             CurrentView = 7UL,
             ProposedView = 8UL,
             VoterSignature = sig,
@@ -442,7 +447,7 @@ public class MessageCodecTests
         var original = new AggregateVoteMessage
         {
             SenderId = MakePeerId(28),
-            Timestamp = 5500000000L,
+            Timestamp = Now(),
             ViewNumber = 7UL,
             BlockNumber = 42UL,
             BlockHash = MakeHash(90),
@@ -470,7 +475,7 @@ public class MessageCodecTests
         var original = new SyncRequestMessage
         {
             SenderId = MakePeerId(17),
-            Timestamp = 7000000000L,
+            Timestamp = Now(),
             FromBlock = 500UL,
             MaxBlocks = 128,
         };
@@ -490,7 +495,7 @@ public class MessageCodecTests
         var original = new SyncResponseMessage
         {
             SenderId = MakePeerId(18),
-            Timestamp = 8000000000L,
+            Timestamp = Now(),
             Blocks = new[]
             {
                 new byte[] { 0x01, 0x02, 0x03 },
@@ -517,7 +522,7 @@ public class MessageCodecTests
         var original = new IHaveMessage
         {
             SenderId = MakePeerId(19),
-            Timestamp = 9000000000L,
+            Timestamp = Now(),
             MessageIds = new[] { MakeHash(31), MakeHash(32), MakeHash(33) },
         };
 
@@ -539,7 +544,7 @@ public class MessageCodecTests
         var original = new IWantMessage
         {
             SenderId = MakePeerId(20),
-            Timestamp = 9100000000L,
+            Timestamp = Now(),
             MessageIds = new[] { MakeHash(41), MakeHash(42) },
         };
 
@@ -561,7 +566,7 @@ public class MessageCodecTests
         var original = new GraftMessage
         {
             SenderId = MakePeerId(21),
-            Timestamp = 9200000000L,
+            Timestamp = Now(),
         };
 
         var bytes = MessageCodec.Serialize(original);
@@ -577,7 +582,7 @@ public class MessageCodecTests
         var original = new PruneMessage
         {
             SenderId = MakePeerId(22),
-            Timestamp = 9300000000L,
+            Timestamp = Now(),
         };
 
         var bytes = MessageCodec.Serialize(original);
@@ -594,7 +599,7 @@ public class MessageCodecTests
         var original = new FindNodeMessage
         {
             SenderId = MakePeerId(23),
-            Timestamp = 9400000000L,
+            Timestamp = Now(),
             Target = targetId,
         };
 
@@ -614,7 +619,7 @@ public class MessageCodecTests
         var original = new FindNodeResponseMessage
         {
             SenderId = MakePeerId(24),
-            Timestamp = 9500000000L,
+            Timestamp = Now(),
             ClosestPeers = new[]
             {
                 new PeerNodeInfo
@@ -655,7 +660,7 @@ public class MessageCodecTests
         var original = new TxAnnounceMessage
         {
             SenderId = MakePeerId(25),
-            Timestamp = 9600000000L,
+            Timestamp = Now(),
             TransactionHashes = [],
         };
 
@@ -673,7 +678,7 @@ public class MessageCodecTests
         var original = new BlockPayloadMessage
         {
             SenderId = MakePeerId(26),
-            Timestamp = 9700000000L,
+            Timestamp = Now(),
             Blocks = [],
         };
 
@@ -691,7 +696,7 @@ public class MessageCodecTests
         var original = new FindNodeResponseMessage
         {
             SenderId = MakePeerId(27),
-            Timestamp = 9800000000L,
+            Timestamp = Now(),
             ClosestPeers = [],
         };
 

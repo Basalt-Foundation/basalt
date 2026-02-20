@@ -157,21 +157,22 @@ public class ConfidentialTransferTests
     }
 
     [Fact]
-    public void ValidateTransfer_ValidNoRangeProof_ReturnsTrue()
+    public void ValidateTransfer_ValidNoRangeProof_ReturnsFalse()
     {
-        // A balanced transfer with no range proof should pass ValidateTransfer.
+        // F-02: A balanced transfer with no range proof should now fail ValidateTransfer
+        // because range proofs are mandatory to prevent hidden inflation.
         var transfer = CreateBalancedTransfer(amount: 42, inputBlindingValue: 7, outputBlindingValue: 3);
 
-        TransferValidator.ValidateTransfer(transfer).Should().BeTrue();
+        TransferValidator.ValidateTransfer(transfer).Should().BeFalse();
     }
 
     [Fact]
-    public void ValidateRangeProof_NoProof_ReturnsTrue()
+    public void ValidateRangeProof_NoProof_ReturnsFalse()
     {
-        // When no range proof is present, ValidateRangeProof should return true.
+        // F-02: When no range proof is present, ValidateRangeProof should return false.
         var transfer = CreateBalancedTransfer(amount: 10, inputBlindingValue: 5, outputBlindingValue: 2);
 
-        TransferValidator.ValidateRangeProof(transfer, null).Should().BeTrue();
+        TransferValidator.ValidateRangeProof(transfer, null).Should().BeFalse();
     }
 
     [Fact]
@@ -450,10 +451,11 @@ public class ConfidentialTransferTests
     }
 
     [Fact]
-    public void ValidateRangeProof_NullTransfer_ReturnsTrue()
+    public void ValidateRangeProof_NullTransfer_ReturnsFalse()
     {
-        // null?.RangeProof is null, so the method should return true
-        TransferValidator.ValidateRangeProof(null!, null).Should().BeTrue();
+        // F-02: null?.RangeProof is null, so the method should return false
+        // (range proofs are mandatory)
+        TransferValidator.ValidateRangeProof(null!, null).Should().BeFalse();
     }
 
     [Fact]

@@ -70,17 +70,19 @@ public class ReputationTests
     [Fact]
     public void Score_Clamped_To_Range()
     {
-        var pm = new PeerManager(NullLogger<PeerManager>.Instance);
-        var scorer = new ReputationScorer(pm, NullLogger<ReputationScorer>.Instance);
-
         var peer = MakePeer(1);
-        pm.RegisterPeer(peer);
 
-        // Boost score many times
+        // NET-M20: Directly test PeerInfo clamping since RecordValidBlock now has
+        // diminishing returns (max 5 block rewards per 60s window).
+        // Apply large positive adjustments to verify upper clamp at 200.
         for (int i = 0; i < 50; i++)
-            scorer.RecordValidBlock(peer.Id);
+            peer.AdjustReputation(5);
 
         Assert.Equal(ReputationScorer.MaxScore, peer.ReputationScore);
+
+        // Also verify lower clamp at 0
+        peer.AdjustReputation(-500);
+        Assert.Equal(0, peer.ReputationScore);
     }
 
     [Fact]

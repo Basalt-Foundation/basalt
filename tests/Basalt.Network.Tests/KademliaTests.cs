@@ -22,7 +22,8 @@ public class KademliaTests
         {
             Id = id,
             PublicKey = pubKey,
-            Host = $"10.0.0.{seed}",
+            // NET-H10: Use diverse /24 subnets so peers aren't rejected by subnet limit
+            Host = $"10.{(seed / 256) % 256}.{seed % 256}.{(seed * 7) % 256}",
             Port = 30303,
             State = PeerState.Connected,
         };
@@ -40,8 +41,9 @@ public class KademliaTests
     }
 
     [Fact]
-    public void KBucket_Rejects_When_Full_And_Lower_Reputation()
+    public void KBucket_Rejects_All_Newcomers_When_Full()
     {
+        // NET-H11: Standard Kademlia — bucket full means all newcomers are rejected
         var bucket = new KBucket();
         // Fill bucket
         for (int i = 0; i < KBucket.K; i++)
@@ -55,25 +57,12 @@ public class KademliaTests
         var lowRep = MakePeer(99);
         lowRep.ReputationScore = 50;
         Assert.False(bucket.InsertOrUpdate(lowRep));
-    }
 
-    [Fact]
-    public void KBucket_Evicts_When_New_Has_Higher_Reputation()
-    {
-        var bucket = new KBucket();
-        // Fill bucket with low-rep peers
-        for (int i = 0; i < KBucket.K; i++)
-        {
-            var p = MakePeer(i);
-            p.ReputationScore = 50;
-            bucket.InsertOrUpdate(p);
-        }
-
-        // New peer with higher reputation should replace tail
-        var highRep = MakePeer(99);
+        // NET-H11: New peer with higher reputation should ALSO be rejected
+        // (standard Kademlia prefers long-lived nodes over newcomers)
+        var highRep = MakePeer(98);
         highRep.ReputationScore = 150;
-        Assert.True(bucket.InsertOrUpdate(highRep));
-        Assert.True(bucket.Contains(MakePeerId(99)));
+        Assert.False(bucket.InsertOrUpdate(highRep));
     }
 
     [Fact]
@@ -184,5 +173,83 @@ public class KademliaTests
 
         Assert.NotEmpty(results);
         Assert.Contains(results, p => p.Id == MakePeerId(10));
+    }
+
+    [Fact]
+    public void KademliaTable_RejectsExcessiveSubnetPeers()
+    {
+        // NET-H10: Verify IP diversity check — max 2 peers per /24 subnet per bucket
+        var localId = MakePeerId(0);
+        var table = new KademliaTable(localId);
+
+        // Create 3 peers that map to the same bucket with the same /24 subnet
+        var (_, pubKey1) = Ed25519Signer.GenerateKeyPair();
+        var (_, pubKey2) = Ed25519Signer.GenerateKeyPair();
+        var (_, pubKey3) = Ed25519Signer.GenerateKeyPair();
+
+        // Peers with IDs 1, 3 both go to bucket 0 and 1 respectively,
+        // but 1 goes to bucket 0. Use peer IDs that share the same bucket.
+        // PeerId(1) -> bucket 0, PeerId(2) -> bucket 1, PeerId(3) -> bucket 1
+        // Seeds 2 and 3: XOR with 0 = 2 (bit 1 -> bucket 1) and 3 (bit 1 -> bucket 1)
+        var peer1 = new PeerInfo { Id = MakePeerId(2), PublicKey = pubKey1, Host = "192.168.1.10", Port = 30303, State = PeerState.Connected };
+        var peer2 = new PeerInfo { Id = MakePeerId(3), PublicKey = pubKey2, Host = "192.168.1.20", Port = 30303, State = PeerState.Connected };
+        var peer3 = new PeerInfo { Id = MakePeerId(6), PublicKey = pubKey3, Host = "192.168.1.30", Port = 30303, State = PeerState.Connected };
+        // PeerId(6) = 0b110, highest bit = bit 2 -> bucket 2, not the same bucket.
+        // Use PeerId that also maps to bucket 1: needs highest bit at position 1.
+        // Values 2, 3 have highest bit at position 1 -> bucket 1. That's only 2 values.
+        // So with just 2 peers we hit the limit. Add one more that should be rejected.
+        // Actually, we need 3 peers in the same bucket. Use IDs where highest bit is at a higher position
+        // to get a bucket with more room. Bucket 3 (bit 3): IDs 8-15.
+        peer1 = new PeerInfo { Id = MakePeerId(8), PublicKey = pubKey1, Host = "192.168.1.10", Port = 30303, State = PeerState.Connected };
+        peer2 = new PeerInfo { Id = MakePeerId(9), PublicKey = pubKey2, Host = "192.168.1.20", Port = 30303, State = PeerState.Connected };
+        peer3 = new PeerInfo { Id = MakePeerId(10), PublicKey = pubKey3, Host = "192.168.1.30", Port = 30303, State = PeerState.Connected };
+
+        Assert.True(table.AddOrUpdate(peer1));
+        Assert.True(table.AddOrUpdate(peer2));
+        // Third peer from same /24 should be rejected
+        Assert.False(table.AddOrUpdate(peer3));
+        Assert.Equal(2, table.PeerCount);
+    }
+
+    [Fact]
+    public void KademliaTable_OutboundProtected_CannotBeRemoved()
+    {
+        // NET-C05: Outbound-protected peers cannot be removed
+        var localId = MakePeerId(0);
+        var table = new KademliaTable(localId);
+
+        var peer = MakePeer(1);
+        table.AddOrUpdate(peer);
+        Assert.Equal(1, table.PeerCount);
+
+        // Mark as outbound-protected
+        Assert.True(table.MarkOutboundProtected(peer.Id));
+        Assert.True(table.IsOutboundProtected(peer.Id));
+
+        // Attempt to remove — should fail
+        Assert.False(table.Remove(peer.Id));
+        Assert.Equal(1, table.PeerCount);
+
+        // Unmark and remove — should succeed
+        Assert.True(table.UnmarkOutboundProtected(peer.Id));
+        Assert.False(table.IsOutboundProtected(peer.Id));
+        Assert.True(table.Remove(peer.Id));
+        Assert.Equal(0, table.PeerCount);
+    }
+
+    [Fact]
+    public void KademliaTable_OutboundProtected_MaxSlots()
+    {
+        // NET-C05: Only 4 outbound-protected slots available
+        var localId = MakePeerId(0);
+        var table = new KademliaTable(localId);
+
+        for (int i = 1; i <= 4; i++)
+        {
+            Assert.True(table.MarkOutboundProtected(MakePeerId(i)));
+        }
+
+        // 5th should be rejected
+        Assert.False(table.MarkOutboundProtected(MakePeerId(5)));
     }
 }

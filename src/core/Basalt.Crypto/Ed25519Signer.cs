@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Basalt.Core;
 using NSec.Cryptography;
 using NSecPublicKey = NSec.Cryptography.PublicKey;
@@ -78,5 +79,13 @@ public static class Ed25519Signer
     public static Address DeriveAddress(Core.PublicKey publicKey)
     {
         return KeccakHasher.DeriveAddress(publicKey);
+    }
+
+    /// <summary>
+    /// Securely zero a private key buffer using CryptographicOperations.ZeroMemory.
+    /// </summary>
+    public static void ZeroPrivateKey(Span<byte> privateKey)
+    {
+        CryptographicOperations.ZeroMemory(privateKey);
     }
 }
