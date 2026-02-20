@@ -53,6 +53,38 @@ public sealed class EpochManager
     }
 
     /// <summary>
+    /// Initialize epoch state from the current chain height and replay persisted commit bitmaps
+    /// for blocks in the current epoch. This ensures deterministic slashing after node restarts.
+    /// </summary>
+    /// <param name="chainHeight">Current chain tip block number.</param>
+    /// <param name="bitmapLoader">Function to load a persisted commit bitmap by block number (returns null if missing).</param>
+    public void SeedFromChainHeight(ulong chainHeight, Func<ulong, ulong?> bitmapLoader)
+    {
+        _currentEpoch = ComputeEpoch(chainHeight, _chainParams.EpochLength);
+
+        if (_chainParams.EpochLength == 0)
+            return;
+
+        // Compute the first block of the current (incomplete) epoch
+        var epochStart = _currentEpoch * _chainParams.EpochLength + 1;
+
+        // Replay bitmaps for blocks in the current epoch window
+        lock (_blockSignersLock)
+        {
+            for (ulong b = epochStart; b <= chainHeight; b++)
+            {
+                var bitmap = bitmapLoader(b);
+                if (bitmap.HasValue)
+                    _blockSigners[b] = bitmap.Value;
+            }
+        }
+
+        _logger.LogInformation(
+            "EpochManager seeded: epoch={Epoch}, replayed {Count} bitmaps (blocks {Start}..{End})",
+            _currentEpoch, _blockSigners.Count, epochStart, chainHeight);
+    }
+
+    /// <summary>
     /// Current epoch number.
     /// </summary>
     public ulong CurrentEpoch => _currentEpoch;
@@ -130,7 +162,8 @@ public sealed class EpochManager
     public ValidatorSet BuildValidatorSetFromStaking()
     {
         var activeValidators = _stakingState.GetActiveValidators(); // sorted by TotalStake desc
-        var maxSize = (int)_chainParams.ValidatorSetSize;
+        // Cap at 64 — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
+        var maxSize = Math.Min((int)_chainParams.ValidatorSetSize, 64);
         var selected = activeValidators.Take(maxSize).ToList();
 
         // Sort by address ascending for deterministic index assignment across all nodes

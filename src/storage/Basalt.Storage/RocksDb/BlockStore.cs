@@ -58,7 +58,7 @@ public sealed class BlockStore
     /// Store a block with dual indexing plus its raw serialized form.
     /// Used by consensus finalization to persist blocks that can be served to syncing peers.
     /// </summary>
-    public void PutFullBlock(BlockData block, byte[] serializedBlock)
+    public void PutFullBlock(BlockData block, byte[] serializedBlock, ulong? commitBitmap = null)
     {
         var encoded = block.Encode();
         var hashKey = HashToKey(block.Hash);
@@ -69,6 +69,12 @@ public sealed class BlockStore
         batch.Put(RocksDbStore.CF.Blocks, hashKey, encoded);
         batch.Put(RocksDbStore.CF.BlockIndex, numberKey, hashKey);
         batch.Put(RocksDbStore.CF.Blocks, rawKey, serializedBlock);
+        if (commitBitmap.HasValue)
+        {
+            var bmpValue = new byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(bmpValue, commitBitmap.Value);
+            batch.Put(RocksDbStore.CF.Blocks, BitmapKey(block.Number), bmpValue);
+        }
         batch.Commit();
     }
 

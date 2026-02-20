@@ -638,6 +638,9 @@ public static class MessageCodec
     {
         var blocks = ReadByteArrays(ref reader);
         var bitmaps = reader.Remaining > 0 ? ReadUInt64Array(ref reader) : [];
+        // Discard mismatched bitmap arrays to prevent silent data corruption
+        if (bitmaps.Length != 0 && bitmaps.Length != blocks.Length)
+            bitmaps = [];
         return new BlockPayloadMessage
         {
             SenderId = senderId, Timestamp = timestamp,
@@ -650,6 +653,9 @@ public static class MessageCodec
     {
         var blocks = ReadByteArrays(ref reader);
         var bitmaps = reader.Remaining > 0 ? ReadUInt64Array(ref reader) : [];
+        // Discard mismatched bitmap arrays to prevent silent data corruption
+        if (bitmaps.Length != 0 && bitmaps.Length != blocks.Length)
+            bitmaps = [];
         return new SyncResponseMessage
         {
             SenderId = senderId, Timestamp = timestamp,

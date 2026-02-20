@@ -30,7 +30,7 @@ public sealed class WeightedLeaderSelector
         if (validators.Count == 1)
             return validators[0];
 
-        // Compute weights from snapshotted stakes
+        // Compute weights from snapshotted stakes (saturate at ulong.MaxValue to prevent wrap)
         var weights = new ulong[validators.Count];
         ulong totalWeight = 0;
 
@@ -39,7 +39,10 @@ public sealed class WeightedLeaderSelector
             var stakeWeight = validators[i].Stake != UInt256.Zero
                 ? StakeToWeight(validators[i].Stake) : 1UL;
             weights[i] = stakeWeight;
-            totalWeight += stakeWeight;
+            // Saturating addition: clamp at ulong.MaxValue instead of wrapping
+            totalWeight = ulong.MaxValue - totalWeight >= stakeWeight
+                ? totalWeight + stakeWeight
+                : ulong.MaxValue;
         }
 
         if (totalWeight == 0)

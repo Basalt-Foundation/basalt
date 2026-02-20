@@ -341,6 +341,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             // Setup epoch manager for dynamic validator set transitions
             _epochManager = new EpochManager(_chainParams, _stakingState, _validatorSet, _blsSigner,
                 _slashingEngine, _loggerFactory.CreateLogger<EpochManager>());
+
+            // Seed epoch state from chain height and replay persisted commit bitmaps
+            // so that epoch-boundary slashing is deterministic across restarts
+            var chainHeight = _chainManager.LatestBlockNumber;
+            if (chainHeight > 0)
+                _epochManager.SeedFromChainHeight(chainHeight, blockNum => _blockStore?.GetCommitBitmap(blockNum));
+
             _logger.LogInformation("Epoch manager: epoch length={EpochLength}, validator set size={SetSize}",
                 _chainParams.EpochLength, _chainParams.ValidatorSetSize);
         }
@@ -472,10 +479,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // peer and validators that fall behind are unable to catch up.
                 _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
 
-                // Persist to RocksDB if available
-                PersistBlock(block, blockData);
+                // Persist block + commit bitmap atomically to RocksDB
+                PersistBlock(block, blockData, commitBitmap);
                 PersistReceipts(block.Receipts);
-                _blockStore?.PutCommitBitmap(block.Number, commitBitmap);
 
                 // Record commit participation for deterministic epoch-boundary slashing
                 _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
@@ -972,16 +978,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (result.IsSuccess)
                 {
                     _mempool.RemoveConfirmed(block.Transactions);
-                    PersistBlock(block, blockBytes);
+                    var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
+                    PersistBlock(block, blockBytes, bitmap);
                     PersistReceipts(block.Receipts);
 
-                    // Use propagated commit bitmap from the serving peer (deterministic)
-                    if (_epochManager != null)
-                    {
-                        var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                        _epochManager.RecordBlockSigners(block.Number, bitmap);
-                        _blockStore?.PutCommitBitmap(block.Number, bitmap);
-                    }
+                    // Use propagated commit bitmap from the serving peer
+                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
 
                     // Apply epoch transitions for blocks received via gossip
                     var newSet = _epochManager?.OnBlockFinalized(block.Number);
@@ -1089,17 +1091,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (result.IsSuccess)
             {
                 _mempool.RemoveConfirmed(block.Transactions);
-                PersistBlock(block, blockBytes);
+                var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
+                PersistBlock(block, blockBytes, bitmap);
                 PersistReceipts(block.Receipts);
                 applied++;
 
-                // Use propagated commit bitmap from the serving peer (deterministic)
-                if (_epochManager != null)
-                {
-                    var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
-                    _epochManager.RecordBlockSigners(block.Number, bitmap);
-                    _blockStore?.PutCommitBitmap(block.Number, bitmap);
-                }
+                // Use propagated commit bitmap from the serving peer
+                _epochManager?.RecordBlockSigners(block.Number, bitmap);
 
                 // Apply epoch transitions for synced blocks — without this,
                 // nodes that sync across epoch boundaries would have a stale
@@ -1587,7 +1585,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
     }
 
-    private void PersistBlock(Block block, byte[] serializedBlockData)
+    private void PersistBlock(Block block, byte[] serializedBlockData, ulong? commitBitmap = null)
     {
         if (_blockStore == null)
             return;
@@ -1612,7 +1610,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 ExtraData = block.Header.ExtraData,
                 TransactionHashes = block.Transactions.Select(t => t.Hash).ToArray(),
             };
-            _blockStore.PutFullBlock(blockData, serializedBlockData);
+            _blockStore.PutFullBlock(blockData, serializedBlockData, commitBitmap);
             _blockStore.SetLatestBlockNumber(block.Number);
         }
         catch (Exception ex)
