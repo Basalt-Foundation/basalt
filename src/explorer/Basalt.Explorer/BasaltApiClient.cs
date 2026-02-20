@@ -129,8 +129,12 @@ public sealed class BasaltApiClient
 
     public async Task<string?> GetMetricsRawAsync()
     {
-        try { return await _http.GetStringAsync("metrics"); }
-        catch { return null; }
+        try { return await _http.GetStringAsync("v1/metrics"); }
+        catch
+        {
+            try { return await _http.GetStringAsync("metrics"); }
+            catch { return null; }
+        }
     }
 }
 

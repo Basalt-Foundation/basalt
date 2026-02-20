@@ -46,7 +46,7 @@ public static class MetricsEndpoint
         ChainManager chainManager,
         Mempool mempool)
     {
-        app.MapGet("/metrics", () =>
+        IResult Handler()
         {
             var sb = new StringBuilder(2048);
             var latest = chainManager.LatestBlock;
@@ -96,6 +96,9 @@ public static class MetricsEndpoint
             sb.Append("basalt_uptime_seconds ").AppendLine(Uptime.Elapsed.TotalSeconds.ToString("F0", CultureInfo.InvariantCulture));
 
             return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
-        });
+        }
+
+        app.MapGet("/metrics", Handler);
+        app.MapGet("/v1/metrics", Handler);
     }
 }
