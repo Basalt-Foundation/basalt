@@ -287,6 +287,9 @@ public static class MessageCodec
         // NET-C01: Challenge-response authentication fields
         writer.WriteBytes(msg.ChallengeNonce);
         writer.WriteSignature(msg.AuthSignature);
+        // NET-C02: X25519 key exchange fields
+        writer.WriteBytes(msg.X25519PublicKey);
+        writer.WriteSignature(msg.X25519KeySignature);
     }
 
     private static void WriteHelloAck(ref BasaltWriter writer, HelloAckMessage msg)
@@ -302,6 +305,9 @@ public static class MessageCodec
         writer.WriteSignature(msg.ChallengeResponse);
         // NET-H03: Genesis hash for cross-validation
         writer.WriteHash256(msg.GenesisHash);
+        // NET-C02: X25519 key exchange fields
+        writer.WriteBytes(msg.X25519PublicKey);
+        writer.WriteSignature(msg.X25519KeySignature);
     }
 
     private static void WriteBlockAnnounce(ref BasaltWriter writer, BlockAnnounceMessage msg)
@@ -410,6 +416,9 @@ public static class MessageCodec
             // NET-C01: Challenge-response fields
             ChallengeNonce = reader.ReadBytes().ToArray(),
             AuthSignature = reader.ReadSignature(),
+            // NET-C02: X25519 key exchange fields
+            X25519PublicKey = reader.ReadBytes().ToArray(),
+            X25519KeySignature = reader.ReadSignature(),
         };
     }
 
@@ -430,6 +439,9 @@ public static class MessageCodec
             ChallengeResponse = reader.ReadSignature(),
             // NET-H03: Genesis hash
             GenesisHash = reader.ReadHash256(),
+            // NET-C02: X25519 key exchange fields
+            X25519PublicKey = reader.ReadBytes().ToArray(),
+            X25519KeySignature = reader.ReadSignature(),
         };
     }
 
@@ -616,10 +628,10 @@ public static class MessageCodec
 
         int payloadEstimate = message switch
         {
-            // NET-C01: +32 nonce + 10 varint + 64 signature
-            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + BlsPublicKey.Size + 256 + 4 + 42 + 64,
-            // NET-C01: +64 signature; NET-H03: +32 genesis hash
-            HelloAckMessage => 1 + 256 + PublicKey.Size + BlsPublicKey.Size + 4 + 8 + Hash256.Size + 64 + 32,
+            // NET-C01: +32 nonce + 10 varint + 64 signature; NET-C02: +42 x25519 key + 64 sig
+            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + BlsPublicKey.Size + 256 + 4 + 42 + 64 + 42 + 64,
+            // NET-C01: +64 signature; NET-H03: +32 genesis hash; NET-C02: +42 x25519 key + 64 sig
+            HelloAckMessage => 1 + 256 + PublicKey.Size + BlsPublicKey.Size + 4 + 8 + Hash256.Size + 64 + 32 + 42 + 64,
             PingMessage => 0,
             PongMessage => 0,
             TxAnnounceMessage m => 10 + (m.TransactionHashes.Length * Hash256.Size),

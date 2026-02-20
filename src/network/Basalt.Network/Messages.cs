@@ -83,6 +83,16 @@ public sealed class HelloMessage : NetworkMessage
     /// proving the initiator owns the stated NodePublicKey.
     /// </summary>
     public Signature AuthSignature { get; init; }
+
+    /// <summary>
+    /// NET-C02: Ephemeral X25519 public key for transport encryption key exchange.
+    /// </summary>
+    public byte[] X25519PublicKey { get; init; } = [];
+
+    /// <summary>
+    /// NET-C02: Ed25519 signature of the X25519 public key, binding it to the node identity.
+    /// </summary>
+    public Signature X25519KeySignature { get; init; }
 }
 
 /// <summary>
@@ -110,6 +120,16 @@ public sealed class HelloAckMessage : NetworkMessage
     /// NET-H03: Genesis hash for cross-validation by initiator.
     /// </summary>
     public Hash256 GenesisHash { get; init; }
+
+    /// <summary>
+    /// NET-C02: Ephemeral X25519 public key for transport encryption key exchange.
+    /// </summary>
+    public byte[] X25519PublicKey { get; init; } = [];
+
+    /// <summary>
+    /// NET-C02: Ed25519 signature of the X25519 public key, binding it to the node identity.
+    /// </summary>
+    public Signature X25519KeySignature { get; init; }
 }
 
 /// <summary>

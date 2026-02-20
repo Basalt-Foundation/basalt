@@ -9,6 +9,7 @@ namespace Basalt.Network.Transport;
 /// Handshake protocol for establishing peer identity after TCP connection.
 /// Exchanges Hello/HelloAck messages and validates chain compatibility.
 /// NET-C01: Mutual Ed25519 challenge-response authentication.
+/// NET-C02: Ephemeral X25519 key exchange for AES-256-GCM transport encryption.
 /// NET-H03: Genesis hash cross-validation.
 /// </summary>
 public sealed class HandshakeProtocol
@@ -32,6 +33,12 @@ public sealed class HandshakeProtocol
     private static readonly byte[] AckDomain = "basalt-ack-v1"u8.ToArray();
 
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>NET-C02: Ephemeral X25519 private key for this handshake instance.</summary>
+    private byte[]? _ephemeralPrivateKey;
+
+    /// <summary>NET-C02: Ephemeral X25519 public key for this handshake instance.</summary>
+    private byte[]? _ephemeralPublicKey;
 
     public HandshakeProtocol(
         uint chainId,
@@ -61,8 +68,9 @@ public sealed class HandshakeProtocol
 
     /// <summary>
     /// Perform handshake as the initiator (outbound connection).
-    /// Sends Hello (with challenge nonce + auth signature), waits for HelloAck.
+    /// Sends Hello (with challenge nonce + auth signature + X25519 key), waits for HelloAck.
     /// NET-C01: Verifies responder's challenge-response signature.
+    /// NET-C02: Derives shared secret for transport encryption.
     /// NET-H03: Verifies responder's genesis hash.
     /// </summary>
     public async Task<HandshakeResult> InitiateAsync(
@@ -74,7 +82,10 @@ public sealed class HandshakeProtocol
 
         try
         {
-            // Send Hello with challenge nonce
+            // NET-C02: Generate ephemeral X25519 key pair
+            GenerateEphemeralKeys();
+
+            // Send Hello with challenge nonce + X25519 key
             var hello = CreateHello();
             var helloBytes = MessageCodec.Serialize(hello);
             await connection.SendAsync(helloBytes, timeoutCts.Token);
@@ -107,6 +118,9 @@ public sealed class HandshakeProtocol
                     return HandshakeResult.Failed("Genesis hash mismatch");
                 }
 
+                // NET-C02: Derive shared secret from X25519 key exchange
+                var sharedSecret = DeriveSharedSecret(ack.X25519PublicKey, ack.NodePublicKey, ack.X25519KeySignature);
+
                 var remotePeerId = PeerId.FromPublicKey(ack.NodePublicKey);
                 return HandshakeResult.Success(
                     remotePeerId,
@@ -115,7 +129,9 @@ public sealed class HandshakeProtocol
                     "",
                     ack.ListenPort,
                     ack.BestBlockNumber,
-                    ack.BestBlockHash);
+                    ack.BestBlockHash,
+                    sharedSecret,
+                    isInitiator: true);
             }
 
             if (msg is HelloMessage peerHello)
@@ -132,6 +148,10 @@ public sealed class HandshakeProtocol
                 var acceptAck = CreateAck(true, "", peerHello.ChallengeNonce);
                 await connection.SendAsync(MessageCodec.Serialize(acceptAck), timeoutCts.Token);
 
+                // NET-C02: Derive shared secret from peer's Hello X25519 key
+                var sharedSecret = DeriveSharedSecret(
+                    peerHello.X25519PublicKey, peerHello.NodePublicKey, peerHello.X25519KeySignature);
+
                 return HandshakeResult.Success(
                     PeerId.FromPublicKey(peerHello.NodePublicKey),
                     peerHello.NodePublicKey,
@@ -139,7 +159,9 @@ public sealed class HandshakeProtocol
                     peerHello.ListenAddress,
                     peerHello.ListenPort,
                     peerHello.BestBlockNumber,
-                    peerHello.BestBlockHash);
+                    peerHello.BestBlockHash,
+                    sharedSecret,
+                    isInitiator: true);
             }
 
             return HandshakeResult.Failed($"Unexpected message type: {msg.Type}");
@@ -148,11 +170,16 @@ public sealed class HandshakeProtocol
         {
             return HandshakeResult.Failed("Handshake timed out");
         }
+        finally
+        {
+            ZeroEphemeralKeys();
+        }
     }
 
     /// <summary>
     /// Perform handshake as the responder (inbound connection).
     /// Waits for Hello, validates (including NET-C01 auth), sends HelloAck.
+    /// NET-C02: Includes X25519 key exchange for transport encryption.
     /// </summary>
     public async Task<HandshakeResult> RespondAsync(
         PeerConnection connection,
@@ -163,6 +190,9 @@ public sealed class HandshakeProtocol
 
         try
         {
+            // NET-C02: Generate ephemeral X25519 key pair
+            GenerateEphemeralKeys();
+
             // Wait for Hello
             var data = await connection.ReceiveOneAsync(timeoutCts.Token);
             if (data == null)
@@ -181,9 +211,13 @@ public sealed class HandshakeProtocol
                 return HandshakeResult.Failed(validation.RejectReason);
             }
 
-            // Send HelloAck with challenge-response (sign initiator's nonce)
+            // Send HelloAck with challenge-response (sign initiator's nonce) + X25519 key
             var ack = CreateAck(true, "", hello.ChallengeNonce);
             await connection.SendAsync(MessageCodec.Serialize(ack), timeoutCts.Token);
+
+            // NET-C02: Derive shared secret from initiator's X25519 key
+            var sharedSecret = DeriveSharedSecret(
+                hello.X25519PublicKey, hello.NodePublicKey, hello.X25519KeySignature);
 
             var peerId = PeerId.FromPublicKey(hello.NodePublicKey);
             return HandshakeResult.Success(
@@ -193,11 +227,17 @@ public sealed class HandshakeProtocol
                 hello.ListenAddress,
                 hello.ListenPort,
                 hello.BestBlockNumber,
-                hello.BestBlockHash);
+                hello.BestBlockHash,
+                sharedSecret,
+                isInitiator: false);
         }
         catch (OperationCanceledException)
         {
             return HandshakeResult.Failed("Handshake timed out");
+        }
+        finally
+        {
+            ZeroEphemeralKeys();
         }
     }
 
@@ -210,6 +250,9 @@ public sealed class HandshakeProtocol
         // NET-C01: Sign BLAKE3("basalt-hello-v1" || nonce || chainId) to prove identity
         var payload = BuildChallengePayload(HelloDomain, nonce, _chainId);
         var authSig = Ed25519Signer.Sign(_localPrivateKey, payload);
+
+        // NET-C02: Sign the ephemeral X25519 public key with Ed25519 identity
+        var x25519Sig = X25519.SignPublicKey(_ephemeralPublicKey!, _localPrivateKey);
 
         return new HelloMessage
         {
@@ -226,11 +269,14 @@ public sealed class HandshakeProtocol
             ListenPort = _listenPort,
             ChallengeNonce = nonce,
             AuthSignature = authSig,
+            X25519PublicKey = _ephemeralPublicKey!,
+            X25519KeySignature = x25519Sig,
         };
     }
 
     /// <summary>
     /// Create a HelloAck message, optionally signing the initiator's challenge nonce.
+    /// NET-C02: Includes ephemeral X25519 key + signature.
     /// </summary>
     private HelloAckMessage CreateAck(bool accepted, string reason, byte[]? initiatorNonce = null)
     {
@@ -240,6 +286,15 @@ public sealed class HandshakeProtocol
         {
             var payload = BuildChallengePayload(AckDomain, initiatorNonce, _chainId);
             challengeResponse = Ed25519Signer.Sign(_localPrivateKey, payload);
+        }
+
+        // NET-C02: Sign the ephemeral X25519 public key with Ed25519 identity
+        var x25519Sig = default(Signature);
+        var x25519PubKey = Array.Empty<byte>();
+        if (accepted && _ephemeralPublicKey != null)
+        {
+            x25519Sig = X25519.SignPublicKey(_ephemeralPublicKey, _localPrivateKey);
+            x25519PubKey = _ephemeralPublicKey;
         }
 
         return new HelloAckMessage
@@ -255,6 +310,8 @@ public sealed class HandshakeProtocol
             BestBlockHash = _getBestBlockHash(),
             ChallengeResponse = challengeResponse,
             GenesisHash = _getGenesisHash(),
+            X25519PublicKey = x25519PubKey,
+            X25519KeySignature = x25519Sig,
         };
     }
 
@@ -280,7 +337,64 @@ public sealed class HandshakeProtocol
         if (!Ed25519Signer.Verify(hello.NodePublicKey, helloPayload, hello.AuthSignature))
             return new HelloValidation(false, "Hello auth signature verification failed");
 
+        // NET-C02: Validate X25519 key exchange fields
+        if (hello.X25519PublicKey is not { Length: 32 })
+            return new HelloValidation(false, "Missing or invalid X25519 public key (expected 32 bytes)");
+
+        if (!X25519.VerifyPublicKey(hello.X25519PublicKey, hello.NodePublicKey, hello.X25519KeySignature))
+            return new HelloValidation(false, "X25519 public key signature verification failed");
+
         return new HelloValidation(true, "");
+    }
+
+    /// <summary>
+    /// NET-C02: Generate a fresh ephemeral X25519 key pair for this connection.
+    /// </summary>
+    private void GenerateEphemeralKeys()
+    {
+        (_ephemeralPrivateKey, _ephemeralPublicKey) = X25519.GenerateKeyPair();
+    }
+
+    /// <summary>
+    /// NET-C02: Derive shared secret from peer's X25519 public key.
+    /// Verifies the X25519 key signature and performs DH.
+    /// </summary>
+    private byte[]? DeriveSharedSecret(byte[] peerX25519PubKey, PublicKey peerEd25519PubKey, Signature x25519Sig)
+    {
+        if (peerX25519PubKey is not { Length: 32 })
+        {
+            _logger.LogWarning("Peer X25519 public key missing or invalid length");
+            return null;
+        }
+
+        if (!X25519.VerifyPublicKey(peerX25519PubKey, peerEd25519PubKey, x25519Sig))
+        {
+            _logger.LogWarning("Peer X25519 public key signature verification failed");
+            return null;
+        }
+
+        try
+        {
+            return X25519.DeriveSharedSecret(_ephemeralPrivateKey!, peerX25519PubKey);
+        }
+        catch (CryptographicException ex)
+        {
+            _logger.LogWarning(ex, "X25519 key agreement failed");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// NET-C02: Securely zero ephemeral key material after handshake.
+    /// </summary>
+    private void ZeroEphemeralKeys()
+    {
+        if (_ephemeralPrivateKey != null)
+        {
+            CryptographicOperations.ZeroMemory(_ephemeralPrivateKey);
+            _ephemeralPrivateKey = null;
+        }
+        _ephemeralPublicKey = null;
     }
 
     /// <summary>
@@ -314,6 +428,12 @@ public sealed class HandshakeResult
     public ulong PeerBestBlock { get; init; }
     public Hash256 PeerBestBlockHash { get; init; }
 
+    /// <summary>NET-C02: Shared secret for transport encryption (null if key exchange failed).</summary>
+    public byte[]? SharedSecret { get; init; }
+
+    /// <summary>NET-C02: True if this side initiated the connection (sent Hello first).</summary>
+    public bool IsInitiator { get; init; }
+
     public static HandshakeResult Failed(string reason) => new() { IsSuccess = false, Error = reason };
 
     public static HandshakeResult Success(
@@ -323,7 +443,9 @@ public sealed class HandshakeResult
         string host,
         int port,
         ulong bestBlock,
-        Hash256 bestBlockHash) =>
+        Hash256 bestBlockHash,
+        byte[]? sharedSecret = null,
+        bool isInitiator = false) =>
         new()
         {
             IsSuccess = true,
@@ -334,5 +456,7 @@ public sealed class HandshakeResult
             PeerPort = port,
             PeerBestBlock = bestBlock,
             PeerBestBlockHash = bestBlockHash,
+            SharedSecret = sharedSecret,
+            IsInitiator = isInitiator,
         };
 }
