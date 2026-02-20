@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using Basalt.Execution;
 using Microsoft.AspNetCore.Builder;
@@ -60,7 +61,7 @@ public static class MetricsEndpoint
             // TPS metrics
             sb.AppendLine("# HELP basalt_tps Current transactions per second.");
             sb.AppendLine("# TYPE basalt_tps gauge");
-            sb.Append("basalt_tps ").AppendLine(_currentTps.ToString("F2"));
+            sb.Append("basalt_tps ").AppendLine(_currentTps.ToString("F2", CultureInfo.InvariantCulture));
 
             // Total transactions processed
             sb.AppendLine("# HELP basalt_transactions_total Total transactions processed.");
@@ -92,7 +93,7 @@ public static class MetricsEndpoint
             // Uptime
             sb.AppendLine("# HELP basalt_uptime_seconds Node uptime in seconds.");
             sb.AppendLine("# TYPE basalt_uptime_seconds gauge");
-            sb.Append("basalt_uptime_seconds ").AppendLine(Uptime.Elapsed.TotalSeconds.ToString("F0"));
+            sb.Append("basalt_uptime_seconds ").AppendLine(Uptime.Elapsed.TotalSeconds.ToString("F0", CultureInfo.InvariantCulture));
 
             return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
         });

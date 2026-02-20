@@ -143,12 +143,16 @@ public static class FormatHelper
     {
         var result = new Dictionary<string, double>();
         if (string.IsNullOrEmpty(raw)) return result;
-        foreach (var line in raw.Split('\n'))
+        foreach (var rawLine in raw.Split('\n'))
         {
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
-            var parts = line.Split(' ', 2);
-            if (parts.Length == 2 && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var val))
-                result[parts[0]] = val;
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line[0] == '#') continue;
+            var spaceIdx = line.IndexOf(' ');
+            if (spaceIdx <= 0 || spaceIdx >= line.Length - 1) continue;
+            var key = line[..spaceIdx];
+            var valStr = line[(spaceIdx + 1)..].Trim();
+            if (double.TryParse(valStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var val))
+                result[key] = val;
         }
         return result;
     }

@@ -80,21 +80,41 @@ else
         }, null, 5000, 5000);
     }
 
+    private int _failCount;
+
     private async Task LoadMetrics()
     {
-        var raw = await Api.GetMetricsRawAsync();
-        if (raw == null)
+        try
         {
-            _error = "Cannot connect to metrics endpoint.";
-            return;
-        }
+            var raw = await Api.GetMetricsRawAsync();
+            if (raw == null)
+            {
+                _failCount++;
+                if (_failCount >= 3)
+                    _error = "Cannot connect to metrics endpoint.";
+                return;
+            }
 
-        _error = null;
-        _current = FormatHelper.ParsePrometheusMetrics(raw);
-        if (_current.Count > 0)
-        {
+            var parsed = FormatHelper.ParsePrometheusMetrics(raw);
+            if (parsed.Count == 0)
+            {
+                _failCount++;
+                if (_failCount >= 3)
+                    _error = "Metrics endpoint returned no data.";
+                return;
+            }
+
+            _failCount = 0;
+            _error = null;
+            _current = parsed;
             _history.Add(new Dictionary<string, double>(_current));
             if (_history.Count > 30) _history.RemoveAt(0);
+        }
+        catch
+        {
+            _failCount++;
+            if (_failCount >= 3)
+                _error = "Failed to load metrics.";
         }
     }
 
