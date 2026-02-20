@@ -98,9 +98,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-14: Cap block request count to prevent resource exhaustion
     private const int MaxBlockRequestCount = 100;
 
-    // N-17: Thread-safe double-sign detection: keyed by (view, proposer) to avoid false positives
-    // when different proposers propose for the same view after a view change.
-    private readonly ConcurrentDictionary<(ulong View, PeerId Proposer), Hash256> _proposalsByView = new();
+    // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
+    // Block number is included because view numbers can collide across blocks:
+    // after a view change bumps view to V, and then StartRound(V) reuses the same
+    // view number for the next block, old entries from the previous block would
+    // cause false double-sign detection without the block dimension.
+    private readonly ConcurrentDictionary<(ulong View, ulong Block, PeerId Proposer), Hash256> _proposalsByView = new();
 
     // Identity
     private byte[] _privateKey = [];
@@ -1146,7 +1149,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         if (proposal.BlockNumber == currentBlock)
         {
-            var proposalKey = (proposal.ViewNumber, proposal.SenderId);
+            var proposalKey = (proposal.ViewNumber, proposal.BlockNumber, proposal.SenderId);
             if (_slashingEngine != null && _proposalsByView.TryGetValue(proposalKey, out var existingHash))
             {
                 if (existingHash != proposal.BlockHash)
@@ -1155,8 +1158,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     if (proposerInfo != null)
                     {
                         _slashingEngine.SlashDoubleSign(proposerInfo.Address, proposal.BlockNumber, existingHash, proposal.BlockHash);
-                        _logger.LogWarning("Double-sign detected from validator {Address} at view {View}",
-                            proposerInfo.Address, proposal.ViewNumber);
+                        _logger.LogWarning("Double-sign detected from validator {Address} at view {View} block {Block}",
+                            proposerInfo.Address, proposal.ViewNumber, proposal.BlockNumber);
                     }
                 }
             }
