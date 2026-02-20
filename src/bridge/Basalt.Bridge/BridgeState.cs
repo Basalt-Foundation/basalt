@@ -178,6 +178,14 @@ public sealed class BridgeState
     {
         var contractAddr = contractAddress ?? new byte[20];
 
+        // BRIDGE-03: Strict length validation — reject ambiguous inputs instead of silent truncation/padding
+        if (contractAddr.Length != 20)
+            throw new BridgeException($"Contract address must be exactly 20 bytes, got {contractAddr.Length}.");
+        if (withdrawal.Recipient.Length != 20)
+            throw new BridgeException($"Recipient must be exactly 20 bytes, got {withdrawal.Recipient.Length}.");
+        if (withdrawal.StateRoot.Length != 32)
+            throw new BridgeException($"State root must be exactly 32 bytes, got {withdrawal.StateRoot.Length}.");
+
         // version(1) + chainId(4) + contractAddress(20) + nonce(8) + recipient(20) + amount(32) + stateRoot(32) = 117
         var data = new byte[1 + 4 + 20 + 8 + 20 + 32 + 32];
         var offset = 0;
@@ -191,7 +199,7 @@ public sealed class BridgeState
         offset += 4;
 
         // Contract address (BRIDGE-01)
-        contractAddr.AsSpan(0, Math.Min(contractAddr.Length, 20)).CopyTo(data.AsSpan(offset, 20));
+        contractAddr.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
         // Nonce
@@ -199,7 +207,7 @@ public sealed class BridgeState
         offset += 8;
 
         // Recipient (fixed 20 bytes)
-        withdrawal.Recipient.AsSpan(0, Math.Min(withdrawal.Recipient.Length, 20)).CopyTo(data.AsSpan(offset, 20));
+        withdrawal.Recipient.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
         // Amount (UInt256 LE, 32 bytes)
@@ -207,7 +215,7 @@ public sealed class BridgeState
         offset += 32;
 
         // State root (fixed 32 bytes)
-        withdrawal.StateRoot.AsSpan(0, Math.Min(withdrawal.StateRoot.Length, 32)).CopyTo(data.AsSpan(offset, 32));
+        withdrawal.StateRoot.CopyTo(data.AsSpan(offset, 32));
 
         return Blake3Hasher.Hash(data).ToArray();
     }

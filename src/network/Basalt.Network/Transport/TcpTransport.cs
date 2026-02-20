@@ -29,6 +29,9 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>NET-H01: Track connection count per IP for DoS protection.</summary>
     private readonly ConcurrentDictionary<string, int> _connectionsPerIp = new();
 
+    /// <summary>NET-H01: Map PeerId → remote IP so we can decrement on disconnect.</summary>
+    private readonly ConcurrentDictionary<PeerId, string> _peerIpMap = new();
+
     /// <summary>NET-M04: Track read loop tasks so exceptions are observed and loops can be awaited on shutdown.</summary>
     private readonly ConcurrentDictionary<PeerId, Task> _readLoopTasks = new();
 
@@ -213,12 +216,20 @@ public sealed class TcpTransport : IAsyncDisposable
         // NET-M01: Set PeerId before TryAdd so the read loop uses the correct identity
         connection.PeerId = realId;
 
+        // Transfer IP mapping from temp ID to real ID
+        if (_peerIpMap.TryRemove(tempId, out var ip))
+            _peerIpMap[realId] = ip;
+
         if (!_connections.TryAdd(realId, connection))
         {
             // Duplicate connection — we already have a connection to this peer
             // (likely from simultaneous inbound+outbound). Dispose the duplicate silently.
             _logger.LogDebug(
                 "Duplicate connection to {RealId} detected; keeping existing connection", realId);
+            // Decrement IP count since we're dropping this connection
+            if (ip != null)
+                _connectionsPerIp.AddOrUpdate(ip, 0, (_, count) => Math.Max(0, count - 1));
+            _peerIpMap.TryRemove(realId, out _);
             connection.Dispose();
             return false;
         }
@@ -359,8 +370,9 @@ public sealed class TcpTransport : IAsyncDisposable
                 continue;
             }
 
-            // NET-H01: Increment per-IP counter
+            // NET-H01: Increment per-IP counter and track mapping for decrement on disconnect
             _connectionsPerIp.AddOrUpdate(remoteIp, 1, (_, count) => count + 1);
+            _peerIpMap[tempId] = remoteIp;
 
             _logger.LogInformation("Inbound connection accepted from {Endpoint} as {PeerId}", endpoint, tempId);
 
@@ -402,19 +414,14 @@ public sealed class TcpTransport : IAsyncDisposable
             // NET-M04: Remove tracked read loop task
             _readLoopTasks.TryRemove(peerId, out _);
 
+            // NET-H01: Decrement per-IP counter so the IP isn't permanently blocked
+            if (_peerIpMap.TryRemove(peerId, out var ip))
+                _connectionsPerIp.AddOrUpdate(ip, 0, (_, count) => Math.Max(0, count - 1));
+
             connection.Dispose();
             _logger.LogInformation("Peer {PeerId} disconnected and removed", peerId);
             OnPeerDisconnected?.Invoke(peerId);
         }
-    }
-
-    /// <summary>
-    /// NET-H01: Decrement the per-IP connection counter when a connection is closed.
-    /// Called by external code that knows the IP.
-    /// </summary>
-    public void DecrementIpCount(string ip)
-    {
-        _connectionsPerIp.AddOrUpdate(ip, 0, (_, count) => Math.Max(0, count - 1));
     }
 
     private static PeerId CreateTempPeerId(string endpoint)

@@ -274,7 +274,7 @@ public sealed class TrieNode
     /// </summary>
     private static void EnsureBounds(byte[] data, int pos, int count, string fieldName)
     {
-        if (pos + count > data.Length)
+        if (pos < 0 || count < 0 || pos > data.Length || count > data.Length - pos)
             throw new InvalidDataException(
                 $"Trie node decode: not enough data for {fieldName} " +
                 $"(need {count} bytes at offset {pos}, but data length is {data.Length}).");
@@ -318,6 +318,8 @@ public sealed class TrieNode
                     throw new InvalidDataException("Varint length overflow: value exceeds 32 bits.");
 
                 result |= (uint)b << 28;
+                if (result > int.MaxValue)
+                    throw new InvalidDataException("Varint length overflow: value exceeds int.MaxValue.");
                 return (int)result;
             }
 

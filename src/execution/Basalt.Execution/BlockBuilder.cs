@@ -137,12 +137,11 @@ public sealed class BlockBuilder
 
     private static Hash256 ComputeReceiptHash(TransactionReceipt receipt)
     {
-        // Hash: [1 byte success][8 bytes gasUsed][32 bytes txHash][32 bytes logsHash]
-        Span<byte> logsData = stackalloc byte[0];
-        byte[] logsBuffer = [];
+        // Fixed-size format: [1 byte success][8 bytes gasUsed][32 bytes txHash][32 bytes logsHash]
+        // logsHash is Hash256.Zero when there are no logs — eliminates variable-length ambiguity.
+        Hash256 logsHash = Hash256.Zero;
         if (receipt.Logs.Count > 0)
         {
-            // Hash all logs together
             using var logsHasher = Blake3Hasher.CreateIncremental();
             Span<byte> logEntry = stackalloc byte[Address.Size + Hash256.Size];
             foreach (var log in receipt.Logs)
@@ -153,19 +152,15 @@ public sealed class BlockBuilder
                 if (log.Data.Length > 0)
                     logsHasher.Update(log.Data);
             }
-            var logsHash = logsHasher.Finalize();
-            logsBuffer = new byte[Hash256.Size];
-            logsHash.WriteTo(logsBuffer);
+            logsHash = logsHasher.Finalize();
         }
 
-        // Build receipt content buffer
-        var size = 1 + 8 + Hash256.Size + (logsBuffer.Length > 0 ? Hash256.Size : 0);
-        Span<byte> buffer = stackalloc byte[size];
+        // Fixed-size buffer: 1 + 8 + 32 + 32 = 73 bytes (always)
+        Span<byte> buffer = stackalloc byte[1 + 8 + Hash256.Size + Hash256.Size];
         buffer[0] = receipt.Success ? (byte)1 : (byte)0;
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], receipt.GasUsed);
         receipt.TransactionHash.WriteTo(buffer[9..]);
-        if (logsBuffer.Length > 0)
-            logsBuffer.CopyTo(buffer[(9 + Hash256.Size)..]);
+        logsHash.WriteTo(buffer[(9 + Hash256.Size)..]);
 
         return Blake3Hasher.Hash(buffer);
     }
