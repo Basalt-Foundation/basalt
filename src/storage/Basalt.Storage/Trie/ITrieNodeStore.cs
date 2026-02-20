@@ -5,6 +5,12 @@ namespace Basalt.Storage.Trie;
 /// <summary>
 /// Storage backend for trie nodes. Maps hash -> node data.
 /// </summary>
+/// <remarks>
+/// TODO (S-03): The trie currently never prunes stale nodes. When an account or storage
+/// value is updated, the old trie path nodes become unreachable but remain in the store.
+/// A future garbage-collection or reference-counting pass should reclaim these entries
+/// to bound long-term storage growth.
+/// </remarks>
 public interface ITrieNodeStore
 {
     TrieNode? Get(Hash256 hash);

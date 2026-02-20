@@ -15,6 +15,11 @@ public partial class BridgeETH
     private const int SigSize = 64;
     private const int SignatureEntrySize = PubKeySize + SigSize; // 96
 
+    /// <summary>
+    /// Number of blocks after which a pending deposit can be cancelled (~7 days at 12s blocks).
+    /// </summary>
+    private const ulong DepositExpiryBlocks = 50400;
+
     // Admin & config
     private readonly StorageMap<string, string> _admin;
     private readonly StorageValue<uint> _threshold;
@@ -54,6 +59,9 @@ public partial class BridgeETH
         _processedWithdrawals = new StorageMap<string, bool>("bch_proc");
         _totalLocked = new StorageValue<UInt256>("bch_locked");
 
+        // BRIDGE-04: Validate threshold
+        Context.Require(threshold >= 2, "BRIDGE: threshold must be >= 2");
+
         _admin.Set("admin", Convert.ToHexString(Context.Caller));
         _threshold.Set(threshold);
     }
@@ -73,6 +81,7 @@ public partial class BridgeETH
     {
         RequireAdmin();
         _paused.Set(true);
+        Context.Emit(new BridgePausedEvent { Admin = Context.Caller });
     }
 
     [BasaltEntrypoint]
@@ -80,6 +89,7 @@ public partial class BridgeETH
     {
         RequireAdmin();
         _paused.Set(false);
+        Context.Emit(new BridgeUnpausedEvent { Admin = Context.Caller });
     }
 
     // --- Relayer Management ---
@@ -184,6 +194,49 @@ public partial class BridgeETH
         Context.Emit(new DepositFinalizedEvent { Nonce = nonce });
     }
 
+    // --- Cancel Deposit (BRIDGE-09) ---
+
+    /// <summary>
+    /// Cancel an expired pending deposit and refund the locked amount to the sender.
+    /// Only the original sender can cancel, and only after DepositExpiryBlocks have passed.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void CancelDeposit(ulong nonce)
+    {
+        RequireNotPaused();
+        var key = nonce.ToString();
+
+        // Check deposit exists and is still pending
+        var status = _depositStatus.Get(key);
+        Context.Require(status == "pending", "BRIDGE: deposit not pending");
+
+        // Check caller is the original sender
+        var senderHex = _depositSenders.Get(key);
+        Context.Require(senderHex == Convert.ToHexString(Context.Caller), "BRIDGE: not deposit sender");
+
+        // Check enough blocks have passed
+        var depositBlock = _depositBlockHeights.Get(key);
+        Context.Require(Context.BlockHeight >= depositBlock + DepositExpiryBlocks,
+            "BRIDGE: deposit not expired");
+
+        // Update status
+        _depositStatus.Set(key, "cancelled");
+
+        // Refund the locked amount
+        var amount = _depositAmounts.Get(key);
+        Context.TransferNative(Context.Caller, amount);
+
+        // Decrement total locked
+        _totalLocked.Set(_totalLocked.Get() - amount);
+
+        Context.Emit(new DepositCancelledEvent
+        {
+            Nonce = nonce,
+            Sender = Context.Caller,
+            Amount = amount,
+        });
+    }
+
     // --- Unlock (Ethereum → Basalt) ---
 
     /// <summary>
@@ -195,7 +248,7 @@ public partial class BridgeETH
     public void Unlock(ulong depositNonce, byte[] recipient, UInt256 amount, byte[] stateRoot, byte[] signatures)
     {
         RequireNotPaused();
-        Context.Require(recipient.Length > 0, "BRIDGE: invalid recipient");
+        Context.Require(recipient.Length == 20, "BRIDGE: recipient must be 20 bytes");
         Context.Require(!amount.IsZero, "BRIDGE: zero amount");
         Context.Require(signatures.Length > 0 && signatures.Length % SignatureEntrySize == 0,
             "BRIDGE: invalid signatures format");
@@ -234,6 +287,9 @@ public partial class BridgeETH
 
         _processedWithdrawals.Set(nonceKey, true);
         Context.TransferNative(recipient, amount);
+
+        // BRIDGE-02: Decrement total locked on unlock
+        _totalLocked.Set(_totalLocked.Get() - amount);
 
         Context.Emit(new WithdrawalUnlockedEvent
         {
@@ -294,15 +350,47 @@ public partial class BridgeETH
 
     /// <summary>
     /// Compute withdrawal hash — byte-for-byte compatible with BridgeState.ComputeWithdrawalHash().
-    /// Format: BLAKE3(LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
+    /// Format: BLAKE3(version || LE_u32(chainId) || contractAddress || LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
+    /// BRIDGE-01: includes chain ID and contract address to prevent cross-chain replay.
+    /// BRIDGE-03: enforces fixed-length recipient (20 bytes) and stateRoot (32 bytes).
+    /// BRIDGE-12: prepends version byte (0x02).
     /// </summary>
     private static byte[] ComputeWithdrawalHash(ulong nonce, byte[] recipient, UInt256 amount, byte[] stateRoot)
     {
-        var data = new byte[8 + recipient.Length + 32 + stateRoot.Length];
-        BitConverter.TryWriteBytes(data.AsSpan(0, 8), nonce);
-        recipient.CopyTo(data.AsSpan(8));
-        amount.WriteTo(data.AsSpan(8 + recipient.Length, 32));
-        stateRoot.CopyTo(data.AsSpan(8 + recipient.Length + 32));
+        // BRIDGE-03: enforce fixed lengths
+        Context.Require(recipient.Length == 20, "BRIDGE: recipient must be 20 bytes");
+        Context.Require(stateRoot.Length == 32, "BRIDGE: stateRoot must be 32 bytes");
+
+        // BRIDGE-01 + BRIDGE-12: version(1) + chainId(4) + contractAddress(20) + nonce(8) + recipient(20) + amount(32) + stateRoot(32) = 117
+        var data = new byte[1 + 4 + 20 + 8 + 20 + 32 + 32];
+        var offset = 0;
+
+        // Version byte (BRIDGE-12)
+        data[offset] = 0x02;
+        offset += 1;
+
+        // Chain ID (BRIDGE-01)
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), Context.ChainId);
+        offset += 4;
+
+        // Contract address (BRIDGE-01)
+        Context.Self.CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Nonce
+        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), nonce);
+        offset += 8;
+
+        // Recipient (fixed 20 bytes)
+        recipient.CopyTo(data.AsSpan(offset, 20));
+        offset += 20;
+
+        // Amount (UInt256 LE, 32 bytes)
+        amount.WriteTo(data.AsSpan(offset, 32));
+        offset += 32;
+
+        // State root (fixed 32 bytes)
+        stateRoot.CopyTo(data.AsSpan(offset, 32));
 
         return Blake3Hasher.Hash(data).ToArray();
     }
@@ -357,4 +445,24 @@ public class ThresholdUpdatedEvent
 {
     public uint OldThreshold { get; set; }
     public uint NewThreshold { get; set; }
+}
+
+[BasaltEvent]
+public class BridgePausedEvent
+{
+    [Indexed] public byte[] Admin { get; set; } = null!;
+}
+
+[BasaltEvent]
+public class BridgeUnpausedEvent
+{
+    [Indexed] public byte[] Admin { get; set; } = null!;
+}
+
+[BasaltEvent]
+public class DepositCancelledEvent
+{
+    [Indexed] public ulong Nonce { get; set; }
+    [Indexed] public byte[] Sender { get; set; } = null!;
+    public UInt256 Amount { get; set; }
 }

@@ -108,7 +108,7 @@ public static class KeccakHasher
 
     private static readonly int[] PiLane =
     [
-        0, 10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
+        0, 6, 12, 18, 24, 3, 9, 10, 16, 22, 1, 7, 13, 19, 20, 4, 5, 11, 17, 23, 2, 8, 14, 15, 21,
     ];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -135,7 +135,7 @@ public static class KeccakHasher
 
             // ρ (rho) and π (pi)
             for (int i = 0; i < 25; i++)
-                B[PiLane[i]] = RotL(state[i], RotationOffsets[i]);
+                B[i] = RotL(state[PiLane[i]], RotationOffsets[PiLane[i]]);
 
             // χ (chi)
             for (int y = 0; y < 5; y++)

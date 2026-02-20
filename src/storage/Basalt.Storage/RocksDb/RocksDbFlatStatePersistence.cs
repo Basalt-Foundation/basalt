@@ -21,10 +21,13 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
 
     public void Flush(
         IReadOnlyDictionary<Address, AccountState> accounts,
-        IReadOnlyDictionary<(Address, Hash256), byte[]> storage)
+        IReadOnlyDictionary<(Address, Hash256), byte[]> storage,
+        IReadOnlyCollection<Address> deletedAccounts,
+        IReadOnlyCollection<(Address, Hash256)> deletedStorage)
     {
         using var batch = _store.CreateWriteBatch();
 
+        // Write (upsert) live account and storage entries
         foreach (var (address, state) in accounts)
         {
             var key = MakeAccountKey(address);
@@ -36,6 +39,19 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         {
             var key = MakeStorageKey(contract, slot);
             batch.Put(RocksDbStore.CF.State, key, value);
+        }
+
+        // Delete entries that were removed from state
+        foreach (var address in deletedAccounts)
+        {
+            var key = MakeAccountKey(address);
+            batch.Delete(RocksDbStore.CF.State, key);
+        }
+
+        foreach (var (contract, slot) in deletedStorage)
+        {
+            var key = MakeStorageKey(contract, slot);
+            batch.Delete(RocksDbStore.CF.State, key);
         }
 
         batch.Commit();

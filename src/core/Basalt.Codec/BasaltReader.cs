@@ -13,6 +13,9 @@ public ref struct BasaltReader
     private readonly ReadOnlySpan<byte> _buffer;
     private int _position;
 
+    // NET-M11: Maximum allowed string length in bytes to prevent oversized allocations
+    public const int MaxStringLength = 4096;
+
     public BasaltReader(ReadOnlySpan<byte> buffer)
     {
         _buffer = buffer;
@@ -123,11 +126,21 @@ public ref struct BasaltReader
 
     /// <summary>
     /// Read a length-prefixed UTF-8 string.
+    /// NET-M11: Enforces MaxStringLength to prevent oversized allocations.
     /// </summary>
     public string ReadString()
     {
-        var bytes = ReadBytes();
-        return System.Text.Encoding.UTF8.GetString(bytes);
+        var length = (int)ReadVarInt();
+
+        // NET-M11: Reject strings exceeding maximum allowed length
+        if (length > MaxStringLength)
+            throw new InvalidOperationException(
+                $"String length {length} exceeds maximum of {MaxStringLength} bytes.");
+
+        EnsureAvailable(length);
+        var data = _buffer.Slice(_position, length);
+        _position += length;
+        return System.Text.Encoding.UTF8.GetString(data);
     }
 
     public bool ReadBool() => ReadByte() != 0;

@@ -11,7 +11,9 @@ public static class GraphQLSetup
         services
             .AddGraphQLServer()
             .AddQueryType<Query>()
-            .AddMutationType<Mutation>();
+            .AddMutationType<Mutation>()
+            .AddMaxExecutionDepthRule(10)
+            .ModifyRequestOptions(opt => opt.ExecutionTimeout = TimeSpan.FromSeconds(10));
 
         return services;
     }

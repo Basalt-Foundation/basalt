@@ -42,10 +42,10 @@ public sealed class SparseMerkleProof
 /// ZK proofs can include proof of non-membership to demonstrate that a
 /// credential has not been revoked.
 ///
-/// <para><b>Hashing (BLAKE3):</b></para>
+/// <para><b>Hashing (BLAKE3 with F-09 domain separation):</b></para>
 /// <list type="bullet">
-///   <item>Leaf hash for a present key: BLAKE3(key_bytes)</item>
-///   <item>Internal node hash: BLAKE3(left_child || right_child)</item>
+///   <item>Leaf hash for a present key: BLAKE3(0x00 || key_bytes)</item>
+///   <item>Internal node hash: BLAKE3(0x01 || left_child || right_child)</item>
 ///   <item>Default (absent) leaf value: <see cref="Hash256.Zero"/></item>
 /// </list>
 ///
@@ -59,9 +59,24 @@ public sealed class SparseMerkleTree
     private readonly int _depth;
 
     /// <summary>
+    /// F-17: Lock object for thread-safe tree mutations.
+    /// </summary>
+    private readonly object _lock = new();
+
+    /// <summary>
+    /// F-09: Domain separation byte for leaf nodes.
+    /// </summary>
+    private const byte LeafDomainByte = 0x00;
+
+    /// <summary>
+    /// F-09: Domain separation byte for internal nodes.
+    /// </summary>
+    private const byte InternalDomainByte = 0x01;
+
+    /// <summary>
     /// Pre-computed default hashes for each tree level.
     /// <c>_defaults[0]</c> = <see cref="Hash256.Zero"/> (default leaf).
-    /// <c>_defaults[i]</c> = BLAKE3(_defaults[i-1] || _defaults[i-1]).
+    /// <c>_defaults[i]</c> = BLAKE3(0x01 || _defaults[i-1] || _defaults[i-1]).
     /// <c>_defaults[_depth]</c> = root of a completely empty tree.
     /// Index i represents a subtree of height i (i.e., i levels below it).
     /// </summary>
@@ -122,11 +137,12 @@ public sealed class SparseMerkleTree
         _leaves = new HashSet<Hash256>();
 
         // Pre-compute default hashes bottom-up.
+        // F-09: Use domain-separated internal node hash.
         _defaults = new Hash256[depth + 1];
         _defaults[0] = Hash256.Zero;
         for (int i = 1; i <= depth; i++)
         {
-            _defaults[i] = Blake3Hasher.HashPair(_defaults[i - 1], _defaults[i - 1]);
+            _defaults[i] = HashInternal(_defaults[i - 1], _defaults[i - 1]);
         }
     }
 
@@ -138,17 +154,22 @@ public sealed class SparseMerkleTree
     /// <param name="key">The 32-byte key to insert.</param>
     public void Insert(Hash256 key)
     {
-        if (!_leaves.Add(key))
-            return; // Already present.
+        lock (_lock) // F-17: Thread safety
+        {
+            if (!_leaves.Add(key))
+                return; // Already present.
 
-        byte[] keyBytes = key.ToArray();
-        Hash256 leafHash = Blake3Hasher.Hash(keyBytes);
+            byte[] keyBytes = key.ToArray();
 
-        // Set the leaf node (level 0, full path = all _depth bits).
-        SetOrRemoveNode(0, keyBytes, 0, _depth, leafHash);
+            // F-09: Domain-separated leaf hash
+            Hash256 leafHash = HashLeaf(key);
 
-        // Update all ancestors bottom-up.
-        UpdateAncestors(keyBytes);
+            // Set the leaf node (level 0, full path = all _depth bits).
+            SetOrRemoveNode(0, keyBytes, 0, _depth, leafHash);
+
+            // Update all ancestors bottom-up.
+            UpdateAncestors(keyBytes);
+        }
     }
 
     /// <summary>
@@ -158,16 +179,19 @@ public sealed class SparseMerkleTree
     /// <param name="key">The 32-byte key to delete.</param>
     public void Delete(Hash256 key)
     {
-        if (!_leaves.Remove(key))
-            return; // Not present.
+        lock (_lock) // F-17: Thread safety
+        {
+            if (!_leaves.Remove(key))
+                return; // Not present.
 
-        byte[] keyBytes = key.ToArray();
+            byte[] keyBytes = key.ToArray();
 
-        // Reset the leaf to default (remove from sparse store).
-        SetOrRemoveNode(0, keyBytes, 0, _depth, Hash256.Zero);
+            // Reset the leaf to default (remove from sparse store).
+            SetOrRemoveNode(0, keyBytes, 0, _depth, Hash256.Zero);
 
-        // Update all ancestors bottom-up.
-        UpdateAncestors(keyBytes);
+            // Update all ancestors bottom-up.
+            UpdateAncestors(keyBytes);
+        }
     }
 
     /// <summary>
@@ -175,7 +199,13 @@ public sealed class SparseMerkleTree
     /// </summary>
     /// <param name="key">The 32-byte key to look up.</param>
     /// <returns><c>true</c> if the key has been inserted and not deleted.</returns>
-    public bool Contains(Hash256 key) => _leaves.Contains(key);
+    public bool Contains(Hash256 key)
+    {
+        lock (_lock) // F-17: Thread safety
+        {
+            return _leaves.Contains(key);
+        }
+    }
 
     /// <summary>
     /// Generate a Merkle proof for the given key.
@@ -186,31 +216,34 @@ public sealed class SparseMerkleTree
     /// <returns>A <see cref="SparseMerkleProof"/> that can be verified against the root.</returns>
     public SparseMerkleProof GenerateProof(Hash256 key)
     {
-        byte[] keyBytes = key.ToArray();
-        var siblings = new Hash256[_depth];
-
-        // Walk from the leaf (level 0) upward to just below the root (level _depth - 1).
-        // At each level, collect the sibling's hash.
-        //
-        // At level L (height above leaf), the node is identified by a prefix of
-        // (_depth - L) bits. The distinguishing bit between the two children of
-        // the node at level (L+1) is bit index (_depth - L - 1).
-        //
-        // siblings[0] = sibling at the leaf level (deepest).
-        // siblings[_depth - 1] = sibling of the root's two children.
-        for (int i = 0; i < _depth; i++)
+        lock (_lock) // F-17: Thread safety
         {
-            // i corresponds to level i. The node at level i is identified by the
-            // first (_depth - i) bits. The sibling differs at bit index (_depth - i - 1).
-            int bitIndex = _depth - i - 1;
-            int siblingBit = 1 - GetBit(keyBytes, bitIndex);
+            byte[] keyBytes = key.ToArray();
+            var siblings = new Hash256[_depth];
 
-            // The sibling path: same prefix bits, but bit at bitIndex is flipped.
-            siblings[i] = GetNodeWithFlippedBit(i, keyBytes, bitIndex, siblingBit);
+            // Walk from the leaf (level 0) upward to just below the root (level _depth - 1).
+            // At each level, collect the sibling's hash.
+            //
+            // At level L (height above leaf), the node is identified by a prefix of
+            // (_depth - L) bits. The distinguishing bit between the two children of
+            // the node at level (L+1) is bit index (_depth - L - 1).
+            //
+            // siblings[0] = sibling at the leaf level (deepest).
+            // siblings[_depth - 1] = sibling of the root's two children.
+            for (int i = 0; i < _depth; i++)
+            {
+                // i corresponds to level i. The node at level i is identified by the
+                // first (_depth - i) bits. The sibling differs at bit index (_depth - i - 1).
+                int bitIndex = _depth - i - 1;
+                int siblingBit = 1 - GetBit(keyBytes, bitIndex);
+
+                // The sibling path: same prefix bits, but bit at bitIndex is flipped.
+                siblings[i] = GetNodeWithFlippedBit(i, keyBytes, bitIndex, siblingBit);
+            }
+
+            bool isIncluded = _leaves.Contains(key);
+            return new SparseMerkleProof(siblings, isIncluded);
         }
-
-        bool isIncluded = _leaves.Contains(key);
-        return new SparseMerkleProof(siblings, isIncluded);
     }
 
     /// <summary>
@@ -231,7 +264,8 @@ public sealed class SparseMerkleTree
         if (depth < 1 || depth > 256)
             return false;
 
-        Hash256 reconstructed = ReconstructRoot(key, Blake3Hasher.Hash(key.ToArray()), proof.Siblings, depth);
+        // F-09: Use domain-separated leaf hash
+        Hash256 reconstructed = ReconstructRoot(key, HashLeaf(key), proof.Siblings, depth);
         return reconstructed == root;
     }
 
@@ -278,10 +312,11 @@ public sealed class SparseMerkleTree
             int bitIndex = depth - i - 1;
             int bit = GetBit(keyBytes, bitIndex);
 
+            // F-09: Domain-separated internal node hash
             if (bit == 0)
-                current = Blake3Hasher.HashPair(current, siblings[i]);
+                current = HashInternal(current, siblings[i]);
             else
-                current = Blake3Hasher.HashPair(siblings[i], current);
+                current = HashInternal(siblings[i], current);
         }
 
         return current;
@@ -307,7 +342,8 @@ public sealed class SparseMerkleTree
 
             Hash256 leftChild = GetNodeByPrefix(level - 1, keyBytes, splitBitIndex, 0);
             Hash256 rightChild = GetNodeByPrefix(level - 1, keyBytes, splitBitIndex, 1);
-            Hash256 parentHash = Blake3Hasher.HashPair(leftChild, rightChild);
+            // F-09: Domain-separated internal node hash
+            Hash256 parentHash = HashInternal(leftChild, rightChild);
 
             // Store or remove the parent node.
             int parentPrefixLen = _depth - level;
@@ -450,5 +486,32 @@ public sealed class SparseMerkleTree
             return 0;
 
         return (keyBytes[byteIndex] >> bitOffset) & 1;
+    }
+
+    // -----------------------------------------------------------------------
+    // F-09: Domain-separated hash functions
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// F-09: Compute a domain-separated leaf hash: BLAKE3(0x00 || key_bytes).
+    /// </summary>
+    private static Hash256 HashLeaf(Hash256 key)
+    {
+        Span<byte> leafInput = stackalloc byte[1 + 32];
+        leafInput[0] = LeafDomainByte;
+        key.WriteTo(leafInput[1..]);
+        return Blake3Hasher.Hash(leafInput);
+    }
+
+    /// <summary>
+    /// F-09: Compute a domain-separated internal node hash: BLAKE3(0x01 || left || right).
+    /// </summary>
+    private static Hash256 HashInternal(Hash256 left, Hash256 right)
+    {
+        Span<byte> nodeInput = stackalloc byte[1 + 32 + 32];
+        nodeInput[0] = InternalDomainByte;
+        left.WriteTo(nodeInput[1..33]);
+        right.WriteTo(nodeInput[33..]);
+        return Blake3Hasher.Hash(nodeInput);
     }
 }

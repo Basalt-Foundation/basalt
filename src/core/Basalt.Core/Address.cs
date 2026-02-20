@@ -107,9 +107,23 @@ public readonly struct Address : IEquatable<Address>, IComparable<Address>
     }
 
     /// <summary>
-    /// Check if this address is a system contract address (0x0...0001 through 0x0...00FF).
+    /// Check if this address is a system contract address (0x0...0001 through 0x0...1FFF).
+    /// Uses big-endian comparison over the raw 20-byte address.
     /// </summary>
-    public bool IsSystemContract => _v0 == 0 && _v1 == 0 && _v2 > 0 && _v2 <= 0xFF000000;
+    public bool IsSystemContract
+    {
+        get
+        {
+            // First 16 bytes must be zero
+            if (_v0 != 0 || _v1 != 0) return false;
+            // Last 4 bytes (_v2) hold the value in native endianness.
+            // Convert to big-endian for range check.
+            Span<byte> tail = stackalloc byte[4];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(tail, _v2);
+            uint valueBE = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(tail);
+            return valueBE >= 1 && valueBE <= 0x1FFF;
+        }
+    }
 
     [DoesNotReturn]
     private static void ThrowInvalidLength(int length) =>

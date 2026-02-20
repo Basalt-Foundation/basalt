@@ -3,7 +3,8 @@ namespace Basalt.Network.DHT;
 /// <summary>
 /// A k-bucket in the Kademlia routing table.
 /// Stores up to K peers with the same distance prefix from the local node.
-/// Implements LRU eviction: least-recently-seen peers are evicted first.
+/// NET-H11: Standard Kademlia eviction — prefer long-lived nodes, never evict
+/// responsive peers for newcomers. New peers are rejected when the bucket is full.
 /// </summary>
 public sealed class KBucket
 {
@@ -31,7 +32,8 @@ public sealed class KBucket
     /// <summary>
     /// Insert or update a peer in the bucket.
     /// If the peer exists, move it to the front (most recently seen).
-    /// If the bucket is full, the least-recently-seen peer is evicted.
+    /// NET-H11: If the bucket is full and the peer is new, reject the newcomer.
+    /// Standard Kademlia never evicts responsive peers for newcomers to prevent Sybil attacks.
     /// </summary>
     /// <returns>True if the peer was added/updated, false if rejected.</returns>
     public bool InsertOrUpdate(PeerInfo peer)
@@ -59,16 +61,10 @@ public sealed class KBucket
                 return true;
             }
 
-            // Bucket full — evict least-recently-seen (tail) if it has low reputation
-            var tail = _entries.Last;
-            if (tail != null && tail.Value.ReputationScore < peer.ReputationScore)
-            {
-                _entries.RemoveLast();
-                _entries.AddFirst(peer);
-                return true;
-            }
-
-            return false; // Bucket full, existing peers have better reputation
+            // NET-H11: Bucket full — reject the newcomer. Standard Kademlia prefers
+            // long-lived nodes to prevent Sybil attacks. Peers are only removed via
+            // explicit Remove() when they become unresponsive.
+            return false;
         }
     }
 

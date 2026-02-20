@@ -167,6 +167,29 @@ public sealed class BlsSigner : IBlsSigner
         return pk.Compress();
     }
 
+    /// <summary>
+    /// CORE-03: Generate a Proof of Possession for a BLS public key.
+    /// PoP = Sign(sk, pk_bytes) — proves the holder knows the secret key corresponding to pk.
+    /// This prevents rogue key attacks in aggregate signature schemes.
+    /// Returns a 96-byte compressed G2 signature.
+    /// </summary>
+    public byte[] GenerateProofOfPossession(ReadOnlySpan<byte> privateKey)
+    {
+        var publicKey = GetPublicKeyStatic(privateKey);
+        return Sign(privateKey, publicKey);
+    }
+
+    /// <summary>
+    /// CORE-03: Verify a Proof of Possession for a BLS public key.
+    /// Verifies that PoP is a valid signature of the public key bytes under the corresponding secret key.
+    /// Must be enforced at validator registration to prevent rogue key attacks.
+    /// </summary>
+    public bool VerifyProofOfPossession(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> proofOfPossession)
+    {
+        // PoP = Sign(sk, pk), so we verify: Verify(pk, pk, pop)
+        return Verify(publicKey, publicKey, proofOfPossession);
+    }
+
     /// <inheritdoc />
     byte[] IBlsSigner.GetPublicKey(ReadOnlySpan<byte> privateKey)
         => GetPublicKeyStatic(privateKey);

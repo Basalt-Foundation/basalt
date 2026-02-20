@@ -95,20 +95,37 @@ public sealed class ChainParameters
     };
 
     /// <summary>
-    /// Creates chain parameters from node configuration, using Devnet defaults
-    /// for any unspecified parameters but honoring the configured chain ID and network name.
+    /// Creates chain parameters from node configuration, selecting the appropriate
+    /// security profile based on chain ID. Falls back to devnet parameters for
+    /// unrecognized chain IDs.
     /// </summary>
     public static ChainParameters FromConfiguration(uint chainId, string networkName)
     {
-        return new ChainParameters
+        return chainId switch
         {
-            ChainId = chainId,
-            NetworkName = networkName,
-            BlockTimeMs = 400,
-            ValidatorSetSize = 4,
-            MinValidatorStake = new UInt256(1000),
-            EpochLength = 100,
-            InitialBaseFee = new UInt256(1),
+            1 => new ChainParameters
+            {
+                ChainId = chainId,
+                NetworkName = networkName,
+                // Mainnet security parameters (defaults from property initializers)
+            },
+            2 => new ChainParameters
+            {
+                ChainId = chainId,
+                NetworkName = networkName,
+                // Testnet: same security profile as mainnet
+            },
+            _ => new ChainParameters
+            {
+                ChainId = chainId,
+                NetworkName = networkName,
+                // Devnet / local development parameters
+                BlockTimeMs = 400,
+                ValidatorSetSize = 4,
+                MinValidatorStake = new UInt256(1000),
+                EpochLength = 100,
+                InitialBaseFee = new UInt256(1),
+            },
         };
     }
 }

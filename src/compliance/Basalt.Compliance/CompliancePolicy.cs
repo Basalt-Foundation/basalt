@@ -48,6 +48,12 @@ public sealed class CompliancePolicy
     public bool Paused { get; set; }
 
     /// <summary>
+    /// The address that created this policy (token issuer/owner).
+    /// Used for access control on policy updates (COMPL-05).
+    /// </summary>
+    public byte[]? Issuer { get; set; }
+
+    /// <summary>
     /// ZK proof requirements: credential schemas that must be proven
     /// via Groth16 ZK-SNARKs. Each requirement specifies a schema and
     /// minimum issuer trust tier. The user chooses their provider.

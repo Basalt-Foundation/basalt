@@ -16,13 +16,17 @@ public sealed class DisclosureProof
     /// <summary>32-byte blinding factor used in the commitment.</summary>
     public required byte[] BlindingFactor { get; init; }
 
+    /// <summary>F-15: Reference to the commitment being opened.</summary>
+    public byte[]? CommitmentRef { get; init; }
+
     /// <summary>
     /// Create a disclosure proof for a Pedersen commitment.
     /// </summary>
     /// <param name="value">The committed value.</param>
     /// <param name="blindingFactor">32-byte blinding factor.</param>
+    /// <param name="commitmentRef">F-15: Optional reference to the commitment being opened.</param>
     /// <returns>A disclosure proof that can be verified against the commitment.</returns>
-    public static DisclosureProof Create(UInt256 value, byte[] blindingFactor)
+    public static DisclosureProof Create(UInt256 value, byte[] blindingFactor, byte[]? commitmentRef = null)
     {
         if (blindingFactor == null || blindingFactor.Length != PairingEngine.ScalarSize)
             throw new ArgumentException($"Blinding factor must be {PairingEngine.ScalarSize} bytes.", nameof(blindingFactor));
@@ -31,12 +35,14 @@ public sealed class DisclosureProof
         {
             Value = value,
             BlindingFactor = (byte[])blindingFactor.Clone(),
+            CommitmentRef = commitmentRef != null ? (byte[])commitmentRef.Clone() : null,
         };
     }
 
     /// <summary>
     /// Verify a disclosure proof against a Pedersen commitment.
     /// Checks that Commit(proof.Value, proof.BlindingFactor) equals the given commitment.
+    /// F-15: If the proof contains a CommitmentRef, it must match the provided commitment.
     /// </summary>
     /// <param name="commitment">48-byte compressed G1 Pedersen commitment.</param>
     /// <param name="proof">The disclosure proof to verify.</param>
@@ -50,6 +56,10 @@ public sealed class DisclosureProof
             return false;
 
         if (proof.BlindingFactor == null || proof.BlindingFactor.Length != PairingEngine.ScalarSize)
+            return false;
+
+        // F-15: If a commitment reference is provided, it must match the given commitment
+        if (proof.CommitmentRef != null && !proof.CommitmentRef.AsSpan().SequenceEqual(commitment))
             return false;
 
         return PedersenCommitment.Open(commitment, proof.Value, proof.BlindingFactor);

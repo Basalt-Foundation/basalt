@@ -18,16 +18,26 @@ public static class BridgeProofVerifier
     /// <param name="index">Position index of the leaf (determines left/right at each level).</param>
     /// <param name="root">Expected Merkle root.</param>
     /// <returns>True if the proof is valid.</returns>
+    /// <summary>
+    /// Maximum allowed Merkle proof depth (BRIDGE-08).
+    /// A depth of 64 supports trees with up to 2^64 leaves.
+    /// </summary>
+    private const int MaxProofDepth = 64;
+
     public static bool VerifyMerkleProof(byte[] leaf, byte[][] proof, ulong index, byte[] root)
     {
+        // BRIDGE-08: bound proof length to prevent DoS
+        if (proof.Length > MaxProofDepth)
+            return false;
+
         if (proof.Length == 0 && root.Length == 32)
         {
             // Single leaf tree — leaf hash should equal root
-            var leafHash = Blake3Hasher.Hash(leaf).ToArray();
+            var leafHash = HashLeaf(leaf);
             return leafHash.AsSpan().SequenceEqual(root);
         }
 
-        var currentHash = Blake3Hasher.Hash(leaf).ToArray();
+        var currentHash = HashLeaf(leaf);
 
         for (int i = 0; i < proof.Length; i++)
         {
@@ -59,8 +69,8 @@ public static class BridgeProofVerifier
         if (leafIndex < 0 || leafIndex >= leaves.Length)
             throw new ArgumentOutOfRangeException(nameof(leafIndex));
 
-        // Hash all leaves
-        var hashes = leaves.Select(l => Blake3Hasher.Hash(l).ToArray()).ToArray();
+        // Hash all leaves with domain separation (BRIDGE-06)
+        var hashes = leaves.Select(l => HashLeaf(l)).ToArray();
 
         // Pad to power of 2
         var size = 1;
@@ -101,7 +111,8 @@ public static class BridgeProofVerifier
         if (leaves.Length == 0)
             return new byte[32];
 
-        var hashes = leaves.Select(l => Blake3Hasher.Hash(l).ToArray()).ToArray();
+        // Hash all leaves with domain separation (BRIDGE-06)
+        var hashes = leaves.Select(l => HashLeaf(l)).ToArray();
 
         // Pad to power of 2
         var size = 1;
@@ -123,11 +134,26 @@ public static class BridgeProofVerifier
         return current[0];
     }
 
+    /// <summary>
+    /// Hash a leaf with domain separation prefix 0x00 (BRIDGE-06, RFC 6962).
+    /// </summary>
+    private static byte[] HashLeaf(byte[] leafData)
+    {
+        var prefixed = new byte[1 + leafData.Length];
+        prefixed[0] = 0x00; // Leaf domain separator
+        leafData.CopyTo(prefixed, 1);
+        return Blake3Hasher.Hash(prefixed).ToArray();
+    }
+
+    /// <summary>
+    /// Hash an internal node with domain separation prefix 0x01 (BRIDGE-06, RFC 6962).
+    /// </summary>
     private static byte[] HashPair(byte[] left, byte[] right)
     {
-        var combined = new byte[left.Length + right.Length];
-        left.CopyTo(combined, 0);
-        right.CopyTo(combined, left.Length);
+        var combined = new byte[1 + left.Length + right.Length];
+        combined[0] = 0x01; // Internal node domain separator
+        left.CopyTo(combined, 1);
+        right.CopyTo(combined, 1 + left.Length);
         return Blake3Hasher.Hash(combined).ToArray();
     }
 }

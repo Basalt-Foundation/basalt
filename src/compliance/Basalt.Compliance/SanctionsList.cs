@@ -9,14 +9,30 @@ public sealed class SanctionsList
     private readonly HashSet<string> _sanctioned = new();
     private readonly List<ComplianceEvent> _auditLog = new();
     private readonly object _lock = new();
+    private readonly string? _governanceAddress;
+
+    public SanctionsList() { }
+
+    /// <summary>
+    /// Create a SanctionsList with governance access control.
+    /// Only the governance address can add/remove sanctions (COMPL-04).
+    /// </summary>
+    public SanctionsList(byte[] governanceAddress)
+    {
+        _governanceAddress = ToHex(governanceAddress);
+    }
 
     /// <summary>
     /// Add an address to the sanctions list.
+    /// Requires governance authorization (COMPL-04).
     /// </summary>
-    public void AddSanction(byte[] address, string reason)
+    public bool AddSanction(byte[] address, string reason, byte[]? caller = null)
     {
         lock (_lock)
         {
+            if (_governanceAddress != null && (caller == null || ToHex(caller) != _governanceAddress))
+                return false;
+
             _sanctioned.Add(ToHex(address));
             _auditLog.Add(new ComplianceEvent
             {
@@ -25,16 +41,22 @@ public sealed class SanctionsList
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Details = $"Sanctioned: {reason}",
             });
+
+            return true;
         }
     }
 
     /// <summary>
     /// Remove an address from the sanctions list.
+    /// Requires governance authorization (COMPL-04).
     /// </summary>
-    public void RemoveSanction(byte[] address, string reason)
+    public bool RemoveSanction(byte[] address, string reason, byte[]? caller = null)
     {
         lock (_lock)
         {
+            if (_governanceAddress != null && (caller == null || ToHex(caller) != _governanceAddress))
+                return false;
+
             _sanctioned.Remove(ToHex(address));
             _auditLog.Add(new ComplianceEvent
             {
@@ -43,6 +65,8 @@ public sealed class SanctionsList
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Details = $"Unsanctioned: {reason}",
             });
+
+            return true;
         }
     }
 

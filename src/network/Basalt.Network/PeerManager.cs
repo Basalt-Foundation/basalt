@@ -56,18 +56,40 @@ public sealed class PeerManager
 
     /// <summary>
     /// Register a peer after successful handshake.
+    /// NET-C04: Rejects banned peers.
+    /// NET-M19: Uses ConnectedCount instead of total peers count.
     /// </summary>
     public bool RegisterPeer(PeerInfo peer)
     {
-        if (_peers.Count >= _maxPeers)
+        // NET-C04: Check if the peer is currently banned
+        if (_peers.TryGetValue(peer.Id, out var existing))
         {
-            _logger.LogWarning("Max peer limit ({MaxPeers}) reached, rejecting {PeerId}", _maxPeers, peer.Id);
+            if (existing.State == PeerState.Banned)
+            {
+                // NET-H13: Check if ban has expired
+                if (existing.BannedUntil.HasValue && existing.BannedUntil.Value > DateTimeOffset.UtcNow)
+                {
+                    _logger.LogWarning("Peer {PeerId} is banned until {BannedUntil}; rejecting",
+                        peer.Id, existing.BannedUntil.Value);
+                    return false;
+                }
+
+                // Ban has expired — allow reconnection
+                _logger.LogInformation("Peer {PeerId} ban expired, allowing reconnection", peer.Id);
+            }
+        }
+
+        // NET-M19: Check connected count, not total count (includes disconnected/banned)
+        if (ConnectedCount >= _maxPeers)
+        {
+            _logger.LogWarning("Max connected peer limit ({MaxPeers}) reached, rejecting {PeerId}", _maxPeers, peer.Id);
             return false;
         }
 
         peer.State = PeerState.Connected;
         peer.ConnectedAt = DateTimeOffset.UtcNow;
         peer.LastSeen = DateTimeOffset.UtcNow;
+        peer.BannedUntil = null; // Clear any prior ban
 
         _peers.AddOrUpdate(peer.Id, peer, (_, _) => peer);
         _logger.LogInformation("Peer {PeerId} connected from {Endpoint}", peer.Id, peer.Endpoint);
@@ -83,7 +105,13 @@ public sealed class PeerManager
     }
 
     /// <summary>
+    /// NET-L10: Callback invoked when a peer is disconnected, for Episub cleanup.
+    /// </summary>
+    public event Action<PeerId>? OnPeerDisconnected;
+
+    /// <summary>
     /// Mark a peer as disconnected.
+    /// NET-L10: Invokes OnPeerDisconnected so Episub can remove the peer from eager/lazy sets.
     /// </summary>
     public void DisconnectPeer(PeerId id, string reason)
     {
@@ -91,41 +119,60 @@ public sealed class PeerManager
         {
             peer.State = PeerState.Disconnected;
             _logger.LogInformation("Peer {PeerId} disconnected: {Reason}", id, reason);
+
+            // NET-L10: Notify listeners (e.g. EpisubService) to clean up peer sets
+            OnPeerDisconnected?.Invoke(id);
         }
     }
 
     /// <summary>
-    /// Ban a peer for misbehavior.
+    /// NET-C04/NET-H13: Callback invoked when a peer is banned, to trigger transport-level disconnect.
+    /// NET-L02: Converted from public field to event to prevent accidental overwrite.
     /// </summary>
-    public void BanPeer(PeerId id, string reason)
+    public event Action<PeerId>? OnPeerBanned;
+
+    /// <summary>
+    /// Ban a peer for misbehavior.
+    /// NET-C04: Triggers disconnect callback to close the TCP connection.
+    /// NET-H13: Sets BannedUntil timestamp (default 1 hour).
+    /// </summary>
+    public void BanPeer(PeerId id, string reason, TimeSpan? duration = null)
     {
         if (_peers.TryGetValue(id, out var peer))
         {
             peer.State = PeerState.Banned;
             peer.ReputationScore = 0;
-            _logger.LogWarning("Peer {PeerId} banned: {Reason}", id, reason);
+            peer.BannedUntil = DateTimeOffset.UtcNow + (duration ?? TimeSpan.FromHours(1));
+            _logger.LogWarning("Peer {PeerId} banned until {BannedUntil}: {Reason}",
+                id, peer.BannedUntil, reason);
+
+            // NET-C04: Trigger transport disconnect
+            OnPeerBanned?.Invoke(id);
         }
     }
 
     /// <summary>
     /// Update a peer's best block info.
+    /// NET-L08: Uses thread-safe UpdateBestBlock for atomic number+hash update.
     /// </summary>
     public void UpdatePeerBestBlock(PeerId id, ulong blockNumber, Hash256 blockHash)
     {
         if (_peers.TryGetValue(id, out var peer))
         {
-            peer.BestBlockNumber = blockNumber;
-            peer.BestBlockHash = blockHash;
+            // NET-L08: Atomic update of BestBlockNumber + BestBlockHash
+            peer.UpdateBestBlock(blockNumber, blockHash);
             peer.LastSeen = DateTimeOffset.UtcNow;
         }
     }
 
     /// <summary>
     /// Remove inactive peers.
+    /// NET-L09: Also prunes banned peers whose ban has expired.
     /// </summary>
     public int PruneInactivePeers(TimeSpan timeout)
     {
         var cutoff = DateTimeOffset.UtcNow - timeout;
+        var now = DateTimeOffset.UtcNow;
         int removed = 0;
 
         foreach (var (id, peer) in _peers)
@@ -135,10 +182,19 @@ public sealed class PeerManager
                 if (_peers.TryRemove(id, out _))
                     removed++;
             }
+
+            // NET-L09: Also prune banned peers after ban expiry to prevent unbounded accumulation
+            if (peer.State == PeerState.Banned &&
+                peer.BannedUntil.HasValue &&
+                peer.BannedUntil.Value <= now)
+            {
+                if (_peers.TryRemove(id, out _))
+                    removed++;
+            }
         }
 
         if (removed > 0)
-            _logger.LogInformation("Pruned {Count} inactive peers", removed);
+            _logger.LogInformation("Pruned {Count} inactive/expired-ban peers", removed);
 
         return removed;
     }

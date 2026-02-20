@@ -20,6 +20,12 @@ public sealed class WebSocketHandler : IDisposable
     private readonly ConcurrentDictionary<string, WebSocket> _connections = new();
     private readonly ChainManager _chainManager;
 
+    /// <summary>Maximum number of concurrent WebSocket connections.</summary>
+    private const int MaxConnections = 1000;
+
+    /// <summary>Per-client broadcast timeout.</summary>
+    private static readonly TimeSpan BroadcastTimeout = TimeSpan.FromSeconds(5);
+
     public WebSocketHandler(ChainManager chainManager)
     {
         _chainManager = chainManager;
@@ -52,6 +58,8 @@ public sealed class WebSocketHandler : IDisposable
 
         var disconnected = new List<string>();
 
+        // MEDIUM-4: Send with per-client timeout to prevent slow clients from blocking broadcast
+        var sendTasks = new List<Task<(string Id, bool Failed)>>();
         foreach (var (id, ws) in _connections)
         {
             if (ws.State != WebSocketState.Open)
@@ -60,13 +68,15 @@ public sealed class WebSocketHandler : IDisposable
                 continue;
             }
 
-            try
+            sendTasks.Add(SendWithTimeout(id, ws, bytes));
+        }
+
+        if (sendTasks.Count > 0)
+        {
+            var results = await Task.WhenAll(sendTasks);
+            foreach (var (id, failed) in results)
             {
-                await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
-            }
-            catch
-            {
-                disconnected.Add(id);
+                if (failed) disconnected.Add(id);
             }
         }
 
@@ -76,11 +86,33 @@ public sealed class WebSocketHandler : IDisposable
         }
     }
 
+    private static async Task<(string Id, bool Failed)> SendWithTimeout(string id, WebSocket ws, byte[] bytes)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(BroadcastTimeout);
+            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, cts.Token);
+            return (id, false);
+        }
+        catch
+        {
+            return (id, true);
+        }
+    }
+
     /// <summary>
     /// Handle a new WebSocket connection.
     /// </summary>
-    public async Task HandleConnection(WebSocket webSocket)
+    public async Task HandleConnection(WebSocket webSocket, CancellationToken requestAborted = default)
     {
+        // MEDIUM-3: Reject connections beyond the limit
+        if (_connections.Count >= MaxConnections)
+        {
+            await webSocket.CloseAsync(
+                WebSocketCloseStatus.PolicyViolation, "Too many connections", CancellationToken.None);
+            return;
+        }
+
         var id = Guid.NewGuid().ToString("N");
         _connections[id] = webSocket;
 
@@ -93,11 +125,11 @@ public sealed class WebSocketHandler : IDisposable
                 await BroadcastToSingle(webSocket, latest);
             }
 
-            // Keep alive — wait for close
+            // LOW-1: Use request cancellation token for graceful shutdown
             var buffer = new byte[256];
             while (webSocket.State == WebSocketState.Open)
             {
-                var result = await webSocket.ReceiveAsync(buffer, CancellationToken.None);
+                var result = await webSocket.ReceiveAsync(buffer, requestAborted);
                 if (result.MessageType == WebSocketMessageType.Close)
                     break;
             }
@@ -172,7 +204,7 @@ public static class WebSocketEndpointExtensions
             }
 
             var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-            await handler.HandleConnection(webSocket);
+            await handler.HandleConnection(webSocket, context.RequestAborted);
         });
     }
 }

@@ -56,6 +56,9 @@ public sealed class NodeConfiguration
             Environment.GetEnvironmentVariable("BASALT_USE_SANDBOX"), "true",
             StringComparison.OrdinalIgnoreCase);
 
+        // N-12: Validate DataDir to prevent path traversal
+        var validatedDataDir = string.IsNullOrWhiteSpace(dataDir) ? null : ValidateDataDir(dataDir);
+
         return new NodeConfiguration
         {
             ValidatorIndex = validatorIndex,
@@ -66,9 +69,23 @@ public sealed class NodeConfiguration
             HttpPort = httpPort,
             P2PPort = p2pPort,
             Peers = peers,
-            DataDir = string.IsNullOrWhiteSpace(dataDir) ? null : dataDir,
+            DataDir = validatedDataDir,
             UsePipelining = usePipelining,
             UseSandbox = useSandbox,
         };
+    }
+
+    // N-12: Validate DataDir to prevent path traversal
+    public static string ValidateDataDir(string dataDir)
+    {
+        var resolved = Path.GetFullPath(dataDir);
+        // Reject paths that resolve to system directories
+        string[] dangerous = ["/etc", "/usr", "/bin", "/sbin", "/var/run", "/proc", "/sys"];
+        foreach (var d in dangerous)
+        {
+            if (resolved.StartsWith(d, StringComparison.Ordinal))
+                throw new InvalidOperationException($"DataDir '{resolved}' resolves to a system directory");
+        }
+        return resolved;
     }
 }

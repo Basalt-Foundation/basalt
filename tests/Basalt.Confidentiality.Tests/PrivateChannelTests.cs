@@ -561,4 +561,473 @@ public class PrivateChannelTests
         channel.Status = ChannelStatus.Closed;
         channel.Status.Should().Be(ChannelStatus.Closed);
     }
+
+    // ── F-01: Directional Encryption Keys ───────────────────────────────────
+
+    [Fact]
+    public void F01_DirectionalKeys_BidirectionalWithExplicitKeys_RoundTrips()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+        var (bobEd25519Private, bobEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        // Alice's channel
+        var aliceChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyA = Address.Zero,
+            PartyB = Address.Zero,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Bob's channel (separate instance for independent nonce tracking)
+        var bobChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyA = Address.Zero,
+            PartyB = Address.Zero,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Alice sends to Bob using explicit X25519 key parameter
+        var alicePayload = Encoding.UTF8.GetBytes("Hello from Alice");
+        var aliceMsg = aliceChannel.CreateMessage(aliceSharedSecret, alicePayload, aliceEd25519Private, aliceX25519Public);
+        var decryptedByBob = bobChannel.VerifyAndDecrypt(aliceMsg, bobSharedSecret, aliceEd25519Public, aliceX25519Public);
+        decryptedByBob.Should().Equal(alicePayload);
+
+        // Bob sends to Alice using explicit X25519 key parameter
+        var bobPayload = Encoding.UTF8.GetBytes("Hello from Bob");
+        var bobMsg = bobChannel.CreateMessage(bobSharedSecret, bobPayload, bobEd25519Private, bobX25519Public);
+        var decryptedByAlice = aliceChannel.VerifyAndDecrypt(bobMsg, aliceSharedSecret, bobEd25519Public, bobX25519Public);
+        decryptedByAlice.Should().Equal(bobPayload);
+    }
+
+    [Fact]
+    public void F01_DirectionalKeys_DifferentDirectionsUseDifferentKeys()
+    {
+        // Verify that encrypting with direction A->B produces different ciphertext
+        // than B->A for the same plaintext and nonce, proving directional key separation.
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, _) = Ed25519Signer.GenerateKeyPair();
+        var (bobEd25519Private, _) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel1 = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var channel2 = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var payload = Encoding.UTF8.GetBytes("same payload");
+
+        // Alice sends (nonce 0)
+        var msgAlice = channel1.CreateMessage(aliceSharedSecret, payload, aliceEd25519Private, aliceX25519Public);
+        // Bob sends (nonce 0 on his channel)
+        var msgBob = channel2.CreateMessage(bobSharedSecret, payload, bobEd25519Private, bobX25519Public);
+
+        // Both use nonce 0, but encrypted payloads should differ because directional keys differ
+        msgAlice.EncryptedPayload.Should().NotEqual(msgBob.EncryptedPayload);
+    }
+
+    [Fact]
+    public void F01_DirectionalKeys_WrongDirectionKeyFails()
+    {
+        // Decrypting with the wrong direction should fail
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var payload = Encoding.UTF8.GetBytes("test");
+        var msg = channel.CreateMessage(aliceSharedSecret, payload, aliceEd25519Private, aliceX25519Public);
+
+        // Try to decrypt claiming Bob was sender (wrong direction)
+        var act = () => channel.VerifyAndDecrypt(msg, bobSharedSecret, aliceEd25519Public, bobX25519Public);
+        act.Should().Throw<Exception>(); // CryptographicException from AES-GCM mismatch
+    }
+
+    // ── F-05: Nonce Replay Protection ───────────────────────────────────────
+
+    [Fact]
+    public void F05_NonceReplay_ReplayedMessage_Throws()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var senderChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var receiverChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var payload = Encoding.UTF8.GetBytes("message");
+        var msg = senderChannel.CreateMessage(aliceSharedSecret, payload, aliceEd25519Private);
+
+        // First decrypt succeeds
+        receiverChannel.VerifyAndDecrypt(msg, bobSharedSecret, aliceEd25519Public);
+
+        // Replaying the same message should fail
+        var act = () => receiverChannel.VerifyAndDecrypt(msg, bobSharedSecret, aliceEd25519Public);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*F-05*replay*");
+    }
+
+    [Fact]
+    public void F05_NonceReplay_OutOfOrderNonce_Throws()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var senderChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var receiverChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Send two messages
+        var msg0 = senderChannel.CreateMessage(aliceSharedSecret, Encoding.UTF8.GetBytes("msg0"), aliceEd25519Private);
+        var msg1 = senderChannel.CreateMessage(aliceSharedSecret, Encoding.UTF8.GetBytes("msg1"), aliceEd25519Private);
+
+        // Receive msg1 first (nonce 1)
+        receiverChannel.VerifyAndDecrypt(msg1, bobSharedSecret, aliceEd25519Public);
+
+        // Now try msg0 (nonce 0) - should fail because nonce is not increasing
+        var act = () => receiverChannel.VerifyAndDecrypt(msg0, bobSharedSecret, aliceEd25519Public);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*F-05*");
+    }
+
+    [Fact]
+    public void F05_NonceReplay_StrictlyIncreasingNonces_Succeed()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobSharedSecret = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var senderChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var receiverChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Send and receive 5 messages in order
+        for (int i = 0; i < 5; i++)
+        {
+            var msg = senderChannel.CreateMessage(aliceSharedSecret, Encoding.UTF8.GetBytes($"msg{i}"), aliceEd25519Private);
+            var decrypted = receiverChannel.VerifyAndDecrypt(msg, bobSharedSecret, aliceEd25519Public);
+            decrypted.Should().Equal(Encoding.UTF8.GetBytes($"msg{i}"));
+        }
+    }
+
+    // ── F-06: HKDF Identity Binding ─────────────────────────────────────────
+
+    [Fact]
+    public void F06_HkdfIdentityBinding_BothPartiesDeriveSameSecret()
+    {
+        var (alicePrivate, alicePublic) = X25519KeyExchange.GenerateKeyPair();
+        var (bobPrivate, bobPublic) = X25519KeyExchange.GenerateKeyPair();
+
+        // With explicit public keys
+        var secretAlice = X25519KeyExchange.DeriveSharedSecret(alicePrivate, bobPublic, alicePublic);
+        var secretBob = X25519KeyExchange.DeriveSharedSecret(bobPrivate, alicePublic, bobPublic);
+
+        secretAlice.Should().HaveCount(32);
+        secretAlice.Should().Equal(secretBob);
+    }
+
+    [Fact]
+    public void F06_HkdfIdentityBinding_ImplicitAndExplicitPubKeyProduceSameResult()
+    {
+        var (alicePrivate, alicePublic) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobPublic) = X25519KeyExchange.GenerateKeyPair();
+
+        // Implicit (derives pubkey from private key internally)
+        var secretImplicit = X25519KeyExchange.DeriveSharedSecret(alicePrivate, bobPublic);
+        // Explicit
+        var secretExplicit = X25519KeyExchange.DeriveSharedSecret(alicePrivate, bobPublic, alicePublic);
+
+        secretImplicit.Should().Equal(secretExplicit);
+    }
+
+    // ── F-07: Signed Key Exchange ───────────────────────────────────────────
+
+    [Fact]
+    public void F07_SignedKeyExchange_ValidSignatureVerifies()
+    {
+        var (x25519Private, x25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (ed25519Private, ed25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var signatureBytes = X25519KeyExchange.SignKeyExchange(x25519Public, ed25519Private);
+        var signature = new Signature(signatureBytes);
+
+        X25519KeyExchange.VerifyKeyExchange(x25519Public, ed25519Public, signature).Should().BeTrue();
+    }
+
+    [Fact]
+    public void F07_SignedKeyExchange_WrongEdPublicKey_FailsVerification()
+    {
+        var (_, x25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (ed25519Private, _) = Ed25519Signer.GenerateKeyPair();
+        var (_, eveEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var signatureBytes = X25519KeyExchange.SignKeyExchange(x25519Public, ed25519Private);
+        var signature = new Signature(signatureBytes);
+
+        X25519KeyExchange.VerifyKeyExchange(x25519Public, eveEd25519Public, signature).Should().BeFalse();
+    }
+
+    [Fact]
+    public void F07_SignedKeyExchange_TamperedX25519Key_FailsVerification()
+    {
+        var (_, x25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, differentX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (ed25519Private, ed25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var signatureBytes = X25519KeyExchange.SignKeyExchange(x25519Public, ed25519Private);
+        var signature = new Signature(signatureBytes);
+
+        // Verify with a different X25519 key (MITM substitution)
+        X25519KeyExchange.VerifyKeyExchange(differentX25519Public, ed25519Public, signature).Should().BeFalse();
+    }
+
+    [Fact]
+    public void F07_SignedKeyExchange_WrongKeySize_Throws()
+    {
+        var (ed25519Private, _) = Ed25519Signer.GenerateKeyPair();
+        var badKey = new byte[31]; // Wrong size
+
+        var act = () => X25519KeyExchange.SignKeyExchange(badKey, ed25519Private);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // ── F-08: Key Ratcheting ────────────────────────────────────────────────
+
+    [Fact]
+    public void F08_RatchetKey_ProducesDifferentKey()
+    {
+        var currentKey = new byte[32];
+        Array.Fill(currentKey, (byte)0x42);
+
+        var ratcheted = PrivateChannel.RatchetKey(currentKey, 0);
+
+        ratcheted.Should().HaveCount(32);
+        ratcheted.Should().NotEqual(currentKey);
+    }
+
+    [Fact]
+    public void F08_RatchetKey_DifferentNonces_DifferentKeys()
+    {
+        var currentKey = new byte[32];
+        Array.Fill(currentKey, (byte)0x42);
+
+        var key1 = PrivateChannel.RatchetKey(currentKey, 0);
+        var key2 = PrivateChannel.RatchetKey(currentKey, 1);
+
+        key1.Should().NotEqual(key2);
+    }
+
+    [Fact]
+    public void F08_RatchetKey_Deterministic()
+    {
+        var currentKey = new byte[32];
+        Array.Fill(currentKey, (byte)0x42);
+
+        var ratcheted1 = PrivateChannel.RatchetKey(currentKey, 5);
+        var ratcheted2 = PrivateChannel.RatchetKey(currentKey, 5);
+
+        ratcheted1.Should().Equal(ratcheted2);
+    }
+
+    [Fact]
+    public void F08_RatchetKey_ChainedRatcheting_Works()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceKey = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var bobKey = X25519KeyExchange.DeriveSharedSecret(bobX25519Private, aliceX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var senderChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var receiverChannel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Send 3 messages, ratcheting after each
+        for (int i = 0; i < 3; i++)
+        {
+            var payload = Encoding.UTF8.GetBytes($"ratcheted-msg-{i}");
+            var msg = senderChannel.CreateMessage(aliceKey, payload, aliceEd25519Private);
+            var decrypted = receiverChannel.VerifyAndDecrypt(msg, bobKey, aliceEd25519Public);
+            decrypted.Should().Equal(payload);
+
+            // Ratchet both sides
+            aliceKey = PrivateChannel.RatchetKey(aliceKey, msg.Nonce);
+            bobKey = PrivateChannel.RatchetKey(bobKey, msg.Nonce);
+        }
+    }
+
+    // ── F-14: Zero Shared Secret Material ───────────────────────────────────
+
+    [Fact]
+    public void F14_GetPublicKey_DerivesCorrectly()
+    {
+        var (privateKey, expectedPublicKey) = X25519KeyExchange.GenerateKeyPair();
+        var derivedPublicKey = X25519KeyExchange.GetPublicKey(privateKey);
+
+        derivedPublicKey.Should().Equal(expectedPublicKey);
+    }
+
+    [Fact]
+    public void F14_GetPublicKey_WrongSize_Throws()
+    {
+        var badKey = new byte[31];
+        var act = () => X25519KeyExchange.GetPublicKey(badKey);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // ── F-18: Max Channel Payload Size ──────────────────────────────────────
+
+    [Fact]
+    public void F18_MaxPayloadSize_ConstantIs1MB()
+    {
+        PrivateChannel.MaxPayloadSize.Should().Be(1024 * 1024);
+    }
+
+    [Fact]
+    public void F18_MaxPayloadSize_ExceedingLimit_Throws()
+    {
+        var (_, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, _) = Ed25519Signer.GenerateKeyPair();
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        var oversizedPayload = new byte[PrivateChannel.MaxPayloadSize + 1];
+
+        var act = () => channel.CreateMessage(new byte[32], oversizedPayload, aliceEd25519Private);
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*F-18*");
+    }
+
+    [Fact]
+    public void F18_MaxPayloadSize_ExactLimit_Succeeds()
+    {
+        var (aliceX25519Private, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (bobX25519Private, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (aliceEd25519Private, aliceEd25519Public) = Ed25519Signer.GenerateKeyPair();
+
+        var aliceSharedSecret = X25519KeyExchange.DeriveSharedSecret(aliceX25519Private, bobX25519Public);
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Exactly at limit should succeed
+        var exactPayload = new byte[PrivateChannel.MaxPayloadSize];
+        var act = () => channel.CreateMessage(aliceSharedSecret, exactPayload, aliceEd25519Private);
+        act.Should().NotThrow();
+    }
 }

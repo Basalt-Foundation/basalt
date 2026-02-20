@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Basalt.Core;
+using Basalt.Crypto;
 using Microsoft.Extensions.Logging;
 
 namespace Basalt.Network;
@@ -12,20 +13,33 @@ namespace Basalt.Network;
 public sealed class GossipService
 {
     private readonly PeerManager _peerManager;
+    private readonly ReputationScorer? _reputationScorer;
     private readonly ILogger<GossipService> _logger;
+
+    // NET-M14: Maximum number of peers to fan out to per broadcast
+    private const int MaxFanOut = 8;
 
     // Track recently seen messages to avoid rebroadcast
     private readonly ConcurrentDictionary<Hash256, long> _seenMessages = new();
     private const int MaxSeenMessages = 100_000;
     private const long SeenMessageTtlMs = 60_000; // 1 minute
 
+    // NET-L06: Guard to prevent concurrent cleanup runs
+    private int _cleanupRunning;
+
     public event Action<PeerId, NetworkMessage>? OnMessageReceived;
     public event Action<PeerId, byte[]>? OnSendMessage;
 
     public GossipService(PeerManager peerManager, ILogger<GossipService> logger)
+        : this(peerManager, logger, null)
+    {
+    }
+
+    public GossipService(PeerManager peerManager, ILogger<GossipService> logger, ReputationScorer? reputationScorer)
     {
         _peerManager = peerManager;
         _logger = logger;
+        _reputationScorer = reputationScorer;
     }
 
     /// <summary>
@@ -40,6 +54,7 @@ public sealed class GossipService
 
         var message = new TxAnnounceMessage
         {
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             TransactionHashes = [txHash],
         };
 
@@ -57,6 +72,7 @@ public sealed class GossipService
 
         var message = new BlockAnnounceMessage
         {
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             BlockNumber = number,
             BlockHash = hash,
             ParentHash = parentHash,
@@ -67,19 +83,52 @@ public sealed class GossipService
 
     /// <summary>
     /// Broadcast a consensus message to all validators.
+    /// NET-L05: Deduplicates consensus messages using BLAKE3 hash of serialized data.
     /// </summary>
     public void BroadcastConsensusMessage(NetworkMessage message)
     {
+        // NET-L05: Compute message ID from serialized data for deduplication
+        var serialized = SerializeMessage(message);
+        var msgId = Blake3Hasher.Hash(serialized);
+
+        if (IsMessageSeen(msgId))
+            return;
+        MarkMessageSeen(msgId);
+
         BroadcastToAll(message, null);
     }
 
     /// <summary>
     /// Handle an incoming message from a peer.
+    /// NET-H08: Does NOT relay/broadcast the message. Only marks as seen and invokes
+    /// OnMessageReceived for the higher-level handler (NodeCoordinator) which is
+    /// responsible for re-broadcasting after validation.
+    /// NET-M15: Does NOT award reputation. Caller must invoke RewardPeerForValidMessage
+    /// after validating the message content.
     /// </summary>
     public void HandleMessage(PeerId sender, NetworkMessage message)
     {
-        _peerManager.GetPeer(sender)?.AdjustReputation(1); // Small reward for valid messages
+        // NET-H08: Only invoke callback — no relay. The higher-level handler
+        // (NodeCoordinator) is responsible for re-broadcasting after validation.
+        // NET-M15: No reputation reward here — caller calls RewardPeerForValidMessage after validation.
         OnMessageReceived?.Invoke(sender, message);
+    }
+
+    /// <summary>
+    /// NET-M15: Reward a peer for sending a valid, verified message.
+    /// Called by the higher-level handler (NodeCoordinator) after message validation succeeds.
+    /// </summary>
+    public void RewardPeerForValidMessage(PeerId peer)
+    {
+        if (_reputationScorer != null)
+        {
+            _reputationScorer.RecordValidTransaction(peer);
+        }
+        else
+        {
+            // Fallback: adjust reputation directly via PeerManager
+            _peerManager.GetPeer(peer)?.AdjustReputation(1);
+        }
     }
 
     /// <summary>
@@ -91,16 +140,43 @@ public sealed class GossipService
         OnSendMessage?.Invoke(peerId, SerializeMessage(message));
     }
 
+    /// <summary>
+    /// NET-M14: Broadcast to connected peers with fan-out limit.
+    /// If more than MaxFanOut peers are available, randomly selects MaxFanOut peers.
+    /// </summary>
     private void BroadcastToAll(NetworkMessage message, PeerId? excludePeer)
     {
-        var peers = _peerManager.ConnectedPeers;
+        var allPeers = _peerManager.ConnectedPeers;
         var data = SerializeMessage(message);
 
-        foreach (var peer in peers)
+        // Filter out the excluded peer
+        var eligible = new List<PeerInfo>();
+        foreach (var peer in allPeers)
         {
             if (excludePeer.HasValue && peer.Id == excludePeer.Value)
                 continue;
+            eligible.Add(peer);
+        }
 
+        // NET-M14: Apply fan-out limit
+        IList<PeerInfo> targets;
+        if (eligible.Count > MaxFanOut)
+        {
+            // Randomly select MaxFanOut peers using Fisher-Yates partial shuffle
+            for (int i = eligible.Count - 1; i > 0 && i >= eligible.Count - MaxFanOut; i--)
+            {
+                int j = Random.Shared.Next(i + 1);
+                (eligible[i], eligible[j]) = (eligible[j], eligible[i]);
+            }
+            targets = eligible.GetRange(eligible.Count - MaxFanOut, MaxFanOut);
+        }
+        else
+        {
+            targets = eligible;
+        }
+
+        foreach (var peer in targets)
+        {
             OnSendMessage?.Invoke(peer.Id, data);
         }
     }
@@ -111,9 +187,21 @@ public sealed class GossipService
     {
         _seenMessages.TryAdd(msgId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
-        // Periodic cleanup
+        // NET-L06: Periodic cleanup with concurrency guard
         if (_seenMessages.Count > MaxSeenMessages)
-            CleanupSeenMessages();
+        {
+            if (Interlocked.CompareExchange(ref _cleanupRunning, 1, 0) == 0)
+            {
+                try
+                {
+                    CleanupSeenMessages();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _cleanupRunning, 0);
+                }
+            }
+        }
     }
 
     private void CleanupSeenMessages()

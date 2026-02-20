@@ -123,14 +123,46 @@ public sealed class BlockBuilder
 
     /// <summary>
     /// Compute the Merkle root of receipt hashes.
+    /// Each receipt is hashed from its content (status + gasUsed + logs hash) rather than
+    /// the transaction hash, ensuring receipt integrity is independently verifiable.
     /// </summary>
     public static Hash256 ComputeReceiptsRoot(List<TransactionReceipt> receipts)
     {
         if (receipts.Count == 0)
             return Hash256.Zero;
 
-        var hashes = receipts.Select(r => r.TransactionHash).ToList();
+        var hashes = receipts.Select(ComputeReceiptHash).ToList();
         return ComputeMerkleRoot(hashes);
+    }
+
+    private static Hash256 ComputeReceiptHash(TransactionReceipt receipt)
+    {
+        // Fixed-size format: [1 byte success][8 bytes gasUsed][32 bytes txHash][32 bytes logsHash]
+        // logsHash is Hash256.Zero when there are no logs — eliminates variable-length ambiguity.
+        Hash256 logsHash = Hash256.Zero;
+        if (receipt.Logs.Count > 0)
+        {
+            using var logsHasher = Blake3Hasher.CreateIncremental();
+            Span<byte> logEntry = stackalloc byte[Address.Size + Hash256.Size];
+            foreach (var log in receipt.Logs)
+            {
+                log.Contract.WriteTo(logEntry[..Address.Size]);
+                log.EventSignature.WriteTo(logEntry[Address.Size..]);
+                logsHasher.Update(logEntry);
+                if (log.Data.Length > 0)
+                    logsHasher.Update(log.Data);
+            }
+            logsHash = logsHasher.Finalize();
+        }
+
+        // Fixed-size buffer: 1 + 8 + 32 + 32 = 73 bytes (always)
+        Span<byte> buffer = stackalloc byte[1 + 8 + Hash256.Size + Hash256.Size];
+        buffer[0] = receipt.Success ? (byte)1 : (byte)0;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], receipt.GasUsed);
+        receipt.TransactionHash.WriteTo(buffer[9..]);
+        logsHash.WriteTo(buffer[(9 + Hash256.Size)..]);
+
+        return Blake3Hasher.Hash(buffer);
     }
 
     private static Hash256 ComputeMerkleRoot(List<Hash256> hashes)

@@ -137,12 +137,12 @@ public static class RestApiEndpoints
                     Status = "pending",
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                 {
                     Code = (int)BasaltErrorCode.InternalError,
-                    Message = ex.Message,
+                    Message = "Transaction submission failed",
                 });
             }
         });
@@ -406,6 +406,9 @@ public static class RestApiEndpoints
                     var latestBlock = chainManager.LatestBlock;
                     var gasMeter = new GasMeter(request.GasLimit > 0 ? request.GasLimit : 1_000_000);
 
+                    // Fork state to prevent read-only calls from mutating canonical state
+                    var forkedDb = stateDb.Fork();
+
                     var ctx = new VmExecutionContext
                     {
                         Caller = caller,
@@ -416,7 +419,7 @@ public static class RestApiEndpoints
                         BlockProposer = latestBlock?.Header.Proposer ?? Address.Zero,
                         ChainId = latestBlock?.Header.ChainId ?? 1,
                         GasMeter = gasMeter,
-                        StateDb = stateDb,
+                        StateDb = forkedDb,
                         CallDepth = 0,
                     };
 
@@ -432,12 +435,12 @@ public static class RestApiEndpoints
                         Error = result.ErrorMessage,
                     });
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
-                        Message = ex.Message,
+                        Message = "Internal error",
                     });
                 }
             });
@@ -513,12 +516,12 @@ public static class RestApiEndpoints
                         DeployBlockNumber = deployBlockNumber,
                     });
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
-                        Message = ex.Message,
+                        Message = "Internal error",
                     });
                 }
             });
@@ -570,9 +573,10 @@ public static class RestApiEndpoints
                     storageGetSelector.CopyTo(callData, 0);
                     keyHash.WriteTo(callData.AsSpan(4));
 
-                    // Create execution context for read-only call
+                    // Create execution context for read-only call (fork state to avoid mutation)
                     var latestBlock = chainManager.LatestBlock;
                     var gasMeter = new GasMeter(100_000);
+                    var forkedDb = stateDb.Fork();
 
                     var ctx = new VmExecutionContext
                     {
@@ -584,7 +588,7 @@ public static class RestApiEndpoints
                         BlockProposer = latestBlock?.Header.Proposer ?? Address.Zero,
                         ChainId = latestBlock?.Header.ChainId ?? 1,
                         GasMeter = gasMeter,
-                        StateDb = stateDb,
+                        StateDb = forkedDb,
                         CallDepth = 0,
                     };
 
@@ -626,12 +630,12 @@ public static class RestApiEndpoints
                         GasUsed = gasMeter.GasUsed,
                     });
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
-                        Message = ex.Message,
+                        Message = "Internal error",
                     });
                 }
             });
@@ -688,6 +692,8 @@ public static class RestApiEndpoints
         });
 
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
+        // HIGH-2: Only available when BASALT_DEBUG is set
+        if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1")
         app.MapGet("/v1/debug/mempool", () =>
         {
             var pending = mempool.GetPending(100);
@@ -742,6 +748,17 @@ public sealed class TransactionRequest
 
     public Transaction ToTransaction()
     {
+        // MEDIUM-5: Validate signature and public key lengths
+        var sigHex = Signature.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? Signature[2..] : Signature;
+        var sigBytes = Convert.FromHexString(sigHex);
+        if (sigBytes.Length != 64)
+            throw new ArgumentException("Signature must be exactly 64 bytes");
+
+        var pkHex = SenderPublicKey.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? SenderPublicKey[2..] : SenderPublicKey;
+        var pkBytes = Convert.FromHexString(pkHex);
+        if (pkBytes.Length != 32)
+            throw new ArgumentException("SenderPublicKey must be exactly 32 bytes");
+
         return new Transaction
         {
             Type = (TransactionType)Type,
@@ -753,11 +770,11 @@ public sealed class TransactionRequest
             GasPrice = UInt256.Parse(GasPrice),
             MaxFeePerGas = string.IsNullOrEmpty(MaxFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxFeePerGas),
             MaxPriorityFeePerGas = string.IsNullOrEmpty(MaxPriorityFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxPriorityFeePerGas),
-            Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x") ? Data[2..] : Data),
+            Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? Data[2..] : Data),
             Priority = Priority,
             ChainId = ChainId,
-            Signature = new Core.Signature(Convert.FromHexString(Signature.StartsWith("0x") ? Signature[2..] : Signature)),
-            SenderPublicKey = new PublicKey(Convert.FromHexString(SenderPublicKey.StartsWith("0x") ? SenderPublicKey[2..] : SenderPublicKey)),
+            Signature = new Core.Signature(sigBytes),
+            SenderPublicKey = new PublicKey(pkBytes),
             ComplianceProofs = ComplianceProofs?.Select(p => p.ToComplianceProof()).ToArray() ?? [],
         };
     }

@@ -50,7 +50,11 @@ public abstract class NetworkMessage
 {
     public abstract MessageType Type { get; }
     public PeerId SenderId { get; init; }
-    public long Timestamp { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    /// <summary>
+    /// NET-I03: No default — force explicit initialization to prevent silent non-determinism.
+    /// All message creation sites must set Timestamp explicitly.
+    /// </summary>
+    public long Timestamp { get; init; }
 }
 
 /// <summary>
@@ -68,6 +72,17 @@ public sealed class HelloMessage : NetworkMessage
     public BlsPublicKey BlsPublicKey { get; init; }
     public string ListenAddress { get; init; } = "";
     public int ListenPort { get; init; }
+
+    /// <summary>
+    /// NET-C01: 32-byte random nonce for challenge-response authentication.
+    /// </summary>
+    public byte[] ChallengeNonce { get; init; } = [];
+
+    /// <summary>
+    /// NET-C01: Ed25519 signature of BLAKE3("basalt-hello-v1" || ChallengeNonce || ChainId),
+    /// proving the initiator owns the stated NodePublicKey.
+    /// </summary>
+    public Signature AuthSignature { get; init; }
 }
 
 /// <summary>
@@ -84,6 +99,17 @@ public sealed class HelloAckMessage : NetworkMessage
     public int ListenPort { get; init; }
     public ulong BestBlockNumber { get; init; }
     public Hash256 BestBlockHash { get; init; }
+
+    /// <summary>
+    /// NET-C01: Ed25519 signature of BLAKE3("basalt-ack-v1" || initiator ChallengeNonce || ChainId),
+    /// proving the responder owns the stated NodePublicKey.
+    /// </summary>
+    public Signature ChallengeResponse { get; init; }
+
+    /// <summary>
+    /// NET-H03: Genesis hash for cross-validation by initiator.
+    /// </summary>
+    public Hash256 GenesisHash { get; init; }
 }
 
 /// <summary>

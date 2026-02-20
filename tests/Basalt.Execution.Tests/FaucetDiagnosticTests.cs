@@ -37,10 +37,10 @@ public class FaucetDiagnosticTests
         var derivedFaucetAddress = Ed25519Signer.DeriveAddress(faucetPublicKey);
 
         _output.WriteLine($"Derived faucet address: {derivedFaucetAddress.ToHexString()}");
-        _output.WriteLine($"Expected faucet address: 0xac8cb7ae7bd407750fcb5f1f00b65be326d5d4a3");
+        _output.WriteLine($"Expected faucet address: 0x3348d94530198cdf39f207a9d807f692d220b693");
 
         // Check if the derived address matches the on-chain faucet address
-        var expectedAddress = Address.FromHexString("0xac8cb7ae7bd407750fcb5f1f00b65be326d5d4a3");
+        var expectedAddress = Address.FromHexString("0x3348d94530198cdf39f207a9d807f692d220b693");
         var addressMatch = derivedFaucetAddress == expectedAddress;
         _output.WriteLine($"Address match: {addressMatch}");
 
@@ -165,7 +165,7 @@ public class FaucetDiagnosticTests
         // === Set up identical to above ===
         var faucetPublicKey = Ed25519Signer.GetPublicKey(_faucetPrivateKey);
         var derivedFaucetAddress = Ed25519Signer.DeriveAddress(faucetPublicKey);
-        var expectedAddress = Address.FromHexString("0xac8cb7ae7bd407750fcb5f1f00b65be326d5d4a3");
+        var expectedAddress = Address.FromHexString("0x3348d94530198cdf39f207a9d807f692d220b693");
 
         _output.WriteLine($"Derived faucet address: {derivedFaucetAddress.ToHexString()}");
         _output.WriteLine($"Expected faucet address: {expectedAddress.ToHexString()}");
@@ -263,9 +263,9 @@ public class FaucetDiagnosticTests
         _output.WriteLine($"Faucet private key (hex): {Convert.ToHexString(_faucetPrivateKey).ToLowerInvariant()}");
         _output.WriteLine($"Faucet public key (hex): {Convert.ToHexString(faucetPublicKey.ToArray()).ToLowerInvariant()}");
         _output.WriteLine($"Derived address: {derivedAddress.ToHexString()}");
-        _output.WriteLine($"Expected testnet address: 0xac8cb7ae7bd407750fcb5f1f00b65be326d5d4a3");
+        _output.WriteLine($"Expected testnet address: 0x3348d94530198cdf39f207a9d807f692d220b693");
 
-        var expectedAddress = Address.FromHexString("0xac8cb7ae7bd407750fcb5f1f00b65be326d5d4a3");
+        var expectedAddress = Address.FromHexString("0x3348d94530198cdf39f207a9d807f692d220b693");
         var match = derivedAddress == expectedAddress;
         _output.WriteLine($"Addresses match: {match}");
 

@@ -77,6 +77,10 @@ public sealed class ValidatorSet
         if (validator == null)
             return false;
 
+        // F-CON-04: Reject if the new PeerId is already claimed by a different validator
+        if (_byPeerId.TryGetValue(newPeerId, out var existing) && existing.Index != validatorIndex)
+            return false;
+
         // Remove old PeerId mapping
         _byPeerId.Remove(validator.PeerId);
 

@@ -43,12 +43,12 @@ public class Mutation
                 Status = "pending",
             };
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             return new TransactionResult
             {
                 Success = false,
-                ErrorMessage = ex.Message,
+                ErrorMessage = "Transaction submission failed",
             };
         }
     }

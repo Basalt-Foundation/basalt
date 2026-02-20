@@ -106,7 +106,8 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
 
     public static UInt256 operator *(UInt256 a, UInt256 b)
     {
-        // Schoolbook multiplication with 64-bit limbs
+        // Schoolbook multiplication with 64-bit limbs and proper carry propagation.
+        // Each column accumulates UInt128 products; overflow is tracked in accHi.
         ulong a0 = (ulong)a.Lo;
         ulong a1 = (ulong)(a.Lo >> 64);
         ulong a2 = (ulong)a.Hi;
@@ -117,33 +118,42 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
         ulong b2 = (ulong)b.Hi;
         ulong b3 = (ulong)(b.Hi >> 64);
 
-        UInt128 p0 = (UInt128)a0 * b0;
-        UInt128 p1 = (UInt128)a0 * b1;
-        UInt128 p2 = (UInt128)a0 * b2;
-        UInt128 p3 = (UInt128)a0 * b3;
+        // Column 0: only a0*b0
+        UInt128 acc = (UInt128)a0 * b0;
+        ulong r0 = (ulong)acc;
+        acc >>= 64;
 
-        p1 += (UInt128)a1 * b0;
-        p2 += (UInt128)a1 * b1;
-        p3 += (UInt128)a1 * b2;
+        // Column 1: a0*b1 + a1*b0 + carry
+        ulong accHi = 0;
+        UInt128 term = (UInt128)a0 * b1;
+        acc += term;
+        if (acc < term) accHi++;
+        term = (UInt128)a1 * b0;
+        acc += term;
+        if (acc < term) accHi++;
+        ulong r1 = (ulong)acc;
+        acc = (acc >> 64) | ((UInt128)accHi << 64);
+        accHi = 0;
 
-        p2 += (UInt128)a2 * b0;
-        p3 += (UInt128)a2 * b1;
+        // Column 2: a0*b2 + a1*b1 + a2*b0 + carry
+        term = (UInt128)a0 * b2;
+        acc += term;
+        if (acc < term) accHi++;
+        term = (UInt128)a1 * b1;
+        acc += term;
+        if (acc < term) accHi++;
+        term = (UInt128)a2 * b0;
+        acc += term;
+        if (acc < term) accHi++;
+        ulong r2 = (ulong)acc;
+        acc = (acc >> 64) | ((UInt128)accHi << 64);
 
-        p3 += (UInt128)a3 * b0;
-
-        ulong r0 = (ulong)p0;
-        UInt128 carry = p0 >> 64;
-
-        carry += p1;
-        ulong r1 = (ulong)carry;
-        carry >>= 64;
-
-        carry += p2;
-        ulong r2 = (ulong)carry;
-        carry >>= 64;
-
-        carry += p3;
-        ulong r3 = (ulong)carry;
+        // Column 3: a0*b3 + a1*b2 + a2*b1 + a3*b0 + carry (only low 64 bits needed)
+        acc += (UInt128)a0 * b3;
+        acc += (UInt128)a1 * b2;
+        acc += (UInt128)a2 * b1;
+        acc += (UInt128)a3 * b0;
+        ulong r3 = (ulong)acc;
 
         return new UInt256(new UInt128(r1, r0), new UInt128(r3, r2));
     }
@@ -219,6 +229,59 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
         if (bit < 128)
             return new UInt256(value.Lo | ((UInt128)1 << bit), value.Hi);
         return new UInt256(value.Lo, value.Hi | ((UInt128)1 << (bit - 128)));
+    }
+
+    // Checked arithmetic (CORE-02: overflow-safe methods for balance/gas calculations)
+    public static UInt256 CheckedAdd(UInt256 a, UInt256 b)
+    {
+        var lo = a.Lo + b.Lo;
+        var carry = lo < a.Lo ? (UInt128)1 : (UInt128)0;
+        var hi = a.Hi + b.Hi + carry;
+        if (hi < a.Hi || (carry == 0 && hi < b.Hi))
+            throw new OverflowException("UInt256 addition overflow.");
+        return new UInt256(lo, hi);
+    }
+
+    public static UInt256 CheckedSub(UInt256 a, UInt256 b)
+    {
+        if (a < b)
+            throw new OverflowException("UInt256 subtraction underflow.");
+        return a - b;
+    }
+
+    public static UInt256 CheckedMul(UInt256 a, UInt256 b)
+    {
+        if (a.IsZero || b.IsZero) return Zero;
+        // Check for overflow: if a > MaxValue / b, then a * b overflows
+        DivRem(MaxValue, a, out var maxB, out _);
+        if (b > maxB)
+            throw new OverflowException("UInt256 multiplication overflow.");
+        return a * b;
+    }
+
+    public static bool TryAdd(UInt256 a, UInt256 b, out UInt256 result)
+    {
+        var lo = a.Lo + b.Lo;
+        var carry = lo < a.Lo ? (UInt128)1 : (UInt128)0;
+        var hi = a.Hi + b.Hi + carry;
+        if (hi < a.Hi || (carry == 0 && hi < b.Hi))
+        {
+            result = Zero;
+            return false;
+        }
+        result = new UInt256(lo, hi);
+        return true;
+    }
+
+    public static bool TrySub(UInt256 a, UInt256 b, out UInt256 result)
+    {
+        if (a < b)
+        {
+            result = Zero;
+            return false;
+        }
+        result = a - b;
+        return true;
     }
 
     // Shift operators

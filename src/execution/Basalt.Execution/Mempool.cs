@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Basalt.Core;
 using Basalt.Storage;
 
@@ -75,13 +76,66 @@ public sealed class Mempool
     }
 
     /// <summary>
-    /// Get the top N transactions ordered by priority.
+    /// Get the top N transactions ordered by priority, filtered to only include
+    /// transactions with contiguous nonce sequences per sender.
+    /// EXEC-10: Prevents nonce gap issues where a higher-nonce tx would fail execution
+    /// because a required lower-nonce tx is missing from the batch.
     /// </summary>
-    public List<Transaction> GetPending(int maxCount)
+    public List<Transaction> GetPending(int maxCount, IStateDatabase? stateDb = null)
     {
         lock (_lock)
         {
-            return _orderedEntries.Take(maxCount).Select(e => e.Transaction).ToList();
+            if (stateDb == null)
+                return _orderedEntries.Take(maxCount).Select(e => e.Transaction).ToList();
+
+            // Group by sender, filter to contiguous nonces starting from on-chain nonce
+            var bySender = new Dictionary<Address, List<Transaction>>();
+            foreach (var entry in _orderedEntries)
+            {
+                var tx = entry.Transaction;
+                ref var list = ref CollectionsMarshal.GetValueRefOrAddDefault(bySender, tx.Sender, out _);
+                list ??= [];
+                list.Add(tx);
+            }
+
+            var result = new List<Transaction>();
+            foreach (var (sender, txs) in bySender)
+            {
+                var account = stateDb.GetAccount(sender);
+                var expectedNonce = account?.Nonce ?? 0;
+
+                // txs are already ordered by fee desc then nonce asc from _orderedEntries
+                // Sort by nonce ascending to find contiguous sequence
+                txs.Sort((a, b) => a.Nonce.CompareTo(b.Nonce));
+
+                foreach (var tx in txs)
+                {
+                    if (tx.Nonce == expectedNonce)
+                    {
+                        result.Add(tx);
+                        expectedNonce++;
+                    }
+                    else if (tx.Nonce > expectedNonce)
+                    {
+                        break; // Gap detected — stop for this sender
+                    }
+                    // tx.Nonce < expectedNonce: stale, skip
+                }
+            }
+
+            // Re-sort by priority (fee desc) and take top N
+            result.Sort((a, b) =>
+            {
+                var feeCmp = b.EffectiveMaxFee.CompareTo(a.EffectiveMaxFee);
+                if (feeCmp != 0) return feeCmp;
+                var tipCmp = b.MaxPriorityFeePerGas.CompareTo(a.MaxPriorityFeePerGas);
+                if (tipCmp != 0) return tipCmp;
+                var nonceCmp = a.Nonce.CompareTo(b.Nonce);
+                if (nonceCmp != 0) return nonceCmp;
+                return a.Hash.CompareTo(b.Hash);
+            });
+
+            return result.Take(maxCount).ToList();
         }
     }
 

@@ -5,11 +5,19 @@ namespace Basalt.Network.DHT;
 /// <summary>
 /// Kademlia iterative node lookup algorithm.
 /// Queries alpha closest peers in parallel, converging on the target.
+/// NET-H12: Bounded lookup rounds and candidate set to prevent resource exhaustion.
+/// Peers from lookup responses are NOT added to the routing table (only via handshake).
 /// </summary>
 public sealed class NodeLookup
 {
     private readonly KademliaTable _table;
     private readonly ILogger _logger;
+
+    // NET-H12: Bound the lookup to prevent infinite iteration
+    private const int MaxLookupRounds = 20;
+
+    // NET-H12: Cap candidate set size to 3 * K to limit memory usage
+    private const int MaxCandidates = 3 * KBucket.K; // 60
 
     /// <summary>
     /// Called to query a remote peer for their closest nodes to a target.
@@ -25,6 +33,7 @@ public sealed class NodeLookup
 
     /// <summary>
     /// Perform an iterative lookup for the K closest nodes to target.
+    /// NET-H12: Bounded to MaxLookupRounds iterations with capped candidate set.
     /// </summary>
     public List<PeerInfo> Lookup(PeerId target)
     {
@@ -36,8 +45,16 @@ public sealed class NodeLookup
             candidates[p.Id] = p;
 
         bool improved = true;
+        int rounds = 0; // NET-H12: Track lookup rounds
         while (improved)
         {
+            // NET-H12: Enforce maximum lookup rounds
+            if (++rounds > MaxLookupRounds)
+            {
+                _logger.LogDebug("NET-H12: Lookup terminated after {MaxRounds} rounds", MaxLookupRounds);
+                break;
+            }
+
             improved = false;
 
             // Pick alpha unqueried closest candidates
@@ -64,8 +81,14 @@ public sealed class NodeLookup
                     {
                         if (result.Id != _table.LocalId && !candidates.ContainsKey(result.Id))
                         {
+                            // NET-H12: Cap candidate set size to prevent memory exhaustion
+                            if (candidates.Count >= MaxCandidates)
+                                continue;
+
+                            // NET-H12: Only add to local candidate list for the lookup algorithm.
+                            // Do NOT add to routing table — peers must complete a handshake
+                            // before being added to the routing table (see HandshakeProtocol.cs).
                             candidates[result.Id] = result;
-                            _table.AddOrUpdate(result);
                             improved = true;
                         }
                     }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using Basalt.Codec;
 using Basalt.Core;
 
@@ -40,27 +41,43 @@ public static class MessageCodec
     private const int StackAllocThreshold = 8192;
 
     /// <summary>
-    /// Maximum buffer size for any single message.
+    /// NET-H04: Maximum array element count to prevent OOM from crafted counts.
     /// </summary>
-    private const int MaxBufferSize = 65536;
+    private const int MaxArrayCount = 10_000;
+
+    /// <summary>
+    /// NET-H05: Maximum acceptable timestamp drift from current time (30 seconds).
+    /// </summary>
+    private const long MaxTimestampDriftMs = 30_000;
+
+    /// <summary>
+    /// NET-M10: Maximum blocks allowed in a single sync request/response.
+    /// </summary>
+    private const int MaxSyncBlocks = 200;
 
     /// <summary>
     /// Serialize a network message to a byte array.
+    /// NET-M09: Use ArrayPool for large messages instead of clamping to MaxBufferSize.
     /// </summary>
     public static byte[] Serialize(NetworkMessage message)
     {
         int estimatedSize = EstimateSize(message);
-        if (estimatedSize > MaxBufferSize)
-            estimatedSize = MaxBufferSize;
 
-        if (estimatedSize > StackAllocThreshold)
+        if (estimatedSize <= StackAllocThreshold)
         {
-            byte[] heapBuffer = new byte[estimatedSize];
-            return SerializeInto(heapBuffer, message);
+            Span<byte> stackBuffer = stackalloc byte[estimatedSize];
+            return SerializeInto(stackBuffer, message);
         }
 
-        Span<byte> stackBuffer = stackalloc byte[estimatedSize];
-        return SerializeInto(stackBuffer, message);
+        var rented = ArrayPool<byte>.Shared.Rent(estimatedSize);
+        try
+        {
+            return SerializeInto(rented.AsSpan(0, estimatedSize), message);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     private static byte[] SerializeInto(Span<byte> buffer, NetworkMessage message)
@@ -165,6 +182,17 @@ public static class MessageCodec
     }
 
     /// <summary>
+    /// NET-H05: Validate that a message timestamp is within acceptable drift of current time.
+    /// Returns true if valid, false if the timestamp is too far in the past or future.
+    /// </summary>
+    public static bool IsTimestampValid(long timestampMs)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var drift = Math.Abs(now - timestampMs);
+        return drift <= MaxTimestampDriftMs;
+    }
+
+    /// <summary>
     /// Deserialize a byte array into a network message.
     /// </summary>
     public static NetworkMessage Deserialize(ReadOnlySpan<byte> data)
@@ -175,6 +203,11 @@ public static class MessageCodec
         var type = (MessageType)reader.ReadByte();
         var senderId = new PeerId(reader.ReadHash256());
         var timestamp = reader.ReadInt64();
+
+        // NET-H05: Validate timestamp drift (skip for Hello/HelloAck — they have their own timeouts)
+        if (type != MessageType.Hello && type != MessageType.HelloAck && !IsTimestampValid(timestamp))
+            throw new InvalidOperationException(
+                $"Message timestamp {timestamp} exceeds drift limit of {MaxTimestampDriftMs}ms");
 
         // Each branch sets SenderId and Timestamp in the object initializer since
         // NetworkMessage is a class with init-only properties (not a record).
@@ -251,6 +284,9 @@ public static class MessageCodec
         writer.WriteBlsPublicKey(msg.BlsPublicKey);
         writer.WriteString(msg.ListenAddress);
         writer.WriteInt32(msg.ListenPort);
+        // NET-C01: Challenge-response authentication fields
+        writer.WriteBytes(msg.ChallengeNonce);
+        writer.WriteSignature(msg.AuthSignature);
     }
 
     private static void WriteHelloAck(ref BasaltWriter writer, HelloAckMessage msg)
@@ -262,6 +298,10 @@ public static class MessageCodec
         writer.WriteInt32(msg.ListenPort);
         writer.WriteUInt64(msg.BestBlockNumber);
         writer.WriteHash256(msg.BestBlockHash);
+        // NET-C01: Challenge-response signature
+        writer.WriteSignature(msg.ChallengeResponse);
+        // NET-H03: Genesis hash for cross-validation
+        writer.WriteHash256(msg.GenesisHash);
     }
 
     private static void WriteBlockAnnounce(ref BasaltWriter writer, BlockAnnounceMessage msg)
@@ -367,6 +407,9 @@ public static class MessageCodec
             BlsPublicKey = reader.ReadBlsPublicKey(),
             ListenAddress = reader.ReadString(),
             ListenPort = reader.ReadInt32(),
+            // NET-C01: Challenge-response fields
+            ChallengeNonce = reader.ReadBytes().ToArray(),
+            AuthSignature = reader.ReadSignature(),
         };
     }
 
@@ -383,6 +426,10 @@ public static class MessageCodec
             ListenPort = reader.ReadInt32(),
             BestBlockNumber = reader.ReadUInt64(),
             BestBlockHash = reader.ReadHash256(),
+            // NET-C01: Challenge-response signature
+            ChallengeResponse = reader.ReadSignature(),
+            // NET-H03: Genesis hash
+            GenesisHash = reader.ReadHash256(),
         };
     }
 
@@ -425,14 +472,21 @@ public static class MessageCodec
 
     private static ConsensusVoteMessage ReadConsensusVote(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
+        var viewNumber = reader.ReadUInt64();
+        var blockNumber = reader.ReadUInt64();
+        var blockHash = reader.ReadHash256();
+        // NET-M08: Validate VotePhase range
+        var phaseByte = reader.ReadByte();
+        if (phaseByte > (byte)VotePhase.Commit)
+            throw new InvalidOperationException($"Invalid VotePhase: {phaseByte}");
         return new ConsensusVoteMessage
         {
             SenderId = senderId,
             Timestamp = timestamp,
-            ViewNumber = reader.ReadUInt64(),
-            BlockNumber = reader.ReadUInt64(),
-            BlockHash = reader.ReadHash256(),
-            Phase = (VotePhase)reader.ReadByte(),
+            ViewNumber = viewNumber,
+            BlockNumber = blockNumber,
+            BlockHash = blockHash,
+            Phase = (VotePhase)phaseByte,
             VoterSignature = reader.ReadBlsSignature(),
             VoterPublicKey = reader.ReadBlsPublicKey(),
         };
@@ -453,14 +507,21 @@ public static class MessageCodec
 
     private static AggregateVoteMessage ReadAggregateVote(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
+        var viewNumber = reader.ReadUInt64();
+        var blockNumber = reader.ReadUInt64();
+        var blockHash = reader.ReadHash256();
+        // NET-M08: Validate VotePhase range
+        var phaseByte = reader.ReadByte();
+        if (phaseByte > (byte)VotePhase.Commit)
+            throw new InvalidOperationException($"Invalid VotePhase: {phaseByte}");
         return new AggregateVoteMessage
         {
             SenderId = senderId,
             Timestamp = timestamp,
-            ViewNumber = reader.ReadUInt64(),
-            BlockNumber = reader.ReadUInt64(),
-            BlockHash = reader.ReadHash256(),
-            Phase = (VotePhase)reader.ReadByte(),
+            ViewNumber = viewNumber,
+            BlockNumber = blockNumber,
+            BlockHash = blockHash,
+            Phase = (VotePhase)phaseByte,
             AggregateSignature = reader.ReadBlsSignature(),
             VoterBitmap = reader.ReadUInt64(),
         };
@@ -468,18 +529,27 @@ public static class MessageCodec
 
     private static SyncRequestMessage ReadSyncRequest(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
+        var fromBlock = reader.ReadUInt64();
+        var maxBlocks = reader.ReadInt32();
+        // NET-M10: Validate MaxBlocks is positive and bounded
+        if (maxBlocks <= 0 || maxBlocks > MaxSyncBlocks)
+            throw new InvalidOperationException($"Invalid MaxBlocks: {maxBlocks} (must be 1-{MaxSyncBlocks})");
         return new SyncRequestMessage
         {
             SenderId = senderId,
             Timestamp = timestamp,
-            FromBlock = reader.ReadUInt64(),
-            MaxBlocks = reader.ReadInt32(),
+            FromBlock = fromBlock,
+            MaxBlocks = maxBlocks,
         };
     }
 
     private static FindNodeResponseMessage ReadFindNodeResponse(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
-        var count = (int)reader.ReadVarInt();
+        // NET-H06: Checked varint cast; NET-H04: Bounds check
+        var rawCount = reader.ReadVarInt();
+        if (rawCount > MaxArrayCount)
+            throw new InvalidOperationException($"FindNodeResponse peer count {rawCount} exceeds limit {MaxArrayCount}");
+        var count = (int)rawCount;
         var peers = new PeerNodeInfo[count];
         for (int i = 0; i < count; i++)
         {
@@ -502,7 +572,13 @@ public static class MessageCodec
 
     private static Hash256[] ReadHashArray(ref BasaltReader reader)
     {
-        var count = (int)reader.ReadVarInt();
+        // NET-H06: Checked varint cast; NET-H04: Bounds check against remaining bytes
+        var rawCount = reader.ReadVarInt();
+        if (rawCount > MaxArrayCount)
+            throw new InvalidOperationException($"Hash array count {rawCount} exceeds limit {MaxArrayCount}");
+        var count = (int)rawCount;
+        if (count > 0 && reader.Remaining < count * Hash256.Size)
+            throw new InvalidOperationException($"Hash array count {count} exceeds remaining bytes ({reader.Remaining})");
         var hashes = new Hash256[count];
         for (int i = 0; i < count; i++)
         {
@@ -514,7 +590,11 @@ public static class MessageCodec
 
     private static byte[][] ReadByteArrays(ref BasaltReader reader)
     {
-        var count = (int)reader.ReadVarInt();
+        // NET-H06: Checked varint cast; NET-H04: Bounds check
+        var rawCount = reader.ReadVarInt();
+        if (rawCount > MaxArrayCount)
+            throw new InvalidOperationException($"Byte array count {rawCount} exceeds limit {MaxArrayCount}");
+        var count = (int)rawCount;
         var arrays = new byte[count][];
         for (int i = 0; i < count; i++)
         {
@@ -536,8 +616,10 @@ public static class MessageCodec
 
         int payloadEstimate = message switch
         {
-            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + BlsPublicKey.Size + 256 + 4, // generous for string
-            HelloAckMessage => 1 + 256 + PublicKey.Size + BlsPublicKey.Size + 4 + 8 + Hash256.Size, // bool + string + identity
+            // NET-C01: +32 nonce + 10 varint + 64 signature
+            HelloMessage => 4 + 4 + 8 + 32 + 32 + 32 + BlsPublicKey.Size + 256 + 4 + 42 + 64,
+            // NET-C01: +64 signature; NET-H03: +32 genesis hash
+            HelloAckMessage => 1 + 256 + PublicKey.Size + BlsPublicKey.Size + 4 + 8 + Hash256.Size + 64 + 32,
             PingMessage => 0,
             PongMessage => 0,
             TxAnnounceMessage m => 10 + (m.TransactionHashes.Length * Hash256.Size),
@@ -561,7 +643,7 @@ public static class MessageCodec
             _ => 1024,
         };
 
-        return Math.Min(headerSize + payloadEstimate, MaxBufferSize);
+        return headerSize + payloadEstimate;
     }
 
     private static int EstimateByteArraysSize(byte[][] arrays)

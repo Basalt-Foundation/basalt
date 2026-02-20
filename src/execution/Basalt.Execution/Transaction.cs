@@ -42,7 +42,8 @@ public sealed class Transaction
     /// Optional ZK compliance proofs attached to this transaction.
     /// Each proof demonstrates the sender satisfies a credential schema requirement
     /// without revealing identity, issuer, or credential details.
-    /// Not part of the signing payload — proofs are ancillary verification data.
+    /// A BLAKE3 hash of serialized proofs is included in the signing payload (COMPL-02)
+    /// to prevent relay nodes from stripping or modifying proofs.
     /// </summary>
     public ComplianceProof[] ComplianceProofs { get; init; } = [];
 
@@ -90,7 +91,8 @@ public sealed class Transaction
     /// </summary>
     public int GetSigningPayloadSize()
     {
-        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 32 + 32 + 4 + Data.Length + 1 + 4;
+        // COMPL-02: +32 bytes for compliance proofs hash
+        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 32 + 32 + 4 + Data.Length + 1 + 4 + Hash256.Size;
     }
 
     public void WriteSigningPayload(Span<byte> buffer)
@@ -108,6 +110,37 @@ public sealed class Transaction
         writer.WriteBytes(Data);
         writer.WriteByte(Priority);
         writer.WriteUInt32(ChainId);
+
+        // COMPL-02: Include hash of compliance proofs to prevent stripping/modification
+        writer.WriteHash256(ComputeComplianceProofsHash());
+    }
+
+    /// <summary>
+    /// Compute a BLAKE3 hash of all compliance proofs (COMPL-02).
+    /// Returns Hash256.Zero if no proofs are attached.
+    /// </summary>
+    private Hash256 ComputeComplianceProofsHash()
+    {
+        if (ComplianceProofs.Length == 0)
+            return Hash256.Zero;
+
+        using var hasher = Blake3Hasher.CreateIncremental();
+        Span<byte> hashBuffer = stackalloc byte[Hash256.Size];
+        foreach (var proof in ComplianceProofs)
+        {
+            proof.SchemaId.WriteTo(hashBuffer);
+            hasher.Update(hashBuffer);
+
+            if (proof.Proof.Length > 0)
+                hasher.Update(proof.Proof);
+            if (proof.PublicInputs.Length > 0)
+                hasher.Update(proof.PublicInputs);
+
+            proof.Nullifier.WriteTo(hashBuffer);
+            hasher.Update(hashBuffer);
+        }
+
+        return hasher.Finalize();
     }
 
     /// <summary>
