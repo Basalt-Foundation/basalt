@@ -187,6 +187,11 @@ public sealed class BlockPayloadMessage : NetworkMessage
 {
     public override MessageType Type => MessageType.BlockPayload;
     public byte[][] Blocks { get; init; } = [];
+    /// <summary>
+    /// Commit voter bitmaps parallel to Blocks. Each bitmap records which validators
+    /// signed the commit phase for the corresponding block (bit i = validator at index i).
+    /// </summary>
+    public ulong[] CommitBitmaps { get; init; } = [];
 }
 
 /// <summary>

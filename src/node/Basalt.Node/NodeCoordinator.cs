@@ -475,6 +475,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // Persist to RocksDB if available
                 PersistBlock(block, blockData);
                 PersistReceipts(block.Receipts);
+                _blockStore?.PutCommitBitmap(block.Number, commitBitmap);
 
                 // Record commit participation for deterministic epoch-boundary slashing
                 _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
@@ -891,11 +892,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-14: Cap block request count to prevent resource exhaustion
         var count = Math.Min(request.Count, MaxBlockRequestCount);
         var blockDataList = new List<byte[]>();
+        var bitmapList = new List<ulong>();
         for (ulong i = request.StartNumber; i < request.StartNumber + (ulong)count; i++)
         {
             var block = _chainManager.GetBlockByNumber(i);
             if (block != null)
+            {
                 blockDataList.Add(BlockCodec.SerializeBlock(block));
+                bitmapList.Add(_blockStore?.GetCommitBitmap(i) ?? 0UL);
+            }
             else
                 break;
         }
@@ -907,6 +912,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 SenderId = _localPeerId,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
+                CommitBitmaps = bitmapList.ToArray(),
             };
             _gossip!.SendToPeer(sender, payload);
         }
@@ -939,8 +945,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
         }
 
-        foreach (var blockBytes in payload.Blocks)
+        for (int idx = 0; idx < payload.Blocks.Length; idx++)
         {
+            var blockBytes = payload.Blocks[idx];
             try
             {
                 var block = BlockCodec.DeserializeBlock(blockBytes);
@@ -968,13 +975,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     PersistBlock(block, blockBytes);
                     PersistReceipts(block.Receipts);
 
-                    // Record full participation for gossipped blocks (already consensus-validated)
-                    if (_epochManager != null && _validatorSet != null)
+                    // Use propagated commit bitmap from the serving peer (deterministic)
+                    if (_epochManager != null)
                     {
-                        ulong fullBitmap = _validatorSet.Count >= 64
-                            ? ulong.MaxValue
-                            : (1UL << _validatorSet.Count) - 1;
-                        _epochManager.RecordBlockSigners(block.Number, fullBitmap);
+                        var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
+                        _epochManager.RecordBlockSigners(block.Number, bitmap);
+                        _blockStore?.PutCommitBitmap(block.Number, bitmap);
                     }
 
                     // Apply epoch transitions for blocks received via gossip
@@ -997,6 +1003,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
         var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);
         var blockDataList = new List<byte[]>();
+        var bitmapList = new List<ulong>();
         for (ulong i = request.FromBlock; i < request.FromBlock + (ulong)maxBlocks; i++)
         {
             // Try to serve from BlockStore (raw bytes) first, fall back to ChainManager
@@ -1013,6 +1020,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 else
                     break;
             }
+            bitmapList.Add(_blockStore?.GetCommitBitmap(i) ?? 0UL);
         }
 
         if (blockDataList.Count > 0)
@@ -1022,6 +1030,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 SenderId = _localPeerId,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Blocks = blockDataList.ToArray(),
+                CommitBitmaps = bitmapList.ToArray(),
             };
             _gossip!.SendToPeer(sender, response);
             _logger.LogInformation("Served {Count} blocks to syncing peer {PeerId} (from #{From})",
@@ -1036,10 +1045,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // N-05: Fork state for sync — execute all blocks on a forked state database.
         // Only replace canonical state if all blocks in the batch succeed.
         var forkedState = _stateDb.Fork();
-        var blocksToApply = new List<(Block Block, byte[] Raw)>();
+        var blocksToApply = new List<(Block Block, byte[] Raw, int OrigIdx)>();
 
-        foreach (var blockBytes in response.Blocks)
+        for (int idx = 0; idx < response.Blocks.Length; idx++)
         {
+            var blockBytes = response.Blocks[idx];
             try
             {
                 var block = BlockCodec.DeserializeBlock(blockBytes);
@@ -1063,7 +1073,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     block.Receipts = receipts;
                 }
 
-                blocksToApply.Add((block, blockBytes));
+                blocksToApply.Add((block, blockBytes, idx));
             }
             catch (Exception ex)
             {
@@ -1073,7 +1083,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
 
         // Apply all successfully executed blocks to the chain
-        foreach (var (block, blockBytes) in blocksToApply)
+        foreach (var (block, blockBytes, origIdx) in blocksToApply)
         {
             var result = _chainManager.AddBlock(block);
             if (result.IsSuccess)
@@ -1083,13 +1093,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 PersistReceipts(block.Receipts);
                 applied++;
 
-                // Record full participation for synced blocks (already consensus-validated)
-                if (_epochManager != null && _validatorSet != null)
+                // Use propagated commit bitmap from the serving peer (deterministic)
+                if (_epochManager != null)
                 {
-                    ulong syncBitmap = _validatorSet.Count >= 64
-                        ? ulong.MaxValue
-                        : (1UL << _validatorSet.Count) - 1;
-                    _epochManager.RecordBlockSigners(block.Number, syncBitmap);
+                    var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
+                    _epochManager.RecordBlockSigners(block.Number, bitmap);
+                    _blockStore?.PutCommitBitmap(block.Number, bitmap);
                 }
 
                 // Apply epoch transitions for synced blocks — without this,

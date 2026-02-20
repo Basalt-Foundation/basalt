@@ -177,8 +177,10 @@ public sealed class EpochManager
         if (totalBlocks == 0)
             return;
 
+        // Clamp to [0, 100] to prevent overflow or slashing-all with invalid values
+        var percent = Math.Min(_chainParams.InactivityThresholdPercent, 100u);
         // Ceiling division: validators must sign >= InactivityThresholdPercent of blocks
-        var threshold = (totalBlocks * _chainParams.InactivityThresholdPercent + 99) / 100;
+        var threshold = (totalBlocks * percent + 99) / 100;
 
         // Count signed blocks per validator index
         var signedCounts = new ulong[_currentSet.Count];
@@ -198,6 +200,10 @@ public sealed class EpochManager
 
         foreach (var validator in _currentSet.Validators)
         {
+            // Validators beyond bitmap range cannot be tracked — skip to avoid false slashing
+            if (validator.Index >= 64)
+                continue;
+
             var signed = validator.Index < signedCounts.Length ? signedCounts[validator.Index] : 0UL;
             if (signed < threshold)
             {
