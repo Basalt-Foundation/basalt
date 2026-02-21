@@ -56,6 +56,9 @@ public static class ContractBridge
         Context.BlockTimestamp = (long)ctx.BlockTimestamp;
         Context.BlockHeight = ctx.BlockNumber;
         Context.ChainId = ctx.ChainId;
+        // L-10: This is a snapshot — becomes stale as gas is consumed via host calls.
+        // SDK contracts should treat this as an approximate upper bound.
+        // Making it a live delegate would require changing the SDK API (Context.GasRemaining is ulong).
         Context.GasRemaining = ctx.GasMeter.GasRemaining;
         Context.CallDepth = ctx.CallDepth;
 

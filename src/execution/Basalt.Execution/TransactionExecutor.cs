@@ -89,7 +89,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -129,13 +129,20 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
         // C-1: Fork — all contract mutations go to the fork
         var fork = stateDb.Fork();
         var contractAddress = DeriveContractAddress(tx.Sender, tx.Nonce);
+
+        // L-9: Reject deployments that would collide with system contract addresses
+        if (IsSystemAddress(contractAddress))
+        {
+            return CreateReceipt(tx, blockHeader, txIndex, GasTable.TxBase, false,
+                BasaltErrorCode.ContractDeployFailed, stateDb, effectiveGasPrice);
+        }
 
         try
         {
@@ -259,7 +266,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -397,7 +404,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -446,7 +453,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -489,7 +496,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -530,13 +537,30 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
         CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
 
         return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
+    }
+
+    /// <summary>
+    /// L-9: Check whether a derived contract address collides with a system contract address.
+    /// System contracts use the address range 0x000...0000 to 0x000...FFFF.
+    /// </summary>
+    private static bool IsSystemAddress(Address address)
+    {
+        // System addresses have all zeros in bytes 0-17, with only bytes 18-19 non-zero
+        Span<byte> bytes = stackalloc byte[Address.Size];
+        address.WriteTo(bytes);
+        for (int i = 0; i < 18; i++)
+        {
+            if (bytes[i] != 0)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -569,6 +593,17 @@ public sealed class TransactionExecutor
     }
 
     /// <summary>
+    /// L-4: Check for nonce overflow before incrementing.
+    /// Practically unreachable (2^64 txs from one address) but prevents replay attacks.
+    /// </summary>
+    private static ulong IncrementNonce(ulong currentNonce)
+    {
+        if (currentNonce == ulong.MaxValue)
+            throw new BasaltException(BasaltErrorCode.InvalidNonce, "Nonce overflow: account has exhausted all nonces.");
+        return currentNonce + 1;
+    }
+
+    /// <summary>
     /// C-2: Charge gas fee and increment nonce on failed transactions.
     /// Charges up to the gas fee (capped at sender balance) and always increments nonce.
     /// </summary>
@@ -581,7 +616,7 @@ public sealed class TransactionExecutor
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, actualCharge),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(sender, senderState);
 

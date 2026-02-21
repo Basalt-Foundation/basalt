@@ -107,6 +107,10 @@ public sealed class HostInterface
 
     public void EmitEvent(Hash256 eventSignature, Hash256[] topics, byte[] data)
     {
+        // L-13: Cap event logs per transaction
+        if (_ctx.EmittedLogs.Count >= VmExecutionContext.MaxLogsPerTransaction)
+            throw new ContractRevertException($"Maximum event logs per transaction ({VmExecutionContext.MaxLogsPerTransaction}) exceeded.");
+
         _ctx.GasMeter.Consume(
             GasTable.Log +
             (ulong)topics.Length * GasTable.LogTopic +

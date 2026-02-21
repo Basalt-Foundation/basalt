@@ -20,6 +20,8 @@ public enum TransactionType : byte
 
 /// <summary>
 /// A transaction in the Basalt blockchain.
+/// L-1: Data and ComplianceProofs arrays MUST NOT be mutated after construction.
+/// Mutating them after Hash has been accessed invalidates the cached hash.
 /// </summary>
 public sealed class Transaction
 {
@@ -33,6 +35,10 @@ public sealed class Transaction
     public UInt256 MaxFeePerGas { get; init; } = UInt256.Zero;
     public UInt256 MaxPriorityFeePerGas { get; init; } = UInt256.Zero;
     public byte[] Data { get; init; } = [];
+    /// <summary>
+    /// L-3: Reserved for future use (e.g., transaction priority lanes).
+    /// Included in signing payload for forward compatibility.
+    /// </summary>
     public byte Priority { get; init; }
     public uint ChainId { get; init; }
     public Signature Signature { get; init; }

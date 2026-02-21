@@ -19,6 +19,11 @@ public sealed class VmExecutionContext
     public GasMeter GasMeter { get; init; } = null!;
     public IStateDatabase StateDb { get; init; } = null!;
     public int CallDepth { get; init; }
+    /// <summary>
+    /// L-13: Maximum number of event logs per transaction to prevent unbounded memory usage.
+    /// </summary>
+    public const int MaxLogsPerTransaction = 256;
+
     public List<EventLog> EmittedLogs { get; } = [];
 
     /// <summary>

@@ -54,10 +54,24 @@ public sealed class BlockHeader
         }
     }
 
+    /// <summary>
+    /// L-2: Uses proper VarInt size calculation for ExtraData length prefix.
+    /// </summary>
     public int GetSerializedSize()
     {
         return 8 + Hash256.Size + Hash256.Size + Hash256.Size + Hash256.Size +
-               8 + Address.Size + 4 + 8 + 8 + 32 + 4 + 4 + ExtraData.Length;
+               8 + Address.Size + 4 + 8 + 8 + 32 + 4 + VarIntSize((ulong)ExtraData.Length) + ExtraData.Length;
+    }
+
+    private static int VarIntSize(ulong value)
+    {
+        int size = 1;
+        while (value >= 0x80)
+        {
+            size++;
+            value >>= 7;
+        }
+        return size;
     }
 
     public void WriteTo(ref BasaltWriter writer)

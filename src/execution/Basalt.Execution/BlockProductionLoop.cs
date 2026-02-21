@@ -51,7 +51,12 @@ public sealed class BlockProductionLoop
     {
         _cts?.Cancel();
         if (_loopTask != null)
-            await _loopTask;
+        {
+            // L-7: Timeout to prevent indefinite hang if ProduceBlock is stuck
+            var completed = await Task.WhenAny(_loopTask, Task.Delay(30_000));
+            if (completed != _loopTask)
+                _logger.LogWarning("Block production loop did not stop within 30 seconds.");
+        }
         _logger.LogInformation("Block production stopped.");
     }
 

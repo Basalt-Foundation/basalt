@@ -64,8 +64,19 @@ public sealed class HostStorageProvider : IStorageProvider
         _host.StorageDelete(storageKey);
     }
 
+    /// <summary>
+    /// L-12: Uses stackalloc for small keys to avoid heap allocation on every access.
+    /// Falls back to heap for keys exceeding the stack threshold.
+    /// </summary>
     private static Hash256 ComputeStorageKey(string key)
     {
+        var byteCount = Encoding.UTF8.GetByteCount(key);
+        if (byteCount <= 256)
+        {
+            Span<byte> buffer = stackalloc byte[byteCount];
+            Encoding.UTF8.GetBytes(key, buffer);
+            return Blake3Hasher.Hash(buffer);
+        }
         return Blake3Hasher.Hash(Encoding.UTF8.GetBytes(key));
     }
 
