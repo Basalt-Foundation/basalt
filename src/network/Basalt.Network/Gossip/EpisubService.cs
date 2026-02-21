@@ -213,11 +213,21 @@ public sealed class EpisubService
 
     /// <summary>
     /// Graft a peer from lazy to eager tier.
+    /// M-6: Enforces <see cref="MaxEagerPeers"/> cap. If the eager tier is full,
+    /// the peer remains in the lazy tier.
     /// </summary>
     public void GraftPeer(PeerId peerId)
     {
         if (_lazyPeers.TryRemove(peerId, out _))
         {
+            // M-6: Check MaxEagerPeers before grafting to prevent Sybil saturation
+            if (_eagerPeers.Count >= MaxEagerPeers)
+            {
+                // Re-add to lazy — eager tier is full
+                _lazyPeers.TryAdd(peerId, 0);
+                _logger.LogDebug("Eager tier full ({MaxEagerPeers} cap), keeping {PeerId} in lazy tier", MaxEagerPeers, peerId);
+                return;
+            }
             _eagerPeers.TryAdd(peerId, 0);
             _logger.LogDebug("Grafted {PeerId} to eager tier", peerId);
         }

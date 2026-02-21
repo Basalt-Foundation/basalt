@@ -49,6 +49,7 @@ public sealed class KademliaTable : IDisposable
     /// Add or update a peer in the routing table.
     /// NET-H10: Rejects peers that would exceed the /24 subnet limit per bucket.
     /// PeerId verification is handled at handshake time (HandshakeProtocol.cs, NET-C01).
+    /// M-7: IP diversity check is performed inside the write lock to eliminate TOCTOU race.
     /// </summary>
     public bool AddOrUpdate(PeerInfo peer)
     {
@@ -57,22 +58,24 @@ public sealed class KademliaTable : IDisposable
 
         int bucket = GetBucketIndex(peer.Id);
 
-        // NET-H10: IP diversity check — max 2 peers per /24 subnet per bucket
-        string peerSubnet = GetSubnet24(peer.Host);
-        var existingPeers = _buckets[bucket].GetPeers();
-
-        // Only check subnet limit if this is a new peer (not an update)
-        bool isExisting = existingPeers.Any(p => p.Id == peer.Id);
-        if (!isExisting)
-        {
-            int subnetCount = existingPeers.Count(p => GetSubnet24(p.Host) == peerSubnet);
-            if (subnetCount >= MaxPeersPerSubnetPerBucket)
-                return false; // NET-H10: Too many peers from same /24 subnet
-        }
-
         _rwLock.EnterWriteLock();
         try
         {
+            // NET-H10: IP diversity check — max 2 peers per /24 subnet per bucket
+            // M-7: Moved inside write lock to prevent concurrent AddOrUpdate from both
+            // passing the check before either inserts, exceeding the subnet limit.
+            string peerSubnet = GetSubnet24(peer.Host);
+            var existingPeers = _buckets[bucket].GetPeers();
+
+            // Only check subnet limit if this is a new peer (not an update)
+            bool isExisting = existingPeers.Any(p => p.Id == peer.Id);
+            if (!isExisting)
+            {
+                int subnetCount = existingPeers.Count(p => GetSubnet24(p.Host) == peerSubnet);
+                if (subnetCount >= MaxPeersPerSubnetPerBucket)
+                    return false; // NET-H10: Too many peers from same /24 subnet
+            }
+
             return _buckets[bucket].InsertOrUpdate(peer);
         }
         finally

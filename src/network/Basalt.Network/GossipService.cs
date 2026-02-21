@@ -115,6 +115,15 @@ public sealed class GossipService
     /// </summary>
     public void HandleMessage(PeerId sender, NetworkMessage message)
     {
+        // M-4: Compute message ID and deduplicate to prevent processing the same message twice.
+        // This is especially important for relayed gossip where multiple peers may forward
+        // the same transaction/block announcement.
+        var serialized = SerializeMessage(message);
+        var msgId = Blake3Hasher.Hash(serialized);
+        if (IsMessageSeen(msgId))
+            return;
+        MarkMessageSeen(msgId);
+
         // NET-H08: Only invoke callback — no relay. The higher-level handler
         // (NodeCoordinator) is responsible for re-broadcasting after validation.
         // NET-M15: No reputation reward here — caller calls RewardPeerForValidMessage after validation.
