@@ -71,6 +71,7 @@ public sealed class BlockSubscription : IBlockSubscription
             {
                 var buffer = new byte[_options.ReceiveBufferSize];
                 var messageBuffer = new MemoryStream();
+                const int maxMessageSize = 1 * 1024 * 1024; // M-19: 1 MB max message size
 
                 while (_ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                 {
@@ -93,6 +94,13 @@ public sealed class BlockSubscription : IBlockSubscription
                             }
 
                             messageBuffer.Write(buffer, 0, result.Count);
+
+                            // M-19: Enforce message size limit to prevent memory exhaustion
+                            if (messageBuffer.Length > maxMessageSize)
+                            {
+                                receiveError = true;
+                                break;
+                            }
                         } while (!result.EndOfMessage);
 
                         if (!receiveError && messageBuffer.Length > 0)

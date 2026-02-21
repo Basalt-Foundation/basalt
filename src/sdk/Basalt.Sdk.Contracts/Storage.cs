@@ -171,7 +171,13 @@ public sealed class StorageList<T> where T : struct
 
     public int Count => ContractStorage.Get<int>(CountKey);
 
-    public T Get(int index) => ContractStorage.Get<T>(ItemKey(index));
+    // M-2: Bounds-checked access
+    public T Get(int index)
+    {
+        if (index < 0 || index >= Count)
+            throw new ContractRevertException("StorageList: index out of bounds");
+        return ContractStorage.Get<T>(ItemKey(index));
+    }
 
     public void Add(T value)
     {
@@ -180,5 +186,11 @@ public sealed class StorageList<T> where T : struct
         ContractStorage.Set(CountKey, count + 1);
     }
 
-    public void Set(int index, T value) => ContractStorage.Set(ItemKey(index), value);
+    // M-2: Bounds-checked set
+    public void Set(int index, T value)
+    {
+        if (index < 0 || index >= Count)
+            throw new ContractRevertException("StorageList: index out of bounds");
+        ContractStorage.Set(ItemKey(index), value);
+    }
 }

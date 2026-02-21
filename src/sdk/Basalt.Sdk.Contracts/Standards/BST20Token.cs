@@ -173,6 +173,8 @@ public partial class BST20Token : IBST20
 
     private bool TransferInternal(byte[] from, byte[] to, UInt256 amount)
     {
+        // L-1: Reject zero-amount transfers to prevent event spam
+        Context.Require(!amount.IsZero, "BST20: zero amount");
         var fromBalance = _balances.Get(ToKey(from));
         Context.Require(fromBalance >= amount, "BST20: insufficient balance");
 

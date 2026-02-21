@@ -71,6 +71,8 @@ public partial class BST1155Token : IBST1155
     public void SafeBatchTransferFrom(byte[] from, byte[] to, ulong[] tokenIds, ulong[] amounts)
     {
         var caller = Context.Caller;
+        // L-4: Reject empty batch arrays to prevent gas waste
+        Context.Require(tokenIds.Length > 0, "BST1155: empty batch");
         Context.Require(tokenIds.Length == amounts.Length, "BST1155: length mismatch");
         Context.Require(
             IsCallerOrApproved(from, caller),

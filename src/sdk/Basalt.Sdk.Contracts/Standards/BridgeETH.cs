@@ -72,7 +72,8 @@ public partial class BridgeETH
     public void TransferAdmin(byte[] newAdmin)
     {
         RequireAdmin();
-        Context.Require(newAdmin.Length > 0, "BRIDGE: invalid admin");
+        // L-7: Validate 20-byte address length
+        Context.Require(newAdmin.Length == 20, "BRIDGE: invalid admin address length");
         _admin.Set("admin", Convert.ToHexString(newAdmin));
     }
 

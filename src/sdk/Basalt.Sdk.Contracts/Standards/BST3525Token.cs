@@ -225,9 +225,11 @@ public partial class BST3525Token : IBST3525
         });
     }
 
+    /// <remarks>L-5: Restricted to contract owner to prevent unauthorized metadata overwrites.</remarks>
     [BasaltEntrypoint]
     public void SetSlotUri(ulong slot, string uri)
     {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "SFT: not owner");
         _slotUris.Set(slot.ToString(), uri);
     }
 

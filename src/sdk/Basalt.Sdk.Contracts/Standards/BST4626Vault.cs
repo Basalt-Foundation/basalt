@@ -84,8 +84,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
         var shares = ConvertToShares(assets);
         Context.Require(shares > 0, "VAULT: zero shares");
 
-        Context.CallContract(_assetAddress, "TransferFrom",
+        // M-14: Check TransferFrom return value to prevent free share minting
+        var transferred = Context.CallContract<bool>(_assetAddress, "TransferFrom",
             Context.Caller, Context.Self, assets);
+        Context.Require(transferred, "VAULT: asset transfer failed");
 
         Mint(Context.Caller, shares);
         _totalAssets.Set(TotalAssets() + assets);

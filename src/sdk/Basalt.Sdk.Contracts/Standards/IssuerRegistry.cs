@@ -60,6 +60,22 @@ public partial class IssuerRegistry
     [BasaltEntrypoint]
     public void RegisterIssuer(string name, byte tier)
     {
+        RegisterIssuerInternal(name, tier, Context.Caller);
+    }
+
+    /// <summary>
+    /// L-6: Admin can register a third-party address as a tier 1/3 issuer.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void RegisterIssuerFor(string name, byte tier, byte[] issuerAddress)
+    {
+        Context.Require(tier == 1 || tier == 3, "ISSUER: RegisterIssuerFor only for tier 1/3");
+        Context.Require(issuerAddress.Length > 0, "ISSUER: invalid issuer address");
+        RegisterIssuerInternal(name, tier, issuerAddress);
+    }
+
+    private void RegisterIssuerInternal(string name, byte tier, byte[] issuer)
+    {
         Context.Require(tier <= 3, "ISSUER: invalid tier");
         Context.Require(!string.IsNullOrEmpty(name), "ISSUER: name required");
 
@@ -71,10 +87,7 @@ public partial class IssuerRegistry
             Context.Require(callerHex == adminHex, "ISSUER: admin only for tier 1/3");
         }
 
-        // For tier 0, the issuer is the caller themselves
-        // For tier 1/3, admin registers the issuer (also the caller for simplicity)
-        // For tier 2, anyone can register but must stake collateral via StakeCollateral
-        var issuerHex = callerHex;
+        var issuerHex = Convert.ToHexString(issuer);
 
         _tiers.Set(issuerHex, tier);
         _names.Set(issuerHex, name);
@@ -82,7 +95,7 @@ public partial class IssuerRegistry
 
         Context.Emit(new IssuerRegisteredEvent
         {
-            Issuer = Context.Caller,
+            Issuer = issuer,
             Name = name,
             Tier = tier,
         });
