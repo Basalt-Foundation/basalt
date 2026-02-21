@@ -101,6 +101,12 @@ public sealed class TrieNode
     /// <summary>
     /// Encode the node to bytes for hashing and storage.
     /// </summary>
+    /// <remarks>
+    /// L-02: Uses <see cref="MemoryStream"/> per call. For hot paths (block processing),
+    /// a pre-computed size + direct <c>byte[]</c> write would reduce GC pressure.
+    /// Branch node size is deterministic: 1 (type) + 2 (bitmap) + N*32 (children)
+    /// + 1 (hasValue) + varint+value. Leaf/extension: 1 + varint+path + varint+value.
+    /// </remarks>
     public byte[] Encode()
     {
         using var ms = new MemoryStream();

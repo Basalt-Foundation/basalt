@@ -7,6 +7,12 @@ namespace Basalt.Storage.Trie;
 /// Reads fall through to the base store; writes stay in memory only.
 /// Used to create throwaway state forks for speculative block building.
 /// </summary>
+/// <remarks>
+/// <para><b>L-04:</b> <see cref="Delete"/> stores a <c>null</c> tombstone rather than
+/// removing the key, so the overlay dictionary grows with deletes. This is acceptable
+/// because overlays are intended to be short-lived (one block proposal cycle).
+/// Do not use for long-lived state that accumulates many deletes.</para>
+/// </remarks>
 internal sealed class OverlayTrieNodeStore : ITrieNodeStore
 {
     private readonly ITrieNodeStore _base;

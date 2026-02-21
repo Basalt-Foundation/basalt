@@ -4,7 +4,7 @@ namespace Basalt.Storage.Trie;
 /// Represents a path through the trie as a sequence of nibbles (4-bit values).
 /// Each byte in the key produces two nibbles.
 /// </summary>
-public readonly struct NibblePath
+public readonly struct NibblePath : IEquatable<NibblePath>
 {
     private readonly byte[] _data;
     private readonly int _offset;
@@ -196,4 +196,20 @@ public readonly struct NibblePath
         }
         return true;
     }
+
+    /// <inheritdoc/>
+    public override bool Equals(object? obj) => obj is NibblePath other && Equals(other);
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(_length);
+        for (int i = 0; i < _length; i++)
+            hash.Add(this[i]);
+        return hash.ToHashCode();
+    }
+
+    public static bool operator ==(NibblePath left, NibblePath right) => left.Equals(right);
+    public static bool operator !=(NibblePath left, NibblePath right) => !left.Equals(right);
 }
