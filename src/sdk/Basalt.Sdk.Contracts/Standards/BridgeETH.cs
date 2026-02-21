@@ -130,7 +130,7 @@ public partial class BridgeETH
     public void SetThreshold(uint newThreshold)
     {
         RequireAdmin();
-        Context.Require(newThreshold >= 1, "BRIDGE: threshold must be >= 1");
+        Context.Require(newThreshold >= 2, "BRIDGE: threshold must be >= 2");
         Context.Require(newThreshold <= _relayerCount.Get(), "BRIDGE: threshold exceeds relayer count");
 
         var old = _threshold.Get();
@@ -285,11 +285,15 @@ public partial class BridgeETH
 
         Context.Require(validCount >= threshold, "BRIDGE: insufficient valid signatures");
 
+        // C-9: Verify unlock amount does not exceed locked balance
+        var locked = _totalLocked.Get();
+        Context.Require(amount <= locked, "BRIDGE: amount exceeds locked balance");
+
         _processedWithdrawals.Set(nonceKey, true);
         Context.TransferNative(recipient, amount);
 
         // BRIDGE-02: Decrement total locked on unlock
-        _totalLocked.Set(_totalLocked.Get() - amount);
+        _totalLocked.Set(locked - amount);
 
         Context.Emit(new WithdrawalUnlockedEvent
         {
