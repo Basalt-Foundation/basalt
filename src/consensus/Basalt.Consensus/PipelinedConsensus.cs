@@ -313,6 +313,22 @@ public sealed class PipelinedConsensus
     /// </summary>
     public ViewChangeMessage? HandleViewChange(ViewChangeMessage viewChange)
     {
+        // M-06: Only accept view changes from known validators
+        if (!_validatorSet.IsValidator(viewChange.SenderId))
+        {
+            _logger.LogWarning("View change from non-validator {Sender}", viewChange.SenderId);
+            return null;
+        }
+
+        // H-01: Verify view change signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ViewChangePayloadSize];
+        WriteViewChangeSigningPayload(sigPayload, viewChange.ProposedView);
+        if (!_blsSigner.Verify(viewChange.VoterPublicKey.ToArray(), sigPayload, viewChange.VoterSignature.ToArray()))
+        {
+            _logger.LogWarning("Invalid view change signature from {Sender}", viewChange.SenderId);
+            return null;
+        }
+
         var votes = _viewChangeVotes.GetOrAdd(viewChange.ProposedView, _ => new HashSet<PeerId>());
         bool newAutoJoin = false;
 

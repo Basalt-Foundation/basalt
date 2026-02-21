@@ -1,6 +1,8 @@
+using System.Buffers.Binary;
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Network;
+using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -33,6 +35,29 @@ public class PipelinedConsensusTests
             Index = i,
         }).ToList();
         return new ValidatorSet(infos);
+    }
+
+    /// <summary>
+    /// Create a properly BLS-signed ViewChangeMessage.
+    /// Payload format: [0xFF || proposedView LE 8 bytes]
+    /// </summary>
+    private static ViewChangeMessage CreateSignedViewChange(
+        (PeerId Id, byte[] PrivateKey, PublicKey PublicKey) validator,
+        ulong proposedView, ulong currentView = 0)
+    {
+        Span<byte> payload = stackalloc byte[9];
+        payload[0] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], proposedView);
+        var signature = _blsSigner.Sign(validator.PrivateKey, payload);
+        var publicKey = _blsSigner.GetPublicKey(validator.PrivateKey);
+        return new ViewChangeMessage
+        {
+            SenderId = validator.Id,
+            CurrentView = currentView,
+            ProposedView = proposedView,
+            VoterSignature = new BlsSignature(signature),
+            VoterPublicKey = new BlsPublicKey(publicKey),
+        };
     }
 
     [Fact]
@@ -210,34 +235,14 @@ public class PipelinedConsensusTests
         pipeline.StartRound(2, [2], Blake3Hasher.Hash([2]));
         Assert.Equal(2, pipeline.ActiveRoundCount);
 
-        // Simulate quorum of view change messages
-        var viewChange = new ViewChangeMessage
-        {
-            SenderId = v0.Id,
-            CurrentView = 1,
-            ProposedView = 3,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        };
-
-        // Need quorum (3 for 4 validators) to trigger
-        pipeline.HandleViewChange(viewChange);
+        // Simulate quorum of view change messages (3 for 4 validators)
+        pipeline.HandleViewChange(CreateSignedViewChange(v0, 3, 1));
         Assert.Equal(2, pipeline.ActiveRoundCount); // Not yet quorum
 
-        pipeline.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = v1.Id, CurrentView = 1, ProposedView = 3,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        pipeline.HandleViewChange(CreateSignedViewChange(v1, 3, 1));
         Assert.Equal(2, pipeline.ActiveRoundCount); // Still not quorum
 
-        pipeline.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = v2.Id, CurrentView = 1, ProposedView = 3,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        pipeline.HandleViewChange(CreateSignedViewChange(v2, 3, 1));
 
         // Quorum reached — all in-flight rounds should be aborted
         Assert.Equal(0, pipeline.ActiveRoundCount);
@@ -257,29 +262,14 @@ public class PipelinedConsensusTests
         ulong? viewChangedTo = null;
         pipeline.OnViewChange += view => viewChangedTo = view;
 
-        // Quorum for 3 validators is 3 ((3*2/3)+1)
-        pipeline.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = v0.Id, CurrentView = 0, ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        // Quorum for 3 validators is 3 ((3*2/3)+1 = 3)
+        pipeline.HandleViewChange(CreateSignedViewChange(v0, 5, 0));
         Assert.Null(viewChangedTo);
 
-        pipeline.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = v1.Id, CurrentView = 0, ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        pipeline.HandleViewChange(CreateSignedViewChange(v1, 5, 0));
         Assert.Null(viewChangedTo);
 
-        pipeline.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = v2.Id, CurrentView = 0, ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        pipeline.HandleViewChange(CreateSignedViewChange(v2, 5, 0));
 
         Assert.NotNull(viewChangedTo);
         Assert.Equal((ulong)5, viewChangedTo);
@@ -304,18 +294,9 @@ public class PipelinedConsensusTests
         Assert.Equal(1, pipeline.ActiveRoundCount);
 
         // Trigger view change to view 3 (quorum = 3 for 4 validators)
+        var validators = new[] { v0, v1, v2, v3 };
         for (int i = 0; i < 3; i++)
-        {
-            var validators = new[] { v0, v1, v2, v3 };
-            pipeline.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = validators[i].Id,
-                CurrentView = 1,
-                ProposedView = 3,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            pipeline.HandleViewChange(CreateSignedViewChange(validators[i], 3, 1));
 
         // MinNextView should advance to 3
         Assert.Equal((ulong)3, pipeline.MinNextView);
@@ -325,8 +306,9 @@ public class PipelinedConsensusTests
         // New round for block 1 should use view 3 (not 1)
         // Find who is leader for view 3
         var leaderForView3 = validatorSet.GetLeader(3);
-        var leaderValidators = new[] { (v0.Id, v0.PrivateKey), (v1.Id, v1.PrivateKey), (v2.Id, v2.PrivateKey), (v3.Id, v3.PrivateKey) };
-        var (leaderId, leaderKey) = leaderValidators.First(v => v.Item1 == leaderForView3.PeerId);
+        var (leaderId, leaderKey) = validators
+            .Select(v => (v.Id, v.PrivateKey))
+            .First(v => v.Id == leaderForView3.PeerId);
 
         // Create a new PipelinedConsensus for the leader to verify the proposal has view 3
         var leaderPipeline = new PipelinedConsensus(validatorSet, leaderId, leaderKey,
@@ -334,17 +316,7 @@ public class PipelinedConsensusTests
 
         // Simulate the view change on the leader's pipeline too
         for (int i = 0; i < 3; i++)
-        {
-            var validators = new[] { v0, v1, v2, v3 };
-            leaderPipeline.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = validators[i].Id,
-                CurrentView = 1,
-                ProposedView = 3,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            leaderPipeline.HandleViewChange(CreateSignedViewChange(validators[i], 3, 1));
 
         var proposal = leaderPipeline.StartRound(1, [1], Blake3Hasher.Hash([1]));
         Assert.NotNull(proposal);
@@ -377,18 +349,9 @@ public class PipelinedConsensusTests
             new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
 
         // Trigger view change to view 2
+        var validators = new[] { v0, v1, v2, v3 };
         for (int i = 0; i < 3; i++)
-        {
-            var validators = new[] { v0, v1, v2, v3 };
-            pipeline.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = validators[i].Id,
-                CurrentView = 1,
-                ProposedView = 2,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            pipeline.HandleViewChange(CreateSignedViewChange(validators[i], 2, 1));
 
         // Start round for block 1 — view should be max(1, 2) = 2
         var proposal = pipeline.StartRound(1, [1], Blake3Hasher.Hash([1]));
@@ -416,14 +379,7 @@ public class PipelinedConsensusTests
         // Trigger view change (quorum = 3 for 3 validators: (3*2/3)+1 = 3)
         var validators = new[] { v0, v1, v2 };
         for (int i = 0; i < 3; i++)
-        {
-            pipeline.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = validators[i].Id, CurrentView = 0, ProposedView = 10,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            pipeline.HandleViewChange(CreateSignedViewChange(validators[i], 10, 0));
 
         Assert.Equal((ulong)10, pipeline.MinNextView);
 
@@ -484,5 +440,53 @@ public class PipelinedConsensusTests
         var state = pipeline.GetRoundState(1);
         Assert.NotNull(state);
         Assert.Equal(ConsensusState.Preparing, state.Value);
+    }
+
+    // --- H-01 / M-06: ViewChange signature and validator checks ---
+
+    [Fact]
+    public void PipelinedConsensus_ViewChange_FromNonValidator_Rejected()
+    {
+        var v0 = MakeValidator(0);
+        var v1 = MakeValidator(1);
+        var v2 = MakeValidator(2);
+        var v3 = MakeValidator(3);
+
+        var validatorSet = MakeValidatorSet(v0, v1, v2, v3);
+        var pipeline = new PipelinedConsensus(validatorSet, v0.Id, v0.PrivateKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        // Create a non-validator identity
+        var fake = MakeValidator(99);
+        var vc = CreateSignedViewChange(fake, 5, 0);
+
+        var result = pipeline.HandleViewChange(vc);
+        result.Should().BeNull("non-validator view change should be rejected");
+    }
+
+    [Fact]
+    public void PipelinedConsensus_ViewChange_InvalidSignature_Rejected()
+    {
+        var v0 = MakeValidator(0);
+        var v1 = MakeValidator(1);
+        var v2 = MakeValidator(2);
+        var v3 = MakeValidator(3);
+
+        var validatorSet = MakeValidatorSet(v0, v1, v2, v3);
+        var pipeline = new PipelinedConsensus(validatorSet, v0.Id, v0.PrivateKey,
+            new BlsSigner(), NullLogger<PipelinedConsensus>.Instance);
+
+        // Create a VC with a zero (invalid) BLS signature
+        var vc = new ViewChangeMessage
+        {
+            SenderId = v1.Id,
+            CurrentView = 0,
+            ProposedView = 5,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(v1.PrivateKey)),
+        };
+
+        var result = pipeline.HandleViewChange(vc);
+        result.Should().BeNull("invalid BLS signature should be rejected");
     }
 }

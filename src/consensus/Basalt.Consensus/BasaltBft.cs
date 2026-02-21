@@ -371,6 +371,22 @@ public sealed class BasaltBft
     /// </summary>
     public ViewChangeMessage? HandleViewChange(ViewChangeMessage viewChange)
     {
+        // M-06: Only accept view changes from known validators
+        if (!_validatorSet.IsValidator(viewChange.SenderId))
+        {
+            _logger.LogWarning("View change from non-validator {Sender}", viewChange.SenderId);
+            return null;
+        }
+
+        // H-01: Verify view change signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ViewChangePayloadSize];
+        WriteViewChangeSigningPayload(sigPayload, viewChange.ProposedView);
+        if (!_blsSigner.Verify(viewChange.VoterPublicKey.ToArray(), sigPayload, viewChange.VoterSignature.ToArray()))
+        {
+            _logger.LogWarning("Invalid view change signature from {Sender}", viewChange.SenderId);
+            return null;
+        }
+
         // Use a distinct key (Commit+1 via cast) to avoid collision with consensus phase votes
         var voteKey = (viewChange.ProposedView, (VotePhase)0xFF);
         var votes = _votes.GetOrAdd(voteKey, _ => new HashSet<PeerId>());

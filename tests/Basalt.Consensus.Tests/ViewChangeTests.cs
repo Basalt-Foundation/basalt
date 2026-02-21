@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Basalt.Consensus;
 using Basalt.Core;
 using Basalt.Crypto;
@@ -52,6 +53,113 @@ public class ViewChangeTests
             viewTimeout: viewTimeout);
     }
 
+    /// <summary>
+    /// Create a properly BLS-signed ViewChangeMessage for a validator.
+    /// Payload format: [0xFF || proposedView LE 8 bytes]
+    /// </summary>
+    private ViewChangeMessage CreateSignedViewChange(int validatorIndex, ulong proposedView, ulong currentView = 0)
+    {
+        var v = _validators[validatorIndex];
+        Span<byte> payload = stackalloc byte[9];
+        payload[0] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], proposedView);
+        var signature = _blsSigner.Sign(v.PrivateKey, payload);
+        var publicKey = _blsSigner.GetPublicKey(v.PrivateKey);
+        return new ViewChangeMessage
+        {
+            SenderId = v.PeerId,
+            CurrentView = currentView,
+            ProposedView = proposedView,
+            VoterSignature = new BlsSignature(signature),
+            VoterPublicKey = new BlsPublicKey(publicKey),
+        };
+    }
+
+    // --- H-01: ViewChange signature verification ---
+
+    [Fact]
+    public void HandleViewChange_InvalidSignature_Rejected()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        // Create a VC with an invalid (zero) BLS signature
+        var vc = new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 1,
+            ProposedView = 2,
+            VoterSignature = new BlsSignature(new byte[96]),
+            VoterPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_validators[1].PrivateKey)),
+        };
+
+        var result = bft.HandleViewChange(vc);
+        result.Should().BeNull("invalid BLS signature should be rejected");
+        bft.CurrentView.Should().Be(1, "view should not change on invalid signature");
+    }
+
+    [Fact]
+    public void HandleViewChange_WrongKeySignature_Rejected()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        // Sign with validator 2's key but claim to be validator 1
+        Span<byte> payload = stackalloc byte[9];
+        payload[0] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], 2UL);
+        var wrongSig = _blsSigner.Sign(_validators[2].PrivateKey, payload);
+
+        var vc = new ViewChangeMessage
+        {
+            SenderId = _validators[1].PeerId,
+            CurrentView = 1,
+            ProposedView = 2,
+            VoterSignature = new BlsSignature(wrongSig),
+            VoterPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_validators[1].PrivateKey)),
+        };
+
+        var result = bft.HandleViewChange(vc);
+        result.Should().BeNull("signature mismatch should be rejected");
+    }
+
+    // --- M-06: Non-validator rejection ---
+
+    [Fact]
+    public void HandleViewChange_FromNonValidator_Rejected()
+    {
+        var bft = CreateBft(0);
+        bft.StartRound(1);
+
+        // Create a non-validator identity
+        var fakePrivateKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(fakePrivateKey);
+        fakePrivateKey[0] &= 0x3F;
+        if (fakePrivateKey[0] == 0) fakePrivateKey[0] = 1;
+        var fakePublicKey = Ed25519Signer.GetPublicKey(fakePrivateKey);
+        var fakePeerId = PeerId.FromPublicKey(fakePublicKey);
+
+        // Properly sign it — but the sender is not a validator
+        Span<byte> payload = stackalloc byte[9];
+        payload[0] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], 2UL);
+        var sig = _blsSigner.Sign(fakePrivateKey, payload);
+        var blsPub = _blsSigner.GetPublicKey(fakePrivateKey);
+
+        var vc = new ViewChangeMessage
+        {
+            SenderId = fakePeerId,
+            CurrentView = 1,
+            ProposedView = 2,
+            VoterSignature = new BlsSignature(sig),
+            VoterPublicKey = new BlsPublicKey(blsPub),
+        };
+
+        var result = bft.HandleViewChange(vc);
+        result.Should().BeNull("non-validator view change should be rejected");
+        bft.CurrentView.Should().Be(1);
+    }
+
     // --- ViewChange quorum detection ---
 
     [Fact]
@@ -63,14 +171,7 @@ public class ViewChangeTests
         // With 4 validators, quorum = 3
         // Send 1 view change message. Auto-join does NOT fire (node hasn't timed out),
         // so total = 1, still below quorum of 3.
-        bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId,
-            CurrentView = 1,
-            ProposedView = 2,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        bft.HandleViewChange(CreateSignedViewChange(1, 2, 1));
 
         // View should NOT have changed (1 external vote, no auto-join = 1, below quorum of 3)
         bft.CurrentView.Should().Be(1);
@@ -84,16 +185,7 @@ public class ViewChangeTests
 
         // Send 3 view change messages (quorum for 4 validators)
         for (int i = 1; i <= 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 1,
-                ProposedView = 2,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 2, 1));
 
         bft.CurrentView.Should().Be(2);
     }
@@ -104,21 +196,12 @@ public class ViewChangeTests
         var bft = CreateBft(0);
         bft.StartRound(1);
 
-        // Move to Preparing state
+        // Move to Proposing state
         bft.State.Should().Be(ConsensusState.Proposing);
 
         // Trigger view change with quorum
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 1,
-                ProposedView = 5,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 5, 1));
 
         bft.State.Should().Be(ConsensusState.Proposing);
         bft.CurrentView.Should().Be(5);
@@ -135,16 +218,7 @@ public class ViewChangeTests
 
         // Quorum of view change messages
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 1,
-                ProposedView = 10,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 10, 1));
 
         viewChangedTo.Should().Be(10);
     }
@@ -157,16 +231,7 @@ public class ViewChangeTests
 
         // Same sender sends view change twice
         for (int repeat = 0; repeat < 3; repeat++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[1].PeerId,
-                CurrentView = 1,
-                ProposedView = 2,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(1, 2, 1));
 
         // Only 1 unique sender, below quorum of 3
         bft.CurrentView.Should().Be(1);
@@ -180,30 +245,12 @@ public class ViewChangeTests
 
         // First, advance to view 5
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 1,
-                ProposedView = 5,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 5, 1));
         bft.CurrentView.Should().Be(5);
 
         // Try to go back to view 3 (should not work)
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 5,
-                ProposedView = 3,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 3, 5));
 
         bft.CurrentView.Should().Be(5, "view should not go backwards");
     }
@@ -216,30 +263,12 @@ public class ViewChangeTests
 
         // View change to 2
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 1,
-                ProposedView = 2,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 2, 1));
         bft.CurrentView.Should().Be(2);
 
         // View change to 3
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = 2,
-                ProposedView = 3,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, 3, 2));
         bft.CurrentView.Should().Be(3);
     }
 
@@ -446,14 +475,7 @@ public class ViewChangeTests
 
         // Receive a VC from another validator for a higher view.
         // Since proposedView 5 > currentView 1 AND the node timed out, it auto-joins.
-        var autoJoin = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId,
-            CurrentView = 1,
-            ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var autoJoin = bft.HandleViewChange(CreateSignedViewChange(1, 5, 1));
 
         autoJoin.Should().NotBeNull("should return VC for broadcast when auto-joining after timeout");
         autoJoin!.SenderId.Should().Be(_validators[0].PeerId);
@@ -471,25 +493,11 @@ public class ViewChangeTests
         bft.CheckViewTimeout();
 
         // VC for current view (5) — should not auto-join (proposedView == currentView)
-        var result1 = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId,
-            CurrentView = 5,
-            ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var result1 = bft.HandleViewChange(CreateSignedViewChange(1, 5, 5));
         result1.Should().BeNull("should not auto-join for current view");
 
         // VC for past view (3) — should not auto-join
-        var result2 = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[2].PeerId,
-            CurrentView = 3,
-            ProposedView = 3,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var result2 = bft.HandleViewChange(CreateSignedViewChange(2, 3, 3));
         result2.Should().BeNull("should not auto-join for past view");
     }
 
@@ -504,25 +512,11 @@ public class ViewChangeTests
         bft.CheckViewTimeout();
 
         // First VC for view 5 — auto-join (returns message)
-        var first = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId,
-            CurrentView = 1,
-            ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var first = bft.HandleViewChange(CreateSignedViewChange(1, 5, 1));
         first.Should().NotBeNull();
 
         // Second VC for same view 5 — already auto-joined, should not return again
-        var second = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[2].PeerId,
-            CurrentView = 1,
-            ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var second = bft.HandleViewChange(CreateSignedViewChange(2, 5, 1));
         second.Should().BeNull("should not auto-join twice for the same view");
     }
 
@@ -554,18 +548,8 @@ public class ViewChangeTests
         bfts[3].CheckViewTimeout();
 
         // Group B (V1, V3) send VCs for view 22
-        var vcFromV1 = new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId, CurrentView = 21, ProposedView = 22,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        };
-        var vcFromV3 = new ViewChangeMessage
-        {
-            SenderId = _validators[3].PeerId, CurrentView = 21, ProposedView = 22,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        };
+        var vcFromV1 = CreateSignedViewChange(1, 22, 21);
+        var vcFromV3 = CreateSignedViewChange(3, 22, 21);
 
         // V0 receives V1's VC for 22 → auto-joins, returns broadcast VC
         var autoJoinV0 = bfts[0].HandleViewChange(vcFromV1);
@@ -604,14 +588,7 @@ public class ViewChangeTests
         var bft = CreateBft(0);
         bft.StartRound(1);
 
-        var result = bft.HandleViewChange(new ViewChangeMessage
-        {
-            SenderId = _validators[1].PeerId,
-            CurrentView = 1,
-            ProposedView = 5,
-            VoterSignature = new BlsSignature(new byte[96]),
-            VoterPublicKey = new BlsPublicKey(new byte[48]),
-        });
+        var result = bft.HandleViewChange(CreateSignedViewChange(1, 5, 1));
         result.Should().BeNull("should not auto-join when node hasn't timed out");
     }
 
@@ -675,16 +652,7 @@ public class ViewChangeTests
     private void AdvanceViewViaViewChange(BasaltBft bft, ulong targetView)
     {
         for (int i = 0; i < 3; i++)
-        {
-            bft.HandleViewChange(new ViewChangeMessage
-            {
-                SenderId = _validators[i].PeerId,
-                CurrentView = bft.CurrentView,
-                ProposedView = targetView,
-                VoterSignature = new BlsSignature(new byte[96]),
-                VoterPublicKey = new BlsPublicKey(new byte[48]),
-            });
-        }
+            bft.HandleViewChange(CreateSignedViewChange(i, targetView, bft.CurrentView));
     }
 
     [Fact]
@@ -915,10 +883,10 @@ public class ViewChangeTests
         for (int i = 0; i < 4; i++)
         {
             if (i == leaderIndex) continue;
-            var vote = bfts[i].HandleProposal(proposal!);
-            vote.Should().NotBeNull($"validator {i} should fast-forward and vote PREPARE");
+            var vt = bfts[i].HandleProposal(proposal!);
+            vt.Should().NotBeNull($"validator {i} should fast-forward and vote PREPARE");
             bfts[i].CurrentView.Should().Be(leaderView);
-            prepareVotes.Add(vote!);
+            prepareVotes.Add(vt!);
         }
 
         // Send PREPARE votes to leader only (leader-collected)
@@ -1028,15 +996,15 @@ public class ViewChangeTests
         for (int i = 0; i < 7; i++)
         {
             if (i == leaderIdx) continue;
-            var vote = bfts[i].HandleProposal(proposal!);
-            if (vote != null) prepareVotes.Add(vote);
+            var vt = bfts[i].HandleProposal(proposal!);
+            if (vt != null) prepareVotes.Add(vt);
         }
 
         prepareVotes.Should().HaveCount(6);
 
         // Send PREPARE votes to leader only
-        foreach (var vote in prepareVotes)
-            bfts[leaderIdx].HandleVote(vote);
+        foreach (var vt in prepareVotes)
+            bfts[leaderIdx].HandleVote(vt);
 
         aggregates.Should().Contain(a => a.Phase == VotePhase.Prepare);
         var prepareQC = aggregates.First(a => a.Phase == VotePhase.Prepare);
@@ -1053,8 +1021,8 @@ public class ViewChangeTests
 
         // Send PRE-COMMIT votes to leader
         aggregates.Clear();
-        foreach (var vote in preCommitVotes)
-            bfts[leaderIdx].HandleVote(vote);
+        foreach (var vt in preCommitVotes)
+            bfts[leaderIdx].HandleVote(vt);
 
         aggregates.Should().Contain(a => a.Phase == VotePhase.PreCommit);
         var preCommitQC = aggregates.First(a => a.Phase == VotePhase.PreCommit);
@@ -1075,8 +1043,8 @@ public class ViewChangeTests
         foreach (var bft in bfts)
             bft.OnBlockFinalized += (_, _, _) => finalized = true;
 
-        foreach (var vote in commitVotes)
-            bfts[leaderIdx].HandleVote(vote);
+        foreach (var vt in commitVotes)
+            bfts[leaderIdx].HandleVote(vt);
 
         aggregates.Should().Contain(a => a.Phase == VotePhase.Commit);
         var commitQC = aggregates.First(a => a.Phase == VotePhase.Commit);
