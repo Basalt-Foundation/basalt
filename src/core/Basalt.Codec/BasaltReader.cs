@@ -78,22 +78,33 @@ public ref struct BasaltReader
         return value;
     }
 
+    /// <summary>Maximum allowed byte array length to prevent oversized allocations from untrusted input.</summary>
+    public const int MaxBytesLength = 16 * 1024 * 1024; // 16 MB
+
     /// <summary>
     /// Read a variable-length encoded unsigned integer (LEB128).
+    /// Rejects non-minimal encodings (AUDIT M-04).
     /// </summary>
     public ulong ReadVarInt()
     {
         ulong result = 0;
         int shift = 0;
+        int byteCount = 0;
 
         while (true)
         {
             EnsureAvailable(1);
             var b = _buffer[_position++];
+            byteCount++;
             result |= (ulong)(b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
+            {
+                // Reject non-minimal encoding: multi-byte VarInt with trailing zero byte
+                if (byteCount > 1 && b == 0)
+                    throw new FormatException("Non-minimal VarInt encoding detected.");
                 return result;
+            }
 
             shift += 7;
             if (shift >= 64)
@@ -103,10 +114,15 @@ public ref struct BasaltReader
 
     /// <summary>
     /// Read a length-prefixed byte array.
+    /// Enforces MaxBytesLength to prevent oversized allocations (AUDIT H-01/H-03).
     /// </summary>
     public ReadOnlySpan<byte> ReadBytes()
     {
-        var length = (int)ReadVarInt();
+        var rawLength = ReadVarInt();
+        if (rawLength > (ulong)MaxBytesLength)
+            throw new InvalidOperationException(
+                $"Byte array length {rawLength} exceeds maximum of {MaxBytesLength} bytes.");
+        var length = (int)rawLength;
         EnsureAvailable(length);
         var data = _buffer.Slice(_position, length);
         _position += length;
@@ -126,17 +142,15 @@ public ref struct BasaltReader
 
     /// <summary>
     /// Read a length-prefixed UTF-8 string.
-    /// NET-M11: Enforces MaxStringLength to prevent oversized allocations.
+    /// Enforces MaxStringLength to prevent oversized allocations (AUDIT H-02).
     /// </summary>
     public string ReadString()
     {
-        var length = (int)ReadVarInt();
-
-        // NET-M11: Reject strings exceeding maximum allowed length
-        if (length > MaxStringLength)
+        var rawLength = ReadVarInt();
+        if (rawLength > (ulong)MaxStringLength)
             throw new InvalidOperationException(
-                $"String length {length} exceeds maximum of {MaxStringLength} bytes.");
-
+                $"String length {rawLength} exceeds maximum of {MaxStringLength} bytes.");
+        var length = (int)rawLength;
         EnsureAvailable(length);
         var data = _buffer.Slice(_position, length);
         _position += length;

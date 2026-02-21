@@ -112,17 +112,27 @@ public readonly struct BasaltResult
 
 /// <summary>
 /// Result type for operations that return a value or fail with an error.
+/// Accessing <see cref="Value"/> on a failed result throws <see cref="InvalidOperationException"/>.
 /// </summary>
 public readonly struct BasaltResult<T>
 {
-    public T? Value { get; }
+    private readonly T? _value;
+
+    /// <summary>
+    /// The result value. Throws if <see cref="IsSuccess"/> is false.
+    /// </summary>
+    public T Value => IsSuccess
+        ? _value!
+        : throw new InvalidOperationException(
+            $"Cannot access Value on a failed result. Error: {ErrorCode} - {Message}");
+
     public BasaltErrorCode ErrorCode { get; }
     public string? Message { get; }
     public bool IsSuccess => ErrorCode == BasaltErrorCode.Success;
 
     private BasaltResult(T? value, BasaltErrorCode errorCode, string? message)
     {
-        Value = value;
+        _value = value;
         ErrorCode = errorCode;
         Message = message;
     }
@@ -130,7 +140,7 @@ public readonly struct BasaltResult<T>
     public static BasaltResult<T> Ok(T value) => new(value, BasaltErrorCode.Success, null);
     public static BasaltResult<T> Error(BasaltErrorCode code, string? message = null) => new(default, code, message);
 
-    public override string ToString() => IsSuccess ? $"Ok({Value})" : $"Error({ErrorCode}): {Message}";
+    public override string ToString() => IsSuccess ? $"Ok({_value})" : $"Error({ErrorCode}): {Message}";
 }
 
 /// <summary>

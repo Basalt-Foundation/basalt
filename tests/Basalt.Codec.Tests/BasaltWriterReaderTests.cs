@@ -1168,4 +1168,78 @@ public class BasaltWriterReaderTests
             return size;
         }
     }
+
+    // ===== AUDIT H-01/H-03: ReadBytes max length validation =====
+
+    [Fact]
+    public void ReadBytes_ExceedsMaxLength_Throws()
+    {
+        // Craft a VarInt encoding a length greater than MaxBytesLength
+        var buffer = new byte[10];
+        var writer = new BasaltWriter(buffer);
+        writer.WriteVarInt((ulong)BasaltReader.MaxBytesLength + 1);
+        var data = buffer.AsSpan(0, writer.Position).ToArray();
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            var reader = new BasaltReader(data);
+            _ = reader.ReadBytes();
+        });
+    }
+
+    // ===== AUDIT M-04: Non-minimal VarInt rejection =====
+
+    [Fact]
+    public void ReadVarInt_NonMinimalEncoding_Throws()
+    {
+        // Encode value 0 as two bytes: [0x80, 0x00] instead of minimal [0x00]
+        Assert.Throws<FormatException>(() =>
+        {
+            var reader = new BasaltReader(new byte[] { 0x80, 0x00 });
+            reader.ReadVarInt();
+        });
+    }
+
+    [Fact]
+    public void ReadVarInt_MinimalZero_Succeeds()
+    {
+        var reader = new BasaltReader(new byte[] { 0x00 });
+        reader.ReadVarInt().Should().Be(0UL);
+    }
+
+    [Fact]
+    public void ReadVarInt_MinimalNonZero_Succeeds()
+    {
+        // Value 128 = [0x80, 0x01] - this IS minimal because final byte is 0x01
+        var reader = new BasaltReader(new byte[] { 0x80, 0x01 });
+        reader.ReadVarInt().Should().Be(128UL);
+    }
+
+    // ===== AUDIT M-12: WriteString null check =====
+
+    [Fact]
+    public void WriteString_Null_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            var writer = new BasaltWriter(new byte[64]);
+            writer.WriteString(null!);
+        });
+    }
+
+    // ===== AUDIT M-14: BasaltResult<T>.Value throws when not success =====
+
+    [Fact]
+    public void BasaltResult_Value_ThrowsWhenNotSuccess()
+    {
+        var result = BasaltResult<int>.Error(BasaltErrorCode.InternalError, "test");
+        var act = () => { var _ = result.Value; };
+        act.Should().Throw<InvalidOperationException>().WithMessage("*Cannot access Value*");
+    }
+
+    [Fact]
+    public void BasaltResult_Value_ReturnsValueWhenSuccess()
+    {
+        var result = BasaltResult<int>.Ok(42);
+        result.Value.Should().Be(42);
+    }
 }
