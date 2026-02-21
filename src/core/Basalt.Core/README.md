@@ -54,7 +54,7 @@ balance.WriteTo(destination, isBigEndian: false);
 ulong small = (ulong)balance;                              // Explicit, throws on overflow
 ```
 
-Supports full arithmetic (`+`, `-`, `*`, `/`, `%`), bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), and comparison operators. Implicit conversions from `ulong`, `uint`, and `int`. Explicit conversion to `ulong` (throws `OverflowException` if value exceeds `ulong` range). Static `DivRem` method for combined quotient/remainder.
+Supports full arithmetic (`+`, `-`, `*`, `/`, `%`), bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), and comparison operators. Implicit conversions from `ulong` and `uint`. Explicit conversion from `int` and to `ulong` (throws `OverflowException` if value exceeds range). `CheckedAdd`/`CheckedSub` for overflow-safe arithmetic. `TryAdd(a, b, out result)` returns false on overflow. Static `DivRem` for combined quotient/remainder. `TryParse(string?, out UInt256)` for safe parsing from hex or decimal strings.
 
 Static fields: `UInt256.Zero`, `UInt256.One`, `UInt256.MaxValue`.
 
@@ -186,11 +186,17 @@ Interface for ZK compliance proof verification, allowing the execution layer to 
 ```csharp
 public interface IComplianceVerifier
 {
-    ComplianceCheckResult VerifyProofs(ComplianceProof[] proofs,
+    ComplianceCheckOutcome VerifyProofs(ComplianceProof[] proofs,
         ProofRequirement[] requirements, long blockTimestamp);
+    ProofRequirement[] GetRequirements(Address contractAddress);
+    ComplianceCheckOutcome CheckTransferCompliance(
+        byte[] tokenAddress, byte[] sender, byte[] receiver,
+        ulong amount, long currentTimestamp, ulong receiverCurrentBalance);
     void ResetNullifiers();
 }
 ```
+
+**ComplianceCheckOutcome**: `readonly struct` with `Allowed`, `ErrorCode`, `Reason`. Factory: `ComplianceCheckOutcome.Success`, `ComplianceCheckOutcome.Fail(code, reason)`.
 
 ### BasaltErrorCode
 

@@ -1,6 +1,6 @@
 # Basalt.Api.Tests
 
-Unit tests for the Basalt API layer: GraphQL queries, GraphQL mutations, and REST DTO mapping. **36 tests.**
+Unit tests for the Basalt API layer: GraphQL queries, GraphQL mutations, and REST DTO mapping. **52 tests.**
 
 ## Test Coverage
 
@@ -10,7 +10,7 @@ Unit tests for the Basalt API layer: GraphQL queries, GraphQL mutations, and RES
 | REST DTOs | 11 | DTO mapping and validation for status, block, transaction, account, and validator response types |
 | GraphQL Mutations | 7 | Mutation resolvers for sending transactions, deploying contracts, faucet requests |
 
-**Total: 36 tests**
+**Total: 52 tests**
 
 ## Test Files
 

@@ -1,6 +1,6 @@
 # Basalt.Compliance.Tests
 
-Unit tests for the Basalt compliance module: identity registry, sanctions list, compliance engine, and KYC providers. **43 tests.**
+Unit tests for the Basalt compliance module: identity registry, sanctions list, compliance engine, and KYC providers. **67 tests.**
 
 ## Test Coverage
 
@@ -11,7 +11,7 @@ Unit tests for the Basalt compliance module: identity registry, sanctions list, 
 | MockKycProvider | 6 | Auto-approval, basic/enhanced/institutional attestation issuance, revocation, custom claim hash |
 | SanctionsList | 5 | Add/remove sanctions, query status, independent address tracking, audit trail |
 
-**Total: 43 tests**
+**Total: 67 tests**
 
 ## Test Files
 

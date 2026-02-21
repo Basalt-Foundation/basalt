@@ -1,6 +1,6 @@
 # Basalt.Node.Tests
 
-Unit tests for the Basalt node: configuration, message handling, validator setup, and slashing integration. **34 tests.**
+Unit tests for the Basalt node: configuration, message handling, validator setup, slashing integration, and data directory validation. **48 tests.**
 
 ## Test Coverage
 
@@ -11,7 +11,7 @@ Unit tests for the Basalt node: configuration, message handling, validator setup
 | NodeConfiguration | 5 | Default values, IsConsensusMode (requires both peers and validator index), property initialization |
 | SlashingIntegration | 5 | Double-sign slashing (100% penalty), inactivity slashing (5% penalty), staking state registration, active validator queries, weighted leader selection |
 
-**Total: 34 tests**
+**Total: 48 tests**
 
 ## Test Files
 

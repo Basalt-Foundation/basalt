@@ -1,6 +1,6 @@
 # Basalt.Execution.Tests
 
-Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, sandboxed contract runtime, and staking transactions. **169 tests.**
+Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, sandboxed contract runtime, and staking transactions. **207 tests.**
 
 ## Test Coverage
 
@@ -16,7 +16,7 @@ Unit tests for Basalt transaction processing: validation, execution, mempool, ch
 | Transaction | 5 | Transaction creation, signing, hash computation, serialization roundtrip |
 | FaucetDiagnostic | Various | Faucet endpoint and SDK contract tests |
 
-**Total: 169 tests**
+**Total: 207 tests**
 
 ## Test Files
 

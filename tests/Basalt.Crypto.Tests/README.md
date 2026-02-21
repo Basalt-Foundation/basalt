@@ -1,6 +1,6 @@
 # Basalt.Crypto.Tests
 
-Unit tests for Basalt cryptographic operations: BLAKE3, Ed25519, BLS12-381, and Keccak-256. **31 tests.**
+Unit tests for Basalt cryptographic operations: BLAKE3, Ed25519, BLS12-381, and Keccak-256. **48 tests.**
 
 ## Test Coverage
 
@@ -11,7 +11,7 @@ Unit tests for Basalt cryptographic operations: BLAKE3, Ed25519, BLS12-381, and 
 | BLAKE3 | 6 | Deterministic output, different inputs produce different hashes, `HashPair`, incremental hashing |
 | Keccak-256 | 4 | Hash output correctness, address derivation from public keys |
 
-**Total: 31 tests**
+**Total: 48 tests**
 
 ## Test Files
 

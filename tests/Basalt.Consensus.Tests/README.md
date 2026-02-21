@@ -1,6 +1,6 @@
 # Basalt.Consensus.Tests
 
-Unit tests for Basalt consensus: BFT state machine, validator set, staking, slashing, view changes, pipelined consensus, weighted leader selection, and epoch management. **154 tests.**
+Unit tests for Basalt consensus: BFT state machine, validator set, staking, slashing, view changes, pipelined consensus, weighted leader selection, and epoch management. **170 tests.**
 
 ## Test Coverage
 
@@ -16,7 +16,7 @@ Unit tests for Basalt consensus: BFT state machine, validator set, staking, slas
 | BasaltBft | 7 | Proposal creation, vote handling across PREPARE/PRE-COMMIT/COMMIT phases, block finalization, view change timeout |
 | BLS Aggregation | 24 | BLS signature aggregation, aggregate verification, bitmap encoding |
 
-**Total: 154 tests**
+**Total: 170 tests**
 
 ## Test Files
 

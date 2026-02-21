@@ -1,6 +1,6 @@
 # Basalt.Confidentiality.Tests
 
-Unit tests for Basalt confidentiality features: Pedersen commitments, Groth16 zero-knowledge proofs, confidential transfers, private channels, selective disclosure, channel encryption, and BLS12-381 pairing engine. **185 tests.**
+Unit tests for Basalt confidentiality features: Pedersen commitments, Groth16 zero-knowledge proofs, confidential transfers, private channels, selective disclosure, channel encryption, and BLS12-381 pairing engine. **240 tests.**
 
 ## Test Coverage
 
@@ -14,7 +14,7 @@ Unit tests for Basalt confidentiality features: Pedersen commitments, Groth16 ze
 | PedersenCommitment | 23 | Commit/open, different blinding factors, homomorphic addition/subtraction, H generator properties, zero value, argument validation, determinism, multi-commitment addition |
 | PrivateChannel | 23 | X25519 key exchange, channel ID derivation (deterministic, order-independent), message create/verify/decrypt, bidirectional communication, nonce management, status transitions, wrong signature/channel/secret detection, empty/large payloads |
 
-**Total: 185 tests**
+**Total: 240 tests**
 
 ## Test Files
 

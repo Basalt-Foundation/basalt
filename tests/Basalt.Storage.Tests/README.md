@@ -1,6 +1,6 @@
 # Basalt.Storage.Tests
 
-Unit tests for Basalt storage: Merkle Patricia Trie, state databases, nibble path encoding, and trie node serialization. **175 tests.**
+Unit tests for Basalt storage: Merkle Patricia Trie, state databases, nibble path encoding, and trie node serialization. **235 tests.**
 
 ## Test Coverage
 
@@ -12,7 +12,7 @@ Unit tests for Basalt storage: Merkle Patricia Trie, state databases, nibble pat
 | TrieNode | 27 | Leaf/branch/extension/empty node creation, encode/decode roundtrip, hash computation, dirty flag tracking, hash caching, cross-type hashing |
 | InMemoryStateDb | 25 | In-memory state database: account CRUD, storage operations, state root computation, deterministic roots, account type preservation |
 
-**Total: 175 tests**
+**Total: 235 tests**
 
 ## Test Files
 

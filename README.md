@@ -59,7 +59,7 @@ dotnet build
 dotnet test
 ```
 
-1,998 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, and end-to-end integration.
+2,327 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -141,14 +141,14 @@ Basalt.sln                              (41 C# projects)
 |   |   +-- Basalt.Sdk.Wallet/         # Wallet SDK (HD wallets, tx builders, RPC client, block subscriptions)
 |   |   +-- Basalt.Sdk.Testing/        # BasaltTestHost in-process emulator
 |   +-- generators/
-|   |   +-- Basalt.Generators.Codec/   # Codec source generator (planned)
-|   |   +-- Basalt.Generators.Json/    # JSON source generator (planned)
-|   |   +-- Basalt.Generators.Contracts/ # ABI dispatch source generator (planned)
+|   |   +-- Basalt.Generators.Codec/   # Codec source generator (IBasaltSerializable dispatch)
+|   |   +-- Basalt.Generators.Json/    # JSON source generator (JsonSerializerContext)
+|   |   +-- Basalt.Generators.Contracts/ # ABI dispatch source generator (IDispatchable, FNV-1a selectors)
 |   +-- explorer/
 |   |   +-- Basalt.Explorer/           # Blazor WASM block explorer (responsive, dark/light theme, WebSocket live updates)
 |   +-- node/
 |       +-- Basalt.Node/               # Composition root, single binary
-+-- tests/                             # 16 test projects, 1,998 tests
++-- tests/                             # 16 test projects, 2,327 tests
 |   +-- Basalt.Core.Tests/
 |   +-- Basalt.Crypto.Tests/
 |   +-- Basalt.Codec.Tests/

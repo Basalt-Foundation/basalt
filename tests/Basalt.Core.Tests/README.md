@@ -1,6 +1,6 @@
 # Basalt.Core.Tests
 
-Unit tests for the Basalt core types: `Hash256`, `Address`, `UInt256`, and codec roundtrip serialization. **44 tests.**
+Unit tests for the Basalt core types: `Hash256`, `Address`, `UInt256`, and codec roundtrip serialization. **122 tests.**
 
 ## Test Coverage
 
@@ -11,7 +11,7 @@ Unit tests for the Basalt core types: `Hash256`, `Address`, `UInt256`, and codec
 | CodecRoundtrip | 10 | Serialization roundtrips for core types (Transaction, Block, BlockHeader, AccountState, Receipt) via BasaltWriter/Reader |
 | Address | 5 | Construction, hex roundtrip, equality, zero detection, `IsSystemContract` |
 
-**Total: 44 tests**
+**Total: 122 tests**
 
 ## Test Files
 

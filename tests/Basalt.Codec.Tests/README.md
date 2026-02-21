@@ -1,6 +1,6 @@
 # Basalt.Codec.Tests
 
-Unit tests for the Basalt binary codec: BasaltWriter/BasaltReader roundtrips for all primitive types, core domain types, VarInt encoding, and the BasaltSerializer utility. **74 tests.**
+Unit tests for the Basalt binary codec: BasaltWriter/BasaltReader roundtrips for all primitive types, core domain types, VarInt encoding, and the BasaltSerializer utility. **106 tests.**
 
 ## Test Coverage
 
@@ -18,7 +18,7 @@ Unit tests for the Basalt binary codec: BasaltWriter/BasaltReader roundtrips for
 | Edge cases | 6 | Empty raw bytes, exact-fit buffer, VarInt length prefix tracking, UInt256 large values, string/bytes position includes length prefix |
 | BasaltSerializer | 1 | IBasaltSerializable serialize/deserialize roundtrip |
 
-**Total: 74 tests**
+**Total: 106 tests**
 
 ## Test Files
 

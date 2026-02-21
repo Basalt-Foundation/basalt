@@ -1,6 +1,6 @@
 # Basalt.Bridge.Tests
 
-Unit tests for the Basalt EVM bridge: deposit/withdrawal lifecycle, multisig relayer, Merkle proof verification, and bridge message serialization. **127 tests.**
+Unit tests for the Basalt EVM bridge: deposit/withdrawal lifecycle, multisig relayer, Merkle proof verification, and bridge message serialization. **148 tests.**
 
 ## Test Coverage
 
@@ -11,7 +11,7 @@ Unit tests for the Basalt EVM bridge: deposit/withdrawal lifecycle, multisig rel
 | BridgeProofVerifier | 31 | Merkle root computation, proof construction, proof verification, single-leaf and multi-leaf trees, tampered proof detection, large tree proofs, edge cases |
 | BridgeMessages | 20 | Bridge message serialization/deserialization: deposit, withdrawal, confirmation, finalization message types, field validation |
 
-**Total: 127 tests**
+**Total: 148 tests**
 
 ## Test Files
 

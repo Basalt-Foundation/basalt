@@ -1,6 +1,6 @@
 # Basalt.Sdk.Tests
 
-Unit tests for the Basalt smart contract SDK: storage primitives, contract context, BST-20/BST-721/BST-1155/BST-DID reference implementations, cross-contract calls, and the test host. **197 tests.**
+Unit tests for the Basalt smart contract SDK: storage primitives, contract context, BST-20/BST-721/BST-1155/BST-3525/BST-4626/BST-VC/BST-DID reference implementations, system contracts, cross-contract calls, and the test host. **574 tests.**
 
 ## Test Coverage
 
@@ -19,7 +19,7 @@ Unit tests for the Basalt smart contract SDK: storage primitives, contract conte
 | TestHost | 8 | BasaltTestHost: deploy, call, view, expect revert, snapshots, block advancement, event capture |
 | CrossContractCall | 5 | Cross-contract call mechanism: invocation, return value forwarding, reentrancy checks |
 
-**Total: 197 tests**
+**Total: 574 tests**
 
 ## Test Files
 
