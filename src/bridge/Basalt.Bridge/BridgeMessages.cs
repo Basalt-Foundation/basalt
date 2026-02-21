@@ -126,18 +126,54 @@ public sealed class BridgeWithdrawal
     /// <summary>State root of the source chain at the deposit block.</summary>
     public byte[] StateRoot { get; init; } = [];
 
-    /// <summary>Relayer signatures (multisig).</summary>
-    public List<RelayerSignature> Signatures { get; init; } = [];
+    private readonly List<RelayerSignature> _signatures = [];
+
+    /// <summary>
+    /// LOW-02: Relayer signatures exposed as read-only view. Use <see cref="AddSignature"/> to add.
+    /// The init setter accepts a list for backward compatibility with object initializers.
+    /// </summary>
+    public IReadOnlyList<RelayerSignature> Signatures
+    {
+        get => _signatures;
+        init => _signatures = [..value];
+    }
+
+    /// <summary>LOW-02: Add a validated relayer signature.</summary>
+    public void AddSignature(RelayerSignature signature)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        signature.Validate();
+        _signatures.Add(signature);
+    }
 }
 
 /// <summary>
 /// A relayer's signature attesting to a cross-chain message.
+/// LOW-01: <see cref="Validate"/> checks Ed25519 key (32 bytes) and signature (64 bytes) lengths.
 /// </summary>
 public sealed class RelayerSignature
 {
-    /// <summary>Relayer's public key.</summary>
+    /// <summary>Ed25519 public key size in bytes.</summary>
+    public const int PublicKeySize = 32;
+
+    /// <summary>Ed25519 signature size in bytes.</summary>
+    public const int SignatureSize = 64;
+
+    /// <summary>Relayer's public key (32 bytes Ed25519).</summary>
     public byte[] PublicKey { get; init; } = [];
 
-    /// <summary>Ed25519 signature over the message hash.</summary>
+    /// <summary>Ed25519 signature over the message hash (64 bytes).</summary>
     public byte[] Signature { get; init; } = [];
+
+    /// <summary>
+    /// LOW-01: Validate that PublicKey and Signature have the correct Ed25519 lengths.
+    /// </summary>
+    /// <exception cref="ArgumentException">If lengths are incorrect.</exception>
+    public void Validate()
+    {
+        if (PublicKey.Length != PublicKeySize)
+            throw new ArgumentException($"PublicKey must be {PublicKeySize} bytes, got {PublicKey.Length}.");
+        if (Signature.Length != SignatureSize)
+            throw new ArgumentException($"Signature must be {SignatureSize} bytes, got {Signature.Length}.");
+    }
 }

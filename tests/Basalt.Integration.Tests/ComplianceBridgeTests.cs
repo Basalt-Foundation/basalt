@@ -119,8 +119,8 @@ public class ComplianceBridgeTests
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         var sig0 = MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray());
         var sig2 = MultisigRelayer.Sign(msgHash, k2.PrivateKey, k2.PublicKey.ToArray());
-        withdrawal.Signatures.Add(sig0);
-        withdrawal.Signatures.Add(sig2);
+        withdrawal.AddSignature(sig0);
+        withdrawal.AddSignature(sig2);
 
         bridgeState.Unlock(withdrawal, relayer).Should().BeTrue();
         bridgeState.IsWithdrawalProcessed(0).Should().BeTrue();

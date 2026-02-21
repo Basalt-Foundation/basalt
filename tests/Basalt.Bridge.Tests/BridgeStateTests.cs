@@ -330,7 +330,7 @@ public class BridgeStateTests
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         var sig = MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray());
-        withdrawal.Signatures.Add(sig);
+        withdrawal.AddSignature(sig);
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
     }
@@ -351,7 +351,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse(); // Replay blocked
@@ -375,7 +375,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray()));
 
         // Only 1 of 2 required signatures
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
@@ -396,7 +396,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        withdrawal.Signatures.Add(new RelayerSignature
+        withdrawal.AddSignature(new RelayerSignature
         {
             PublicKey = pubKey.ToArray(),
             Signature = new byte[64], // invalid zeros
@@ -423,7 +423,7 @@ public class BridgeStateTests
             };
 
             var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-            withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+            withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
             _bridge.Unlock(withdrawal, relayer).Should().BeTrue($"withdrawal nonce {i} should succeed");
         }
@@ -458,7 +458,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
     }
@@ -484,7 +484,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
     }
@@ -509,7 +509,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
         _bridge.GetLockedBalance().Should().Be(2000); // 5000 - 3000
@@ -536,7 +536,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer, token).Should().BeTrue();
         _bridge.GetLockedBalance(token).Should().Be(6000); // 10000 - 4000
@@ -561,7 +561,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer);
         _bridge.IsWithdrawalProcessed(0).Should().BeTrue();
@@ -757,7 +757,7 @@ public class BridgeStateTests
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Pause();
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse();

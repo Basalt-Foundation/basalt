@@ -215,14 +215,23 @@ public sealed class BridgeState
         }
     }
 
-    /// <summary>Get all pending deposits awaiting relay.</summary>
+    /// <summary>
+    /// Get all pending deposits awaiting relay.
+    /// LOW-04: Uses pre-sized list and manual iteration to avoid LINQ allocations.
+    /// </summary>
     public IReadOnlyList<BridgeDeposit> GetPendingDeposits()
     {
         lock (_lock)
-            return _deposits.Values
-                .Where(d => d.Status == BridgeTransferStatus.Pending || d.Status == BridgeTransferStatus.Confirmed)
-                .OrderBy(d => d.Nonce)
-                .ToList();
+        {
+            var result = new List<BridgeDeposit>(_deposits.Count);
+            foreach (var deposit in _deposits.Values)
+            {
+                if (deposit.Status is BridgeTransferStatus.Pending or BridgeTransferStatus.Confirmed)
+                    result.Add(deposit);
+            }
+            result.Sort((a, b) => a.Nonce.CompareTo(b.Nonce));
+            return result;
+        }
     }
 
     /// <summary>Check if a withdrawal has already been processed.</summary>
