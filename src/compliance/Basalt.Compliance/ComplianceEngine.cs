@@ -60,6 +60,33 @@ public sealed class ComplianceEngine : IComplianceVerifier
     }
 
     /// <summary>
+    /// Traditional compliance check delegated from execution layer (H-02).
+    /// Maps ComplianceCheckResult to ComplianceCheckOutcome for the Core interface.
+    /// </summary>
+    public ComplianceCheckOutcome CheckTransferCompliance(
+        byte[] tokenAddress, byte[] sender, byte[] receiver,
+        ulong amount, long currentTimestamp, ulong receiverCurrentBalance)
+    {
+        var result = CheckTransfer(tokenAddress, sender, receiver, amount, currentTimestamp, receiverCurrentBalance);
+        if (result.Allowed)
+            return ComplianceCheckOutcome.Success;
+
+        var errorCode = result.ErrorCode switch
+        {
+            ComplianceErrorCode.KycMissing => BasaltErrorCode.KycRequired,
+            ComplianceErrorCode.Sanctioned => BasaltErrorCode.SanctionedAddress,
+            ComplianceErrorCode.GeoRestricted => BasaltErrorCode.GeoRestricted,
+            ComplianceErrorCode.HoldingLimit => BasaltErrorCode.HoldingLimitExceeded,
+            ComplianceErrorCode.Lockup => BasaltErrorCode.LockupPeriodActive,
+            ComplianceErrorCode.Paused => BasaltErrorCode.TransferRestricted,
+            ComplianceErrorCode.TravelRuleMissing => BasaltErrorCode.TransferRestricted,
+            _ => BasaltErrorCode.TransferRestricted,
+        };
+
+        return ComplianceCheckOutcome.Fail(errorCode, result.Reason);
+    }
+
+    /// <summary>
     /// Get the proof requirements for a given contract/token address.
     /// Returns the RequiredProofs from the compliance policy, or empty if no policy.
     /// </summary>

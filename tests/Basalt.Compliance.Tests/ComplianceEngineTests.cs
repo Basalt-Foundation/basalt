@@ -1,4 +1,5 @@
 using Basalt.Compliance;
+using Basalt.Core;
 using FluentAssertions;
 using Xunit;
 
@@ -365,5 +366,58 @@ public class ComplianceEngineTests
     public void GetPolicy_Returns_Null_For_Unknown_Token()
     {
         _engine.GetPolicy(Addr(99)).Should().BeNull();
+    }
+
+    // --- CheckTransferCompliance (H-02: IComplianceVerifier integration) ---
+
+    [Fact]
+    public void CheckTransferCompliance_Returns_Success_Without_Policy()
+    {
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Blocks_Sanctioned_Sender()
+    {
+        _sanctions.AddSanction(_sender, "OFAC");
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            SanctionsCheckEnabled = true,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeFalse();
+        outcome.ErrorCode.Should().Be(BasaltErrorCode.SanctionedAddress);
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Blocks_Missing_KYC()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            RequiredSenderKycLevel = KycLevel.Basic,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeFalse();
+        outcome.ErrorCode.Should().Be(BasaltErrorCode.KycRequired);
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Allows_With_Valid_KYC()
+    {
+        KycBoth();
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            RequiredSenderKycLevel = KycLevel.Basic,
+            RequiredReceiverKycLevel = KycLevel.Basic,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeTrue();
     }
 }

@@ -42,6 +42,15 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     public ProofRequirement[] GetRequirements(byte[] contractAddress) => [];
 
     /// <summary>
+    /// ZK verifier does not perform traditional compliance checks.
+    /// Use ComplianceEngine for KYC/sanctions/geo checks.
+    /// </summary>
+    public ComplianceCheckOutcome CheckTransferCompliance(
+        byte[] tokenAddress, byte[] sender, byte[] receiver,
+        ulong amount, long currentTimestamp, ulong receiverCurrentBalance)
+        => ComplianceCheckOutcome.Success;
+
+    /// <summary>
     /// Verify all compliance proofs against the given requirements.
     /// Each requirement must be satisfied by exactly one proof matching its schema ID.
     /// </summary>
