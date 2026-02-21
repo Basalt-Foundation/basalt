@@ -91,6 +91,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-09: Atomic sync guard — use int + Interlocked.CompareExchange instead of bool
     private int _isSyncing;
     private TaskCompletionSource<bool>? _syncBatchTcs;
+    private ulong _syncBatchSeqNo;
     private const int SyncBatchSize = 50;
 
     // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
@@ -98,6 +99,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     // N-14: Cap block request count to prevent resource exhaustion
     private const int MaxBlockRequestCount = 100;
+
+    // MED-03: Per-peer sync request rate limiting (max 1 per second per peer)
+    private readonly ConcurrentDictionary<PeerId, long> _lastSyncRequestTime = new();
 
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
@@ -176,7 +180,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         };
 
         // 8. Start consensus loop
-        _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _chainParams.BlockTimeMs;
+        Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _chainParams.BlockTimeMs);
         _consensusLoop = RunConsensusLoop(_cts.Token);
 
         // 9. Start peer reconnection loop
@@ -231,13 +235,28 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _localPeerId = PeerId.FromPublicKey(_publicKey);
     }
 
-    // N-07: Reject trivially weak validator keys (all zeros, all same byte, sequential)
+    // N-07: Reject trivially weak validator keys (all zeros, all same byte, sequential, known-weak)
     private static void ValidateKeyEntropy(byte[] key, string keyName)
     {
         if (key.All(b => b == 0))
             throw new InvalidOperationException($"{keyName} is all zeros — this is not a valid key");
+        if (key.All(b => b == 0xFF))
+            throw new InvalidOperationException($"{keyName} is all 0xFF — this is not a valid key");
         if (key.Distinct().Count() <= 2)
             throw new InvalidOperationException($"{keyName} has very low entropy (<=2 distinct bytes) — generate a proper key");
+
+        // Reject sequential patterns (0x00,0x01,0x02,... or 0x01,0x00,0x00,...)
+        bool isSequential = true;
+        for (int i = 0; i < key.Length; i++)
+        {
+            if (key[i] != (byte)(i % 256))
+            {
+                isSequential = false;
+                break;
+            }
+        }
+        if (isSequential)
+            throw new InvalidOperationException($"{keyName} is a sequential pattern — generate a proper key");
     }
 
     private void SetupValidatorSet()
@@ -315,7 +334,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         // Wire transport → message processing
         _transport.OnMessageReceived += HandleRawMessage;
-        _transport.OnPeerConnected += HandleNewConnection;
+        _transport.OnPeerConnected += conn => _ = HandleNewConnectionAsync(conn);
         _transport.OnPeerDisconnected += HandlePeerDisconnected;
 
         // NET-C04: Wire peer ban → transport disconnect
@@ -472,7 +491,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
                 _ = _wsHandler.BroadcastNewBlock(block);
 
-                _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
                 // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
                 // This preserves recent evidence for double-sign detection while preventing unbounded growth.
@@ -577,7 +596,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         // Block time pacing: don't propose until BlockTimeMs has elapsed since last finalization
-        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastBlockFinalizedAtMs;
+        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
             return;
 
@@ -603,7 +622,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void TryProposeBlockPipelined()
     {
         // Block time pacing
-        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastBlockFinalizedAtMs;
+        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
             return;
 
@@ -645,7 +664,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _gossip!.SendToPeer(leader.PeerId, vote);
     }
 
-    private async void HandleNewConnection(PeerConnection connection)
+    private async Task HandleNewConnectionAsync(PeerConnection connection)
     {
         try
         {
@@ -1009,6 +1028,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleSyncRequest(PeerId sender, SyncRequestMessage request)
     {
+        // MED-03: Rate limit sync requests — max 1 per second per peer
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var lastTime = _lastSyncRequestTime.GetOrAdd(sender, 0L);
+        if (now - lastTime < 1000)
+        {
+            _logger.LogDebug("Rate-limiting sync request from {PeerId}", sender);
+            return;
+        }
+        _lastSyncRequestTime[sender] = now;
+
         // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
         var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);
         var blockDataList = new List<byte[]>();
@@ -1129,15 +1158,29 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
         else if (applied > 0)
         {
-            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — discarding forked state", applied, blocksToApply.Count);
+            // HIGH-04: Partial sync — blocks were added to ChainManager but state was not
+            // adopted. Roll back ChainManager to the last consistent block to prevent
+            // chain/state divergence. The next sync attempt will re-fetch these blocks.
+            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — rolling back chain to consistent state",
+                applied, blocksToApply.Count);
         }
 
-        // Signal the sync loop: true = progress made, false = stalled (no blocks applied)
-        _syncBatchTcs?.TrySetResult(applied > 0);
+        // Signal the sync loop under lock to prevent stale responses completing wrong TCS
+        lock (this)
+        {
+            _syncBatchTcs?.TrySetResult(applied > 0);
+        }
     }
 
     private void HandleConsensusProposal(PeerId sender, ConsensusProposalMessage proposal)
     {
+        // MED-06: Early reject proposals from unknown validators to avoid unnecessary processing
+        if (_validatorSet?.GetByPeerId(sender) == null)
+        {
+            _logger.LogDebug("Ignoring proposal from unknown peer {PeerId}", sender);
+            return;
+        }
+
         // Double-sign detection: only for proposals matching the current block number.
         // View numbers are reused across blocks (StartRound sets view = blockNumber),
         // so delayed proposals from previous blocks can arrive after _proposalsByView
@@ -1212,7 +1255,22 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var parts = peerEndpoint.Split(':');
             var host = parts[0];
-            var port = parts.Length > 1 && int.TryParse(parts[1], out var p) ? p : 30303;
+
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                _logger.LogWarning("Skipping peer with empty hostname: '{Endpoint}'", peerEndpoint);
+                continue;
+            }
+
+            var port = 30303;
+            if (parts.Length > 1)
+            {
+                if (!int.TryParse(parts[1], out port) || port < 1 || port > 65535)
+                {
+                    _logger.LogWarning("Skipping peer with invalid port: '{Endpoint}'", peerEndpoint);
+                    continue;
+                }
+            }
 
             try
             {
@@ -1460,7 +1518,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 var batchCount = (int)Math.Min(SyncBatchSize, peerHeight - currentBlock + 1);
 
-                _syncBatchTcs = new TaskCompletionSource<bool>();
+                var tcs = new TaskCompletionSource<bool>();
+                lock (this)
+                {
+                    _syncBatchSeqNo++;
+                    _syncBatchTcs = tcs;
+                }
+
                 var request = new SyncRequestMessage
                 {
                     SenderId = _localPeerId,
@@ -1472,17 +1536,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Wait for response with timeout
                 var completed = await Task.WhenAny(
-                    _syncBatchTcs.Task,
+                    tcs.Task,
                     Task.Delay(TimeSpan.FromSeconds(10), ct));
 
-                if (completed != _syncBatchTcs.Task)
+                if (completed != tcs.Task)
                 {
                     _logger.LogWarning("Sync batch timed out at block #{Block}", currentBlock);
                     break;
                 }
 
                 // Check if the batch made progress (applied at least 1 block)
-                var madeProgress = await _syncBatchTcs.Task;
+                var madeProgress = await tcs.Task;
                 if (!madeProgress)
                 {
                     _logger.LogWarning(

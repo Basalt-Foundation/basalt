@@ -13,7 +13,11 @@ internal sealed class NodeClient : IDisposable
 
     public NodeClient(string nodeUrl)
     {
-        _http = new HttpClient { BaseAddress = new Uri(nodeUrl.TrimEnd('/') + "/") };
+        _http = new HttpClient
+        {
+            BaseAddress = new Uri(nodeUrl.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromSeconds(10),
+        };
         _http.DefaultRequestHeaders.Add("User-Agent", "BasaltCLI/1.0");
     }
 
