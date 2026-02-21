@@ -31,6 +31,19 @@ public interface IBlsSigner
     /// Derive the public key from a private key.
     /// </summary>
     byte[] GetPublicKey(ReadOnlySpan<byte> privateKey);
+
+    /// <summary>
+    /// Generate a Proof of Possession for a BLS public key.
+    /// PoP = Sign(sk, pk_bytes) — proves the holder knows the secret key.
+    /// Prevents rogue key attacks in aggregate signature schemes.
+    /// </summary>
+    byte[] GenerateProofOfPossession(ReadOnlySpan<byte> privateKey);
+
+    /// <summary>
+    /// Verify a Proof of Possession for a BLS public key.
+    /// Must be enforced at validator registration to prevent rogue key attacks.
+    /// </summary>
+    bool VerifyProofOfPossession(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> proofOfPossession);
 }
 
 /// <summary>
@@ -92,5 +105,16 @@ public sealed class StubBlsSigner : IBlsSigner
         var result = new byte[BlsPublicKey.Size];
         pk.WriteTo(result);
         return result;
+    }
+
+    public byte[] GenerateProofOfPossession(ReadOnlySpan<byte> privateKey)
+    {
+        var publicKey = GetPublicKey(privateKey);
+        return Sign(privateKey, publicKey);
+    }
+
+    public bool VerifyProofOfPossession(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> proofOfPossession)
+    {
+        return Verify(publicKey, publicKey.ToArray(), proofOfPossession);
     }
 }

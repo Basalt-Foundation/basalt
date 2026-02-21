@@ -66,12 +66,6 @@ public enum BasaltErrorCode
     InvalidProtocolVersion = 6004,
     PeerBanned = 6005,
 
-    // Staking errors (8xxx)
-    StakeBelowMinimum = 8001,
-    ValidatorAlreadyRegistered = 8002,
-    ValidatorNotRegistered = 8003,
-    StakingNotAvailable = 8004,
-
     // Compliance errors (7xxx)
     KycRequired = 7001,
     SanctionedAddress = 7002,
@@ -82,6 +76,12 @@ public enum BasaltErrorCode
     AttestationExpired = 7007,
     ComplianceProofInvalid = 7008,
     ComplianceProofMissing = 7009,
+
+    // Staking errors (8xxx)
+    StakeBelowMinimum = 8001,
+    ValidatorAlreadyRegistered = 8002,
+    ValidatorNotRegistered = 8003,
+    StakingNotAvailable = 8004,
 
     // Internal errors (9xxx)
     InternalError = 9001,
