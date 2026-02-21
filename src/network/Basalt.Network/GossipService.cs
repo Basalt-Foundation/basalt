@@ -19,7 +19,11 @@ public sealed class GossipService
     // NET-M14: Maximum number of peers to fan out to per broadcast
     private const int MaxFanOut = 8;
 
-    // Track recently seen messages to avoid rebroadcast
+    // Track recently seen messages to avoid rebroadcast.
+    // L-3: GossipService and EpisubService each maintain independent seen-message caches
+    // with different TTLs (60s vs 120s) and capacities (100K vs 200K). Sharing a single
+    // cache would couple their lifecycles and complicate independent tuning. The memory
+    // overhead of separate caches is acceptable for the isolation benefit.
     private readonly ConcurrentDictionary<Hash256, long> _seenMessages = new();
     private const int MaxSeenMessages = 100_000;
     private const long SeenMessageTtlMs = 60_000; // 1 minute
@@ -105,9 +109,25 @@ public sealed class GossipService
     /// responsible for re-broadcasting after validation.
     /// NET-M15: Does NOT award reputation. Caller must invoke RewardPeerForValidMessage
     /// after validating the message content.
+    /// <para>
+    /// <b>M-1: SenderId verification.</b> The <paramref name="sender"/> parameter is the
+    /// authenticated peer identity from the TCP connection (post-handshake PeerId). The
+    /// <c>message.SenderId</c> field is self-reported by the peer in the wire format header.
+    /// Callers should treat <paramref name="sender"/> as authoritative for routing and
+    /// reputation decisions, not <c>message.SenderId</c>.
+    /// </para>
     /// </summary>
     public void HandleMessage(PeerId sender, NetworkMessage message)
     {
+        // M-4: Compute message ID and deduplicate to prevent processing the same message twice.
+        // This is especially important for relayed gossip where multiple peers may forward
+        // the same transaction/block announcement.
+        var serialized = SerializeMessage(message);
+        var msgId = Blake3Hasher.Hash(serialized);
+        if (IsMessageSeen(msgId))
+            return;
+        MarkMessageSeen(msgId);
+
         // NET-H08: Only invoke callback — no relay. The higher-level handler
         // (NodeCoordinator) is responsible for re-broadcasting after validation.
         // NET-M15: No reputation reward here — caller calls RewardPeerForValidMessage after validation.

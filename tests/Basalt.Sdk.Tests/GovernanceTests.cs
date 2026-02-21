@@ -28,6 +28,9 @@ public class GovernanceTests : IDisposable
     // Pre-configured stakes for cross-contract call mock
     private readonly Dictionary<string, UInt256> _stakes = new();
 
+    // Total pool stake for cross-contract call mock (C-7: read from StakingPool)
+    private UInt256 _poolTotalStake = new UInt256(100_000);
+
     // Track executable proposal cross-contract calls
     private readonly List<(string TargetHex, string Method)> _executedCalls = new();
 
@@ -67,6 +70,10 @@ public class GovernanceTests : IDisposable
         if (proposalThreshold.IsZero) proposalThreshold = new UInt256(1000);
         var gov = new Governance(quorumBps, proposalThreshold, votingPeriod, timelockDelay);
         WireMock();
+
+        // C-8: Proposer needs enough stake to pass the proposal threshold
+        SetStake(_proposer, new UInt256(10_000));
+
         return gov;
     }
 
@@ -86,6 +93,12 @@ public class GovernanceTests : IDisposable
                 var delegator = (byte[])args[1]!;
                 var key = Convert.ToHexString(delegator);
                 return _stakes.TryGetValue(key, out var stake) ? stake : UInt256.Zero;
+            }
+
+            // C-7: Handle GetPoolStake cross-contract call
+            if (targetHex == stakingHex && method == "GetPoolStake")
+            {
+                return _poolTotalStake;
             }
 
             // Track executable proposal calls
@@ -144,8 +157,8 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
 
-        var id0 = _host.Call(() => gov.CreateProposal("Proposal A", 10, 100_000));
-        var id1 = _host.Call(() => gov.CreateProposal("Proposal B", 10, 100_000));
+        var id0 = _host.Call(() => gov.CreateProposal("Proposal A", 10));
+        var id1 = _host.Call(() => gov.CreateProposal("Proposal B", 10));
 
         id0.Should().Be(0);
         id1.Should().Be(1);
@@ -157,7 +170,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
 
-        var id = _host.Call(() => gov.CreateProposal("Test proposal", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Test proposal", 10));
 
         gov.GetStatus(id).Should().Be("active");
     }
@@ -168,7 +181,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
 
-        var id = _host.Call(() => gov.CreateProposal("Text proposal", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Text proposal", 10));
 
         gov.GetProposalType(id).Should().Be("text");
     }
@@ -181,7 +194,7 @@ public class GovernanceTests : IDisposable
         _host.ClearEvents();
         _host.SetBlockHeight(100);
 
-        var id = _host.Call(() => gov.CreateProposal("Emit test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Emit test", 10));
 
         var events = _host.GetEvents<ProposalCreatedEvent>().ToList();
         events.Should().HaveCount(1);
@@ -198,7 +211,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
 
-        var msg = _host.ExpectRevert(() => gov.CreateProposal("", 10, 100_000));
+        var msg = _host.ExpectRevert(() => gov.CreateProposal("", 10));
         msg.Should().Contain("description required");
     }
 
@@ -213,7 +226,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec proposal", 10, 100_000, _targetContract, "DoSomething"));
+            "Exec proposal", 10, _targetContract, "DoSomething"));
 
         gov.GetProposalType(id).Should().Be("executable");
     }
@@ -225,7 +238,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec type test", 10, 100_000, _targetContract, "Execute"));
+            "Exec type test", 10, _targetContract, "Execute"));
 
         gov.GetProposalType(id).Should().Be("executable");
         gov.GetStatus(id).Should().Be("active");
@@ -238,7 +251,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var msg = _host.ExpectRevert(() => gov.CreateExecutableProposal(
-            "Bad proposal", 10, 100_000, [], "DoSomething"));
+            "Bad proposal", 10, [], "DoSomething"));
         msg.Should().Contain("target required");
     }
 
@@ -249,7 +262,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var msg = _host.ExpectRevert(() => gov.CreateExecutableProposal(
-            "Bad proposal", 10, 100_000, _targetContract, ""));
+            "Bad proposal", 10, _targetContract, ""));
         msg.Should().Contain("method required");
     }
 
@@ -263,7 +276,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Vote test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Vote test", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -281,7 +294,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Against test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Against test", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -299,7 +312,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Weight test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Weight test", 10));
 
         // Stake 1000000 -> isqrt = 1000
         SetStake(_alice, 1_000_000);
@@ -316,7 +329,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Event test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Event test", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -338,7 +351,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Double vote", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Double vote", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -355,7 +368,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Expired", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Expired", 10));
         // endBlock = 10 + 10 = 20
 
         SetStake(_alice, 10000);
@@ -371,7 +384,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("At end", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("At end", 10));
         // endBlock = 10 + 10 = 20
 
         SetStake(_alice, 10000);
@@ -388,7 +401,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Delegated", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Delegated", 10));
 
         // Alice delegates to Bob
         SetStake(_alice, 10000);
@@ -407,7 +420,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("No stake", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("No stake", 10));
 
         // Alice has no stake (default 0)
         _host.SetCaller(_alice);
@@ -422,7 +435,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Weight record", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Weight record", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -466,7 +479,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Delegation boost", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Delegation boost", 10));
 
         // Alice has 5000 stake, delegates to Bob
         SetStake(_alice, 5000);
@@ -515,7 +528,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("No vote when delegated", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("No vote when delegated", 10));
 
         SetStake(_alice, 5000);
         _host.SetCaller(_alice);
@@ -571,7 +584,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Queue test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Queue test", 10));
         // endBlock = 20
 
         // Vote with enough stake: isqrt(100_000 * 400 / 10000) = isqrt(4000) = 63
@@ -595,7 +608,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Queue event", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Queue event", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -618,7 +631,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Too early", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Too early", 10));
         // endBlock = 20
 
         _host.SetBlockHeight(19); // Voting still ongoing
@@ -632,7 +645,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Low quorum", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Low quorum", 10));
         // quorumThreshold = isqrt(100_000 * 400 / 10000) = isqrt(4000) = 63
 
         // Vote with tiny stake: isqrt(1) = 1 (well below 63)
@@ -653,7 +666,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Against majority", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Against majority", 10));
 
         // Alice votes for with small stake
         SetStake(_alice, 10000);
@@ -678,7 +691,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Double queue", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Double queue", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -704,7 +717,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Execute test", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Execute test", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -727,7 +740,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Early exec", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Early exec", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -749,7 +762,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec call", 10, 100_000, _targetContract, "ActivateFeature"));
+            "Exec call", 10, _targetContract, "ActivateFeature"));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -773,7 +786,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Exec event", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Exec event", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -799,7 +812,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Text only", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Text only", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -827,7 +840,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Cancel me", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Cancel me", 10));
 
         _host.Call(() => gov.CancelProposal(id));
 
@@ -840,7 +853,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Cancel queued", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Cancel queued", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -863,7 +876,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Cannot cancel", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Cannot cancel", 10));
 
         _host.SetCaller(_alice); // Not the proposer
         var msg = _host.ExpectRevert(() => gov.CancelProposal(id));
@@ -876,7 +889,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Executed no cancel", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Executed no cancel", 10));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -906,7 +919,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Sqrt zero", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Sqrt zero", 10));
 
         _host.SetCaller(_alice);
         // No stake set -> stake = 0, isqrt(0) = 0
@@ -921,7 +934,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Sqrt 1M", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Sqrt 1M", 10));
 
         SetStake(_alice, 1_000_000);
         _host.SetCaller(_alice);
@@ -938,7 +951,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Sqrt 100", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Sqrt 100", 10));
 
         SetStake(_alice, 100);
         _host.SetCaller(_alice);
@@ -961,7 +974,7 @@ public class GovernanceTests : IDisposable
         // Step 1: Create proposal
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Full lifecycle", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Full lifecycle", 10));
         gov.GetStatus(id).Should().Be("active");
 
         // Step 2: Multiple voters vote for
@@ -999,7 +1012,7 @@ public class GovernanceTests : IDisposable
         // Step 1: Create proposal
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Rejection lifecycle", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Rejection lifecycle", 10));
         gov.GetStatus(id).Should().Be("active");
 
         // Step 2: Majority votes against
@@ -1034,7 +1047,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Canceled proposal", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Canceled proposal", 10));
 
         // Cancel it
         _host.Call(() => gov.CancelProposal(id));
@@ -1052,7 +1065,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Not queued", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Not queued", 10));
 
         _host.SetBlockHeight(100);
         var msg = _host.ExpectRevert(() => gov.ExecuteProposal(id));
@@ -1092,7 +1105,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Cancel event", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Cancel event", 10));
 
         _host.ClearEvents();
         _host.Call(() => gov.CancelProposal(id));
@@ -1108,7 +1121,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Reject event", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Reject event", 10));
 
         // No votes -> rejected
         _host.SetBlockHeight(21);
@@ -1127,7 +1140,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
 
-        var msg = _host.ExpectRevert(() => gov.CreateProposal("Zero period", 0, 100_000));
+        var msg = _host.ExpectRevert(() => gov.CreateProposal("Zero period", 0));
         msg.Should().Contain("voting period must be > 0");
     }
 
@@ -1137,7 +1150,7 @@ public class GovernanceTests : IDisposable
         var gov = CreateGov();
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
-        var id = _host.Call(() => gov.CreateProposal("Multi-voter", 10, 100_000));
+        var id = _host.Call(() => gov.CreateProposal("Multi-voter", 10));
 
         SetStake(_alice, 10000);  // isqrt = 100
         SetStake(_bob, 40000);    // isqrt = 200

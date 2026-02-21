@@ -39,7 +39,7 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     /// ZkComplianceVerifier does not manage policies — returns empty requirements.
     /// Use ComplianceEngine for policy-aware requirement lookup.
     /// </summary>
-    public ProofRequirement[] GetRequirements(byte[] contractAddress) => [];
+    public ProofRequirement[] GetRequirements(Address contractAddress) => [];
 
     /// <summary>
     /// ZK verifier does not perform traditional compliance checks.

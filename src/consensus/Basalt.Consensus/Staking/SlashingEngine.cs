@@ -16,6 +16,7 @@ public sealed class SlashingEngine
     private readonly StakingState _stakingState;
     private readonly ILogger<SlashingEngine> _logger;
     private readonly List<SlashingEvent> _slashingHistory = new();
+    private readonly object _historyLock = new();
 
     /// <summary>
     /// Double-sign penalty: 100% of stake.
@@ -39,9 +40,16 @@ public sealed class SlashingEngine
     }
 
     /// <summary>
-    /// All recorded slashing events.
+    /// All recorded slashing events. Returns a snapshot copy for thread safety.
     /// </summary>
-    public IReadOnlyList<SlashingEvent> SlashingHistory => _slashingHistory;
+    public IReadOnlyList<SlashingEvent> SlashingHistory
+    {
+        get
+        {
+            lock (_historyLock)
+                return _slashingHistory.ToList();
+        }
+    }
 
     /// <summary>
     /// Slash for double-signing (equivocation) — 100% of stake.
@@ -106,7 +114,8 @@ public sealed class SlashingEngine
             Timestamp = DateTimeOffset.UtcNow,
         };
 
-        _slashingHistory.Add(evt);
+        lock (_historyLock)
+            _slashingHistory.Add(evt);
 
         var remainingStake = _stakingState.GetStakeInfo(validator)?.TotalStake ?? UInt256.Zero;
         _logger.LogWarning(

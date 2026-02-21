@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <PublishAot>false</PublishAot>
+    <IsAotCompatible>false</IsAotCompatible>
+    <NoWarn>CA2014;IL2026;IL3050</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Wallet/Basalt.Sdk.Wallet.csproj" />
+  </ItemGroup>
+</Project>

@@ -17,12 +17,12 @@ public class BST1155TokenTests : IDisposable
 
     public BST1155TokenTests()
     {
-        _token = new BST1155Token("https://example.com/tokens/");
         _owner = BasaltTestHost.CreateAddress(1);
         _alice = BasaltTestHost.CreateAddress(2);
         _bob = BasaltTestHost.CreateAddress(3);
         _operator = BasaltTestHost.CreateAddress(4);
         _host.SetCaller(_owner);
+        _token = new BST1155Token("https://example.com/tokens/");
     }
 
     [Fact]

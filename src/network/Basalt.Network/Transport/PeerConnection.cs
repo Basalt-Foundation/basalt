@@ -97,7 +97,11 @@ public sealed class PeerConnection : IDisposable
                 int messageLength = (int)rawLength;
 
                 // Read the payload.
-                // NET-L04: Consider ArrayPool for large payloads in future optimization
+                // L-2/NET-L04: Allocates a new byte[] per frame. ArrayPool<byte> could reduce
+                // GC pressure for large payloads, but requires careful lifetime management
+                // since the buffer is handed off to the message callback. The current approach
+                // is safe and simple; only optimize if GC telemetry shows frame allocation as
+                // a bottleneck under sustained high-throughput workloads.
                 var payload = new byte[messageLength];
                 await ReadExactAsync(_stream, payload, frameCts.Token).ConfigureAwait(false);
 

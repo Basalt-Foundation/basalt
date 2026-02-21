@@ -49,6 +49,7 @@ public sealed class KademliaTable : IDisposable
     /// Add or update a peer in the routing table.
     /// NET-H10: Rejects peers that would exceed the /24 subnet limit per bucket.
     /// PeerId verification is handled at handshake time (HandshakeProtocol.cs, NET-C01).
+    /// M-7: IP diversity check is performed inside the write lock to eliminate TOCTOU race.
     /// </summary>
     public bool AddOrUpdate(PeerInfo peer)
     {
@@ -57,22 +58,24 @@ public sealed class KademliaTable : IDisposable
 
         int bucket = GetBucketIndex(peer.Id);
 
-        // NET-H10: IP diversity check — max 2 peers per /24 subnet per bucket
-        string peerSubnet = GetSubnet24(peer.Host);
-        var existingPeers = _buckets[bucket].GetPeers();
-
-        // Only check subnet limit if this is a new peer (not an update)
-        bool isExisting = existingPeers.Any(p => p.Id == peer.Id);
-        if (!isExisting)
-        {
-            int subnetCount = existingPeers.Count(p => GetSubnet24(p.Host) == peerSubnet);
-            if (subnetCount >= MaxPeersPerSubnetPerBucket)
-                return false; // NET-H10: Too many peers from same /24 subnet
-        }
-
         _rwLock.EnterWriteLock();
         try
         {
+            // NET-H10: IP diversity check — max 2 peers per /24 subnet per bucket
+            // M-7: Moved inside write lock to prevent concurrent AddOrUpdate from both
+            // passing the check before either inserts, exceeding the subnet limit.
+            string peerSubnet = GetSubnet24(peer.Host);
+            var existingPeers = _buckets[bucket].GetPeers();
+
+            // Only check subnet limit if this is a new peer (not an update)
+            bool isExisting = existingPeers.Any(p => p.Id == peer.Id);
+            if (!isExisting)
+            {
+                int subnetCount = existingPeers.Count(p => GetSubnet24(p.Host) == peerSubnet);
+                if (subnetCount >= MaxPeersPerSubnetPerBucket)
+                    return false; // NET-H10: Too many peers from same /24 subnet
+            }
+
             return _buckets[bucket].InsertOrUpdate(peer);
         }
         finally
@@ -246,11 +249,13 @@ public sealed class KademliaTable : IDisposable
     }
 
     /// <summary>
-    /// NET-H10: Extract the /24 subnet from an IP address.
-    /// For IPv4 addresses, returns the first 3 octets (e.g., "192.168.1").
-    /// For non-IPv4 addresses (hostnames, IPv6), returns the full string.
+    /// NET-H10: Extract the subnet prefix from an IP address.
+    /// For IPv4 addresses, returns the /24 prefix (first 3 octets, e.g., "192.168.1").
+    /// For IPv6 addresses, returns the /48 prefix (first 3 hextets, e.g., "2001:db8:1").
+    /// L-7: IPv6 addresses now extract /48 instead of returning the full address,
+    /// which would treat every IPv6 address as a unique "subnet".
     /// </summary>
-    private static string GetSubnet24(string host)
+    internal static string GetSubnet24(string host)
     {
         if (string.IsNullOrEmpty(host))
             return host;
@@ -273,7 +278,16 @@ public sealed class KademliaTable : IDisposable
                 return string.Concat(parts[0], ".", parts[1], ".", parts[2]);
         }
 
-        // Non-IPv4 (hostname, IPv6, etc.) — use full string as subnet key
+        // L-7: IPv6 /48 prefix — extract first 3 colon-separated groups.
+        // This covers both full and abbreviated IPv6 notation.
+        if (host.Contains(':'))
+        {
+            var colonParts = host.Split(':');
+            if (colonParts.Length >= 3)
+                return string.Concat(colonParts[0], ":", colonParts[1], ":", colonParts[2]);
+        }
+
+        // Hostname — use full string as subnet key
         return host;
     }
 

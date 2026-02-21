@@ -27,6 +27,11 @@ public sealed class RocksDbTrieNodeStore : ITrieNodeStore
         return TrieNode.Decode(data);
     }
 
+    /// <remarks>
+    /// L-01: The <c>stackalloc</c> span is converted to <c>byte[]</c> via <c>ToArray()</c>
+    /// because the RocksDbSharp bindings require managed arrays. The span optimization
+    /// for key construction is retained for readability even though it allocates on put.
+    /// </remarks>
     public void Put(Hash256 hash, TrieNode node)
     {
         Span<byte> keyBytes = stackalloc byte[Hash256.Size];

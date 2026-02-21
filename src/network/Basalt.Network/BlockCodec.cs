@@ -12,6 +12,16 @@ namespace Basalt.Network;
 /// </summary>
 public static class BlockCodec
 {
+    /// <summary>
+    /// Maximum transaction count per block to prevent OOM from crafted varint counts.
+    /// </summary>
+    private const int MaxTransactionsPerBlock = 10_000;
+
+    /// <summary>
+    /// Maximum ComplianceProof count per transaction to prevent OOM from crafted varint counts.
+    /// </summary>
+    private const int MaxComplianceProofsPerTx = 100;
+
     // Fixed-size portion of a serialized transaction:
     // Type(1) + Nonce(8) + Sender(20) + To(20) + Value(32) + GasLimit(8) + GasPrice(32)
     // + MaxFeePerGas(32) + MaxPriorityFeePerGas(32)
@@ -128,7 +138,11 @@ public static class BlockCodec
 
         BlockHeader header = ReadBlockHeader(ref reader);
 
-        int txCount = (int)reader.ReadVarInt();
+        var rawTxCount = reader.ReadVarInt();
+        if (rawTxCount > MaxTransactionsPerBlock)
+            throw new InvalidOperationException(
+                $"Block transaction count {rawTxCount} exceeds limit {MaxTransactionsPerBlock}.");
+        int txCount = (int)rawTxCount;
         var transactions = new List<Transaction>(txCount);
 
         for (int i = 0; i < txCount; i++)
@@ -197,7 +211,11 @@ public static class BlockCodec
         var senderPublicKey = reader.ReadPublicKey();
 
         // Read ComplianceProofs (variable-length, optional)
-        var proofCount = (int)reader.ReadVarInt();
+        var rawProofCount = reader.ReadVarInt();
+        if (rawProofCount > MaxComplianceProofsPerTx)
+            throw new InvalidOperationException(
+                $"ComplianceProof count {rawProofCount} exceeds limit {MaxComplianceProofsPerTx}.");
+        var proofCount = (int)rawProofCount;
         var complianceProofs = new ComplianceProof[proofCount];
         for (int i = 0; i < proofCount; i++)
         {

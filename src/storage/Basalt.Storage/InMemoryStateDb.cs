@@ -38,6 +38,19 @@ public sealed class InMemoryStateDb : IStateDatabase
         _accounts.Remove(address);
     }
 
+    /// <summary>
+    /// Compute a naive state root by sorting accounts and hashing all states.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>M-04:</b> This root hash algorithm is <b>not interchangeable</b> with
+    /// <see cref="TrieStateDb.ComputeStateRoot"/> which uses a Merkle Patricia Trie.
+    /// The same state will produce different root hashes in each implementation.
+    /// Do not compare roots across implementations.</para>
+    /// <para><b>M-05:</b> This method hashes account states only (including the
+    /// <c>StorageRoot</c> field). However, <c>SetStorage()</c> does not update
+    /// <c>StorageRoot</c> in account state, so storage modifications are invisible
+    /// to this root computation. Use <see cref="TrieStateDb"/> for storage-aware roots.</para>
+    /// </remarks>
     public Hash256 ComputeStateRoot()
     {
         if (_accounts.Count == 0)

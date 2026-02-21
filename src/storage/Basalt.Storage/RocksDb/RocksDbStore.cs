@@ -15,6 +15,12 @@ public sealed class RocksDbStore : IDisposable
     /// <summary>
     /// Column family names.
     /// </summary>
+    /// <remarks>
+    /// <b>M-07:</b> Future CFs to consider for query efficiency:
+    /// <c>tx_index</c> (tx hash → block hash + index) for O(1) transaction-by-hash lookups,
+    /// and <c>logs</c> (contract + event signature + topic → receipt) for efficient event log queries.
+    /// Currently, tx lookups scan blocks and log queries deserialize full receipts.
+    /// </remarks>
     public static class CF
     {
         public const string State = "state";
@@ -31,27 +37,26 @@ public sealed class RocksDbStore : IDisposable
             .SetCreateIfMissing(true)
             .SetCreateMissingColumnFamilies(true);
 
-        var cfNames = new[]
-        {
-            "default",
-            CF.State,
-            CF.Blocks,
-            CF.Receipts,
-            CF.Metadata,
-            CF.TrieNodes,
-            CF.BlockIndex,
-        };
+        // M-01: Per-CF options tuned for each access pattern.
+        // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
+        var defaultOptions = new ColumnFamilyOptions();
 
-        var cfOptions = new ColumnFamilyOptions();
+        var pointLookupOptions = new ColumnFamilyOptions()
+            .SetBloomLocality(1);
+
         var cfs = new RocksDbSharp.ColumnFamilies();
-        foreach (var name in cfNames)
-        {
-            cfs.Add(name, cfOptions);
-        }
+        cfs.Add("default", defaultOptions);
+        cfs.Add(CF.State, pointLookupOptions);        // prefix scans (0x01/0x02) + point lookups
+        cfs.Add(CF.Blocks, pointLookupOptions);        // point lookups by hash, raw block reads
+        cfs.Add(CF.Receipts, pointLookupOptions);      // point lookups by tx hash
+        cfs.Add(CF.Metadata, defaultOptions);           // very few keys, no bloom needed
+        cfs.Add(CF.TrieNodes, pointLookupOptions);     // write-heavy, point lookups by hash
+        cfs.Add(CF.BlockIndex, defaultOptions);         // sequential scans by block number
 
         _db = RocksDbSharp.RocksDb.Open(options, path, cfs);
         _columnFamilies = new Dictionary<string, ColumnFamilyHandle>();
 
+        var cfNames = new[] { "default", CF.State, CF.Blocks, CF.Receipts, CF.Metadata, CF.TrieNodes, CF.BlockIndex };
         foreach (var name in cfNames)
         {
             _columnFamilies[name] = _db.GetColumnFamily(name);
@@ -63,6 +68,10 @@ public sealed class RocksDbStore : IDisposable
         return _db.Get(key, _columnFamilies[columnFamily]);
     }
 
+    /// <remarks>
+    /// L-09: The span is copied to <c>byte[]</c> via <c>ToArray()</c> because the RocksDbSharp
+    /// bindings do not support <c>ReadOnlySpan&lt;byte&gt;</c> keys natively.
+    /// </remarks>
     public byte[]? Get(string columnFamily, ReadOnlySpan<byte> key)
     {
         return _db.Get(key.ToArray(), _columnFamilies[columnFamily]);
@@ -83,6 +92,15 @@ public sealed class RocksDbStore : IDisposable
         _db.Remove(key, _columnFamilies[columnFamily]);
     }
 
+    /// <summary>
+    /// Check if a key exists in the given column family.
+    /// </summary>
+    /// <remarks>
+    /// <b>M-02:</b> This performs a full value read because the RocksDbSharp bindings
+    /// do not expose RocksDB's <c>KeyMayExist</c> or zero-copy existence check.
+    /// For large values (e.g., raw blocks), this incurs unnecessary I/O and allocation.
+    /// Consider upgrading RocksDbSharp or using a native interop call if this becomes a bottleneck.
+    /// </remarks>
     public bool HasKey(string columnFamily, byte[] key)
     {
         return _db.Get(key, _columnFamilies[columnFamily]) != null;
@@ -133,11 +151,19 @@ public sealed class RocksDbStore : IDisposable
 /// <summary>
 /// Scoped write batch for atomic multi-key writes.
 /// </summary>
+/// <remarks>
+/// <para><b>Important (H-03):</b> This type does <b>not</b> auto-commit on <see cref="Dispose"/>.
+/// Callers must explicitly call <see cref="Commit"/> before the scope ends.
+/// If <c>Dispose()</c> is called with pending (uncommitted) operations, a warning is logged
+/// via <see cref="Console.Error"/> to make the silent drop detectable.</para>
+/// </remarks>
 public sealed class WriteBatchScope : IDisposable
 {
     private readonly RocksDbSharp.RocksDb _db;
     private readonly Dictionary<string, ColumnFamilyHandle> _columnFamilies;
     private readonly WriteBatch _batch;
+    private bool _hasOperations;
+    private bool _committed;
 
     internal WriteBatchScope(RocksDbSharp.RocksDb db, Dictionary<string, ColumnFamilyHandle> columnFamilies)
     {
@@ -149,20 +175,29 @@ public sealed class WriteBatchScope : IDisposable
     public void Put(string columnFamily, byte[] key, byte[] value)
     {
         _batch.Put(key, value, _columnFamilies[columnFamily]);
+        _hasOperations = true;
     }
 
     public void Delete(string columnFamily, byte[] key)
     {
         _batch.Delete(key, _columnFamilies[columnFamily]);
+        _hasOperations = true;
     }
 
     public void Commit()
     {
         _db.Write(_batch);
+        _committed = true;
     }
 
     public void Dispose()
     {
+        if (_hasOperations && !_committed)
+        {
+            Console.Error.WriteLine(
+                "WARNING: WriteBatchScope disposed with uncommitted operations. " +
+                "Data was silently dropped. Ensure Commit() is called before Dispose().");
+        }
         _batch.Dispose();
     }
 }

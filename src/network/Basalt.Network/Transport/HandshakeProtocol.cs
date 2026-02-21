@@ -426,6 +426,12 @@ public sealed class HandshakeProtocol
 
 /// <summary>
 /// Result of a handshake attempt.
+/// <para>
+/// <b>Security note (M-2):</b> After passing <see cref="SharedSecret"/> to
+/// <see cref="TransportEncryption"/>, callers <b>must</b> call <see cref="ZeroSharedSecret"/>
+/// to wipe the shared secret from memory. The <c>TransportEncryption</c> constructor derives
+/// its own directional keys and does not retain the original secret.
+/// </para>
 /// </summary>
 public sealed class HandshakeResult
 {
@@ -439,11 +445,24 @@ public sealed class HandshakeResult
     public ulong PeerBestBlock { get; init; }
     public Hash256 PeerBestBlockHash { get; init; }
 
-    /// <summary>NET-C02: Shared secret for transport encryption (null if key exchange failed).</summary>
+    /// <summary>
+    /// NET-C02: Shared secret for transport encryption (null if key exchange failed).
+    /// <b>M-2: Must be zeroed after use</b> — call <see cref="ZeroSharedSecret"/> after
+    /// passing to <see cref="TransportEncryption"/>.
+    /// </summary>
     public byte[]? SharedSecret { get; init; }
 
     /// <summary>NET-C02: True if this side initiated the connection (sent Hello first).</summary>
     public bool IsInitiator { get; init; }
+
+    /// <summary>
+    /// M-2: Zero the shared secret after it has been consumed by <see cref="TransportEncryption"/>.
+    /// </summary>
+    public void ZeroSharedSecret()
+    {
+        if (SharedSecret != null)
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(SharedSecret);
+    }
 
     public static HandshakeResult Failed(string reason) => new() { IsSuccess = false, Error = reason };
 

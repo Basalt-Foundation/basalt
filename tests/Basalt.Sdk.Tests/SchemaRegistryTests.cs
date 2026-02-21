@@ -22,9 +22,16 @@ public class SchemaRegistryTests : IDisposable
         _bob = BasaltTestHost.CreateAddress(2);
     }
 
-    private static byte[] ComputeSchemaId(string name)
+    /// <summary>
+    /// M-10: Schema ID now includes creator address to prevent front-running.
+    /// </summary>
+    private static byte[] ComputeSchemaId(string name, byte[] creator)
     {
-        return Blake3Hasher.Hash(Encoding.UTF8.GetBytes(name)).ToArray();
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        var input = new byte[nameBytes.Length + creator.Length];
+        nameBytes.CopyTo(input, 0);
+        creator.CopyTo(input, nameBytes.Length);
+        return Blake3Hasher.Hash(input).ToArray();
     }
 
     [Fact]
@@ -38,21 +45,34 @@ public class SchemaRegistryTests : IDisposable
 
         schemaIdHex.Should().NotBeNullOrEmpty();
 
-        var schemaId = ComputeSchemaId("KYCBasic");
+        var schemaId = ComputeSchemaId("KYCBasic", _alice);
         _host.Call(() => _registry.GetSchema(schemaId)).Should().Be("KYCBasic");
         _host.Call(() => _registry.GetFieldDefinitions(schemaId)).Should().Be(fields);
     }
 
     [Fact]
-    public void RegisterSchema_DuplicateName_Fails()
+    public void RegisterSchema_DuplicateName_SameCaller_Fails()
     {
         _host.SetCaller(_alice);
         var vk = new byte[] { 0x01 };
         _host.Call(() => _registry.RegisterSchema("UniqueSchema", "{}", vk));
 
-        _host.SetCaller(_bob);
+        // M-10: Schema ID includes caller, so same name + same caller = duplicate
         var msg = _host.ExpectRevert(() => _registry.RegisterSchema("UniqueSchema", "{}", vk));
         msg.Should().Contain("already exists");
+    }
+
+    [Fact]
+    public void RegisterSchema_SameName_DifferentCaller_Succeeds()
+    {
+        _host.SetCaller(_alice);
+        var vk = new byte[] { 0x01 };
+        _host.Call(() => _registry.RegisterSchema("SharedName", "{}", vk));
+
+        // M-10: Different caller produces different schema ID, so no collision
+        _host.SetCaller(_bob);
+        var id = _host.Call(() => _registry.RegisterSchema("SharedName", "{}", vk));
+        id.Should().NotBeNullOrEmpty();
     }
 
     [Fact]
@@ -71,7 +91,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0x01 };
         _host.Call(() => _registry.RegisterSchema("ExistingSchema", "{}", vk));
 
-        var schemaId = ComputeSchemaId("ExistingSchema");
+        var schemaId = ComputeSchemaId("ExistingSchema", _alice);
         _host.Call(() => _registry.SchemaExists(schemaId)).Should().BeTrue();
     }
 
@@ -91,7 +111,7 @@ public class SchemaRegistryTests : IDisposable
         var originalVk = new byte[] { 0x01, 0x02 };
         _host.Call(() => _registry.RegisterSchema("UpdatableSchema", "{}", originalVk));
 
-        var schemaId = ComputeSchemaId("UpdatableSchema");
+        var schemaId = ComputeSchemaId("UpdatableSchema", _alice);
         var newVk = new byte[] { 0xDD, 0xEE, 0xFF };
 
         _host.Call(() => _registry.UpdateVerificationKey(schemaId, newVk));
@@ -107,7 +127,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0x01 };
         _host.Call(() => _registry.RegisterSchema("ProtectedSchema", "{}", vk));
 
-        var schemaId = ComputeSchemaId("ProtectedSchema");
+        var schemaId = ComputeSchemaId("ProtectedSchema", _alice);
 
         _host.SetCaller(_bob);
         var msg = _host.ExpectRevert(() => _registry.UpdateVerificationKey(schemaId, new byte[] { 0xFF }));
@@ -121,7 +141,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0xCA, 0xFE, 0xBA, 0xBE };
         _host.Call(() => _registry.RegisterSchema("VKSchema", "{}", vk));
 
-        var schemaId = ComputeSchemaId("VKSchema");
+        var schemaId = ComputeSchemaId("VKSchema", _alice);
         _host.Call(() => _registry.GetVerificationKey(schemaId))
             .Should().Be(Convert.ToHexString(vk));
     }
@@ -134,7 +154,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0x01 };
         _host.Call(() => _registry.RegisterSchema("FieldsSchema", fields, vk));
 
-        var schemaId = ComputeSchemaId("FieldsSchema");
+        var schemaId = ComputeSchemaId("FieldsSchema", _alice);
         _host.Call(() => _registry.GetFieldDefinitions(schemaId)).Should().Be(fields);
     }
 
@@ -150,7 +170,7 @@ public class SchemaRegistryTests : IDisposable
         events.Should().HaveCount(1);
         events[0].Name.Should().Be("EventSchema");
         events[0].Creator.Should().BeEquivalentTo(_alice);
-        events[0].SchemaId.Should().BeEquivalentTo(ComputeSchemaId("EventSchema"));
+        events[0].SchemaId.Should().BeEquivalentTo(ComputeSchemaId("EventSchema", _alice));
     }
 
     [Fact]
@@ -160,7 +180,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0x01 };
         _host.Call(() => _registry.RegisterSchema("VKEventSchema", "{}", vk));
 
-        var schemaId = ComputeSchemaId("VKEventSchema");
+        var schemaId = ComputeSchemaId("VKEventSchema", _alice);
         _host.ClearEvents();
 
         var newVk = new byte[] { 0xAA, 0xBB };
@@ -216,7 +236,7 @@ public class SchemaRegistryTests : IDisposable
         var vk = new byte[] { 0x01 };
         var schemaIdHex = _host.Call(() => _registry.RegisterSchema("IdCheckSchema", "{}", vk));
 
-        var expectedId = ComputeSchemaId("IdCheckSchema");
+        var expectedId = ComputeSchemaId("IdCheckSchema", _alice);
         schemaIdHex.Should().Be(Convert.ToHexString(expectedId));
     }
 

@@ -20,20 +20,22 @@ public sealed class GasMeter
 
     /// <summary>
     /// Consume gas. Throws OutOfGasException if insufficient.
+    /// H-1: Uses overflow-safe check (amount > remaining) instead of (used + amount > limit).
     /// </summary>
     public void Consume(ulong amount)
     {
-        if (GasUsed + amount > GasLimit)
+        if (amount > GasRemaining)
             throw new OutOfGasException(GasUsed, amount, GasLimit);
         GasUsed += amount;
     }
 
     /// <summary>
     /// Try to consume gas. Returns false if insufficient.
+    /// H-1: Uses overflow-safe check.
     /// </summary>
     public bool TryConsume(ulong amount)
     {
-        if (GasUsed + amount > GasLimit)
+        if (amount > GasRemaining)
             return false;
         GasUsed += amount;
         return true;

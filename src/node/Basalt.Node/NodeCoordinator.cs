@@ -377,7 +377,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _localPeerId,
             _privateKey,
             _loggerFactory.CreateLogger<BasaltBft>(),
-            _blsSigner);
+            _blsSigner,
+            chainId: _chainParams.ChainId);
 
         // When a block is finalized by consensus, apply it
         _consensus.OnBlockFinalized += HandleBlockFinalized;
@@ -414,7 +415,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _privateKey,
             _blsSigner,
             _loggerFactory.CreateLogger<PipelinedConsensus>(),
-            lastFinalized);
+            lastFinalized,
+            _chainParams.ChainId);
 
         // When a block is finalized by pipelined consensus, apply it
         _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;
@@ -692,7 +694,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (result.SharedSecret != null)
             {
                 var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
-                CryptographicOperations.ZeroMemory(result.SharedSecret);
+                result.ZeroSharedSecret(); // M-2: Wipe shared secret after key derivation
                 connection.EnableEncryption(enc);
                 _logger.LogDebug("Transport encryption enabled for inbound peer {PeerId}", result.PeerId);
             }
@@ -1280,7 +1282,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (result.SharedSecret != null)
                 {
                     var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
-                    CryptographicOperations.ZeroMemory(result.SharedSecret);
+                    result.ZeroSharedSecret(); // M-2: Wipe shared secret after key derivation
                     connection.EnableEncryption(enc);
                     _logger.LogDebug("Transport encryption enabled for outbound peer {PeerId}", result.PeerId);
                 }

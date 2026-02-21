@@ -15,6 +15,16 @@ public sealed class Mempool
     private readonly SortedSet<MempoolEntry> _orderedEntries = new(MempoolEntryComparer.Instance);
     private readonly int _maxSize;
 
+    // M-1: Per-sender transaction limit to prevent single-sender DoS
+    private readonly Dictionary<Address, int> _perSenderCount = new();
+    private const int MaxTransactionsPerSender = 64;
+
+    /// <summary>
+    /// Optional transaction validator for pre-admission validation (M-2).
+    /// </summary>
+    private readonly TransactionValidator? _validator;
+    private readonly IStateDatabase? _validationStateDb;
+
     /// <summary>
     /// Fired when a transaction is successfully added to the mempool.
     /// Used to trigger gossip for locally-submitted transactions.
@@ -24,6 +34,16 @@ public sealed class Mempool
     public Mempool(int maxSize = 10_000)
     {
         _maxSize = maxSize;
+    }
+
+    /// <summary>
+    /// M-2: Create a mempool with pre-admission transaction validation.
+    /// </summary>
+    public Mempool(int maxSize, TransactionValidator validator, IStateDatabase stateDb)
+    {
+        _maxSize = maxSize;
+        _validator = validator;
+        _validationStateDb = stateDb;
     }
 
     public int Count
@@ -39,17 +59,50 @@ public sealed class Mempool
     /// the caller handles gossip separately (e.g., peer-received transactions).</param>
     public bool Add(Transaction tx, bool raiseEvent = true)
     {
+        // M-2: Pre-admission validation (signature, nonce, balance, gas)
+        if (_validator != null && _validationStateDb != null)
+        {
+            var validation = _validator.Validate(tx, _validationStateDb);
+            if (!validation.IsSuccess)
+                return false;
+        }
+
         bool added;
         lock (_lock)
         {
             if (_transactions.ContainsKey(tx.Hash))
                 return false;
 
-            if (_transactions.Count >= _maxSize)
+            // M-1: Per-sender transaction limit
+            _perSenderCount.TryGetValue(tx.Sender, out var senderCount);
+            if (senderCount >= MaxTransactionsPerSender)
                 return false;
+
+            if (_transactions.Count >= _maxSize)
+            {
+                // M-3: Evict lowest-fee transaction if new tx has higher fee
+                var lowestEntry = _orderedEntries.Max; // SortedSet: highest fee first, lowest last
+                if (lowestEntry.Transaction != null && tx.EffectiveMaxFee > lowestEntry.Transaction.EffectiveMaxFee)
+                {
+                    // Evict the lowest-fee transaction
+                    var evicted = lowestEntry.Transaction;
+                    _transactions.Remove(evicted.Hash);
+                    _orderedEntries.Remove(lowestEntry);
+                    _perSenderCount.TryGetValue(evicted.Sender, out var evictedCount);
+                    if (evictedCount > 1)
+                        _perSenderCount[evicted.Sender] = evictedCount - 1;
+                    else
+                        _perSenderCount.Remove(evicted.Sender);
+                }
+                else
+                {
+                    return false; // Pool full and new tx is not better
+                }
+            }
 
             _transactions[tx.Hash] = tx;
             _orderedEntries.Add(new MempoolEntry(tx));
+            _perSenderCount[tx.Sender] = senderCount + 1;
             added = true;
         }
 
@@ -71,6 +124,7 @@ public sealed class Mempool
                 return false;
 
             _orderedEntries.Remove(new MempoolEntry(tx));
+            DecrementSenderCount(tx.Sender);
             return true;
         }
     }
@@ -123,19 +177,47 @@ public sealed class Mempool
                 }
             }
 
-            // Re-sort by priority (fee desc) and take top N
-            result.Sort((a, b) =>
+            // M-4: Re-sort by fee between senders but maintain nonce order within each sender.
+            // Group by sender, pick the first (lowest nonce) tx from each sender, then interleave.
+            var senderQueues = new Dictionary<Address, Queue<Transaction>>();
+            foreach (var tx in result)
             {
-                var feeCmp = b.EffectiveMaxFee.CompareTo(a.EffectiveMaxFee);
-                if (feeCmp != 0) return feeCmp;
-                var tipCmp = b.MaxPriorityFeePerGas.CompareTo(a.MaxPriorityFeePerGas);
-                if (tipCmp != 0) return tipCmp;
-                var nonceCmp = a.Nonce.CompareTo(b.Nonce);
-                if (nonceCmp != 0) return nonceCmp;
-                return a.Hash.CompareTo(b.Hash);
-            });
+                if (!senderQueues.TryGetValue(tx.Sender, out var queue))
+                {
+                    queue = new Queue<Transaction>();
+                    senderQueues[tx.Sender] = queue;
+                }
+                queue.Enqueue(tx); // Already sorted by nonce ascending per sender
+            }
 
-            return result.Take(maxCount).ToList();
+            var final = new List<Transaction>();
+            while (final.Count < maxCount && senderQueues.Count > 0)
+            {
+                // Pick the sender whose next tx has the highest fee
+                Address bestSender = default;
+                UInt256 bestFee = UInt256.Zero;
+                bool found = false;
+                foreach (var (sender, queue) in senderQueues)
+                {
+                    var fee = queue.Peek().EffectiveMaxFee;
+                    if (!found || fee > bestFee)
+                    {
+                        bestSender = sender;
+                        bestFee = fee;
+                        found = true;
+                    }
+                }
+
+                if (!found) break;
+
+                var nextTx = senderQueues[bestSender].Dequeue();
+                final.Add(nextTx);
+
+                if (senderQueues[bestSender].Count == 0)
+                    senderQueues.Remove(bestSender);
+            }
+
+            return final;
         }
     }
 
@@ -149,7 +231,10 @@ public sealed class Mempool
             foreach (var tx in confirmedTxs)
             {
                 if (_transactions.Remove(tx.Hash, out var existing))
+                {
                     _orderedEntries.Remove(new MempoolEntry(existing));
+                    DecrementSenderCount(existing.Sender);
+                }
             }
         }
     }
@@ -186,10 +271,24 @@ public sealed class Mempool
             foreach (var hash in toRemove)
             {
                 if (_transactions.Remove(hash, out var existing))
+                {
                     _orderedEntries.Remove(new MempoolEntry(existing));
+                    DecrementSenderCount(existing.Sender);
+                }
             }
         }
         return toRemove.Count;
+    }
+
+    private void DecrementSenderCount(Address sender)
+    {
+        if (_perSenderCount.TryGetValue(sender, out var count))
+        {
+            if (count > 1)
+                _perSenderCount[sender] = count - 1;
+            else
+                _perSenderCount.Remove(sender);
+        }
     }
 
     public bool Contains(Hash256 txHash)

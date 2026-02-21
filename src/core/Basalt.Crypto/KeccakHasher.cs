@@ -89,6 +89,9 @@ public static class KeccakHasher
         {
             BinaryPrimitives.WriteUInt64LittleEndian(output.Slice(i * 8, 8), state[i]);
         }
+
+        // AUDIT L-10: Clear state to prevent leaking hash internals
+        Array.Clear(state);
     }
 
     private static readonly ulong[] RoundConstants =

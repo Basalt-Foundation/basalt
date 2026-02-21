@@ -121,6 +121,19 @@ public class BridgeETHTests : IDisposable
     }
 
     /// <summary>
+    /// C-9: Lock native tokens so the bridge has a locked balance for Unlock tests.
+    /// </summary>
+    private void LockFunds(UInt256 amount)
+    {
+        var prevCaller = Context.Caller;
+        _host.SetCaller(_alice);
+        Context.TxValue = amount;
+        _host.Call(() => _bridge.Lock(new byte[] { 0xEE }));
+        Context.TxValue = UInt256.Zero;
+        _host.SetCaller(prevCaller);
+    }
+
+    /// <summary>
     /// Set up native transfer tracking.
     /// </summary>
     private List<(byte[] to, UInt256 amount)> SetupNativeTransferTracking()
@@ -318,7 +331,7 @@ public class BridgeETHTests : IDisposable
 
         _host.SetCaller(_admin);
         var msg = _host.ExpectRevert(() => _bridge.SetThreshold(0));
-        msg.Should().Contain("threshold must be >= 1");
+        msg.Should().Contain("threshold must be >= 2");
     }
 
     // ==========================================================================
@@ -452,6 +465,7 @@ public class BridgeETHTests : IDisposable
     public void Unlock_ValidTwoOfThreeSignatures_Succeeds()
     {
         RegisterAllRelayers();
+        LockFunds(5000); // C-9: ensure locked balance covers the unlock
         var transfers = SetupNativeTransferTracking();
 
         var recipient = _alice;
@@ -488,6 +502,7 @@ public class BridgeETHTests : IDisposable
     public void Unlock_AllThreeSignatures_Succeeds()
     {
         RegisterAllRelayers();
+        LockFunds(3000);
         var transfers = SetupNativeTransferTracking();
 
         var recipient = _alice;
@@ -548,6 +563,7 @@ public class BridgeETHTests : IDisposable
     public void Unlock_ReplayPrevention_Reverts()
     {
         RegisterAllRelayers();
+        LockFunds(5000);
         SetupNativeTransferTracking();
 
         var recipient = _alice;
@@ -626,6 +642,7 @@ public class BridgeETHTests : IDisposable
     public void Unlock_EmitsWithdrawalUnlockedEvent()
     {
         RegisterAllRelayers();
+        LockFunds(9999);
         SetupNativeTransferTracking();
 
         var recipient = _bob;

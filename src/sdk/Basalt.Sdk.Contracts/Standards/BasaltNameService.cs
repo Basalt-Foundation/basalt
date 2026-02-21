@@ -98,7 +98,14 @@ public partial class BasaltNameService
         Context.Require(!string.IsNullOrEmpty(ownerHex), "BNS: name not found");
         Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
 
-        _owners.Set(name, Convert.ToHexString(newOwner));
+        var newOwnerHex = Convert.ToHexString(newOwner);
+        _owners.Set(name, newOwnerHex);
+        // M-5: Update address mapping so Resolve(name) returns the new owner
+        _addresses.Set(name, newOwnerHex);
+        // M-5: Clear old owner's reverse lookup if it pointed to this name
+        var oldReverse = _reverse.Get(ownerHex);
+        if (oldReverse == name)
+            _reverse.Delete(ownerHex);
 
         Context.Emit(new NameTransferredEvent
         {

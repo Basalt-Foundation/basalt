@@ -33,7 +33,12 @@ public partial class SchemaRegistry
     {
         Context.Require(!string.IsNullOrEmpty(name), "SCHEMA: name required");
 
-        var hash = Blake3Hasher.Hash(Encoding.UTF8.GetBytes(name));
+        // M-10: Include creator address in schema ID derivation to prevent front-running
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        var input = new byte[nameBytes.Length + Context.Caller.Length];
+        nameBytes.CopyTo(input, 0);
+        Context.Caller.CopyTo(input, nameBytes.Length);
+        var hash = Blake3Hasher.Hash(input);
         var schemaIdHex = Convert.ToHexString(hash.ToArray());
 
         Context.Require(string.IsNullOrEmpty(_names.Get(schemaIdHex)), "SCHEMA: already exists");

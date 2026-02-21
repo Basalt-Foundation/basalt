@@ -88,6 +88,11 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     }
 
     // Arithmetic operators
+
+    /// <summary>
+    /// Unchecked addition. Wraps silently on overflow.
+    /// For overflow-safe arithmetic, use <see cref="CheckedAdd"/> or <see cref="TryAdd"/>.
+    /// </summary>
     public static UInt256 operator +(UInt256 a, UInt256 b)
     {
         var lo = a.Lo + b.Lo;
@@ -96,6 +101,10 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
         return new UInt256(lo, hi);
     }
 
+    /// <summary>
+    /// Unchecked subtraction. Wraps silently on underflow.
+    /// For underflow-safe arithmetic, use <see cref="CheckedSub"/> or <see cref="TrySub"/>.
+    /// </summary>
     public static UInt256 operator -(UInt256 a, UInt256 b)
     {
         var lo = a.Lo - b.Lo;
@@ -234,12 +243,9 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     // Checked arithmetic (CORE-02: overflow-safe methods for balance/gas calculations)
     public static UInt256 CheckedAdd(UInt256 a, UInt256 b)
     {
-        var lo = a.Lo + b.Lo;
-        var carry = lo < a.Lo ? (UInt128)1 : (UInt128)0;
-        var hi = a.Hi + b.Hi + carry;
-        if (hi < a.Hi || (carry == 0 && hi < b.Hi))
+        if (!TryAdd(a, b, out var result))
             throw new OverflowException("UInt256 addition overflow.");
-        return new UInt256(lo, hi);
+        return result;
     }
 
     public static UInt256 CheckedSub(UInt256 a, UInt256 b)
@@ -263,8 +269,17 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     {
         var lo = a.Lo + b.Lo;
         var carry = lo < a.Lo ? (UInt128)1 : (UInt128)0;
-        var hi = a.Hi + b.Hi + carry;
-        if (hi < a.Hi || (carry == 0 && hi < b.Hi))
+        // Two-stage hi overflow detection (AUDIT C-01):
+        // Stage 1: check a.Hi + b.Hi for overflow
+        var hiSum = a.Hi + b.Hi;
+        if (hiSum < a.Hi)
+        {
+            result = Zero;
+            return false;
+        }
+        // Stage 2: check hiSum + carry for overflow
+        var hi = hiSum + carry;
+        if (hi < hiSum)
         {
             result = Zero;
             return false;
@@ -326,6 +341,10 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     // Implicit conversions
     public static implicit operator UInt256(ulong value) => new(value);
     public static implicit operator UInt256(uint value) => new(value);
+    /// <summary>
+    /// Implicit conversion from int. Negative values are rejected at runtime.
+    /// This is intentionally implicit to allow convenient use of integer literals (e.g., <c>UInt256 x = 0</c>).
+    /// </summary>
     public static implicit operator UInt256(int value)
     {
         if (value < 0) throw new OverflowException("Cannot convert negative value to UInt256.");
@@ -355,15 +374,31 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
         if (IsZero) return "0";
         if (Hi == 0) return Lo.ToString();
 
-        // Convert to hex for large values
-        return "0x" + ToHexString();
+        // Consistent decimal format via BigInteger for all values
+        var bytes = ToArray(isBigEndian: true);
+        var big = new BigInteger(bytes, isUnsigned: true, isBigEndian: true);
+        return big.ToString();
     }
 
     public string ToHexString()
     {
+        if (IsZero) return "0";
         Span<byte> bytes = stackalloc byte[32];
         WriteTo(bytes, isBigEndian: true);
         return Convert.ToHexString(bytes).ToLowerInvariant().TrimStart('0');
+    }
+
+    public static bool TryParse(string? s, out UInt256 result)
+    {
+        result = Zero;
+        if (string.IsNullOrEmpty(s)) return false;
+        try
+        {
+            result = Parse(s);
+            return true;
+        }
+        catch (FormatException) { return false; }
+        catch (OverflowException) { return false; }
     }
 
     public static UInt256 Parse(string s)

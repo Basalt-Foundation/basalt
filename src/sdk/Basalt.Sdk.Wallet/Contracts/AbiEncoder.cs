@@ -183,10 +183,15 @@ public static class AbiEncoder
     /// </summary>
     /// <param name="data">The data to decode from.</param>
     /// <param name="offset">Byte offset to start reading from. Advanced by 4 + length.</param>
+    /// <remarks>M-21: Validates length against remaining data to prevent OOM from crafted payloads.</remarks>
     public static byte[] DecodeBytes(ReadOnlySpan<byte> data, ref int offset)
     {
+        if (offset + 4 > data.Length)
+            throw new ArgumentException("ABI: insufficient data for length prefix");
         var length = (int)BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset, 4));
         offset += 4;
+        if (length < 0 || offset + length > data.Length)
+            throw new ArgumentException($"ABI: claimed length {length} exceeds available data ({data.Length - offset} bytes remaining)");
         var result = data.Slice(offset, length).ToArray();
         offset += length;
         return result;

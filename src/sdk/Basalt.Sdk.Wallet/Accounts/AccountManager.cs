@@ -50,15 +50,21 @@ public sealed class AccountManager : IDisposable
     /// <param name="address">The address of the account to remove.</param>
     /// <returns><c>true</c> if the account was found and removed; otherwise, <c>false</c>.</returns>
     /// <exception cref="ObjectDisposedException">Thrown if the manager has been disposed.</exception>
+    /// <remarks>
+    /// H-16: The removed account is disposed to zero private key material.
+    /// </remarks>
     public bool Remove(Address address)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (!_accounts.Remove(address))
+        if (!_accounts.Remove(address, out var removed))
             return false;
 
         if (ActiveAccount is not null && ActiveAccount.Address == address)
             ActiveAccount = null;
+
+        // H-16: Dispose the removed account to zero private key material
+        removed.Dispose();
 
         return true;
     }

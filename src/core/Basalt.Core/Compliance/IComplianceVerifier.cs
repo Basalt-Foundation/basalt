@@ -22,7 +22,7 @@ public interface IComplianceVerifier
     /// Get the proof requirements for a given contract/token address.
     /// Returns the required schemas from the compliance policy, if any.
     /// </summary>
-    ProofRequirement[] GetRequirements(byte[] contractAddress);
+    ProofRequirement[] GetRequirements(Address contractAddress);
 
     /// <summary>
     /// Check traditional (non-ZK) compliance rules for a transfer.
@@ -37,6 +37,12 @@ public interface IComplianceVerifier
     /// Reset the nullifier set. Called at block boundaries to bound memory usage
     /// and allow cross-block proof reuse (COMPL-07).
     /// </summary>
+    /// <remarks>
+    /// SECURITY NOTE: Nullifiers are per-block only. An attacker could replay a proof
+    /// in a subsequent block. This is acceptable because each proof is tied to a specific
+    /// transaction (nonce, sender) which prevents replay at the transaction level.
+    /// Cross-block nullifier tracking is not implemented due to unbounded storage growth.
+    /// </remarks>
     void ResetNullifiers();
 }
 
@@ -47,7 +53,10 @@ public readonly struct ComplianceCheckOutcome
 {
     public bool Allowed { get; init; }
     public BasaltErrorCode ErrorCode { get; init; }
-    public string Reason { get; init; }
+    public string Reason { get; init; } = "";
+
+    /// <summary>Parameterless constructor for safe default initialization.</summary>
+    public ComplianceCheckOutcome() { }
 
     public static ComplianceCheckOutcome Success { get; } = new()
     {

@@ -52,13 +52,15 @@ public sealed class HostInterface
 
     public Hash256 Blake3Hash(ReadOnlySpan<byte> data)
     {
-        _ctx.GasMeter.Consume(GasTable.Blake3Hash + (ulong)(data.Length + 31) / 32 * GasTable.Blake3HashPerWord);
+        // H-11: Cast to ulong before addition to prevent int overflow
+        _ctx.GasMeter.Consume(GasTable.Blake3Hash + ((ulong)data.Length + 31) / 32 * GasTable.Blake3HashPerWord);
         return Blake3Hasher.Hash(data);
     }
 
     public byte[] Keccak256(ReadOnlySpan<byte> data)
     {
-        _ctx.GasMeter.Consume(GasTable.Keccak256 + (ulong)(data.Length + 31) / 32 * GasTable.Keccak256PerWord);
+        // H-11: Cast to ulong before addition to prevent int overflow
+        _ctx.GasMeter.Consume(GasTable.Keccak256 + ((ulong)data.Length + 31) / 32 * GasTable.Keccak256PerWord);
         return KeccakHasher.Hash(data);
     }
 
@@ -105,6 +107,10 @@ public sealed class HostInterface
 
     public void EmitEvent(Hash256 eventSignature, Hash256[] topics, byte[] data)
     {
+        // L-13: Cap event logs per transaction
+        if (_ctx.EmittedLogs.Count >= VmExecutionContext.MaxLogsPerTransaction)
+            throw new ContractRevertException($"Maximum event logs per transaction ({VmExecutionContext.MaxLogsPerTransaction}) exceeded.");
+
         _ctx.GasMeter.Consume(
             GasTable.Log +
             (ulong)topics.Length * GasTable.LogTopic +
