@@ -17,7 +17,12 @@ public static class X25519
     /// <summary>X25519 key size in bytes.</summary>
     public const int KeySize = 32;
 
-    /// <summary>NET-C02: Domain separation prefix for transport key signatures.</summary>
+    /// <summary>
+    /// NET-C02: Domain separation prefix for transport key signatures.
+    /// The null terminator (\0) is intentional — it acts as an unambiguous delimiter
+    /// between the domain tag and the key material, preventing prefix collisions
+    /// if the domain string were ever extended.
+    /// </summary>
     private static readonly byte[] TransportKeyDomain = "basalt-transport-key-v1\0"u8.ToArray();
 
     /// <summary>
@@ -39,6 +44,12 @@ public static class X25519
     /// TransportEncryption applies HKDF again with directional info strings to derive
     /// separate initiator-to-responder and responder-to-initiator encryption keys.
     /// </summary>
+    /// <remarks>
+    /// SECURITY: NSec's X25519 implementation (via libsodium) automatically rejects
+    /// low-order points and returns null from Agree() if the peer's public key is a
+    /// small-subgroup element. This is caught by the null-coalescing throw below.
+    /// No additional low-order point validation is needed.
+    /// </remarks>
     public static byte[] DeriveSharedSecret(ReadOnlySpan<byte> myPrivateKey, ReadOnlySpan<byte> theirPublicKey)
     {
         if (myPrivateKey.Length != KeySize)

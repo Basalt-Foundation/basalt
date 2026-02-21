@@ -47,6 +47,8 @@ message BlockReply {
   uint64 gas_used = 7;
   uint64 gas_limit = 8;
   int32 transaction_count = 9;
+  // M-2: EIP-1559 base fee
+  string base_fee = 10;
 }
 
 message GetAccountRequest {
@@ -73,6 +75,9 @@ message SubmitTransactionRequest {
   uint32 chain_id = 10;
   bytes signature = 11;
   bytes sender_public_key = 12;
+  // M-3: EIP-1559 fee fields
+  string max_fee_per_gas = 13;
+  string max_priority_fee_per_gas = 14;
 }
 
 message TransactionReply {

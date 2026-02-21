@@ -59,6 +59,11 @@ public sealed class MerklePatriciaTrie
     /// <summary>
     /// Delete a key from the trie.
     /// </summary>
+    /// <remarks>
+    /// <para><b>L-08:</b> The private <c>Delete(Hash256, NibblePath)</c> method uses a sentinel
+    /// return convention: <c>null</c> = child entirely deleted, same hash as input = key not found,
+    /// different hash = child modified. The public method translates these into a simple bool.</para>
+    /// </remarks>
     public bool Delete(byte[] key)
     {
         if (_rootHash == null || _rootHash == Hash256.Zero)
@@ -123,6 +128,51 @@ public sealed class MerklePatriciaTrie
         if (value == null)
             return false;
         return value.AsSpan().SequenceEqual(proof.Value);
+    }
+
+    /// <summary>
+    /// Collect all node hashes reachable from the current root (mark phase of GC).
+    /// Returns the set of hashes that are still in use. Nodes not in this set
+    /// can be safely deleted from the store (sweep phase).
+    /// </summary>
+    /// <remarks>
+    /// <b>H-01:</b> This enables garbage collection of stale trie nodes that accumulate
+    /// after mutations. Call periodically (e.g., every N blocks) and pass the result to
+    /// <see cref="InMemoryTrieNodeStore.Prune"/> or an equivalent sweep on RocksDB.
+    /// For multi-root retention (e.g., keep last K state roots), union the reachable sets.
+    /// </remarks>
+    public HashSet<Hash256> CollectReachableNodes()
+    {
+        var reachable = new HashSet<Hash256>();
+        if (_rootHash != null && _rootHash != Hash256.Zero)
+            CollectReachable(_rootHash.Value, reachable);
+        return reachable;
+    }
+
+    private void CollectReachable(Hash256 nodeHash, HashSet<Hash256> reachable)
+    {
+        if (!reachable.Add(nodeHash))
+            return; // Already visited
+
+        var node = _store.Get(nodeHash);
+        if (node == null)
+            return;
+
+        switch (node.NodeType)
+        {
+            case TrieNodeType.Extension:
+                if (node.ChildHash.HasValue)
+                    CollectReachable(node.ChildHash.Value, reachable);
+                break;
+
+            case TrieNodeType.Branch:
+                for (int i = 0; i < 16; i++)
+                {
+                    if (node.Children[i].HasValue)
+                        CollectReachable(node.Children[i]!.Value, reachable);
+                }
+                break;
+        }
     }
 
     #region Internal recursive operations

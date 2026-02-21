@@ -20,12 +20,12 @@ public class BST721Tests : IDisposable
 
     public BST721Tests()
     {
-        _token = new BST721Token("BasaltNFT", "BNFT");
         _owner = BasaltTestHost.CreateAddress(1);
         _alice = BasaltTestHost.CreateAddress(2);
         _bob = BasaltTestHost.CreateAddress(3);
         _carol = BasaltTestHost.CreateAddress(4);
         _host.SetCaller(_owner);
+        _token = new BST721Token("BasaltNFT", "BNFT");
     }
 
     // --- Mint ---

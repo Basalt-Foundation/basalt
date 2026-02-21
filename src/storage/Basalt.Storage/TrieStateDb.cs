@@ -77,6 +77,19 @@ public sealed class TrieStateDb : IStateDatabase
         return _worldTrie.RootHash;
     }
 
+    /// <summary>
+    /// Create a forked snapshot of this state database.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Invariant (H-02):</b> The <c>_storageTries</c> dictionary is NOT carried over
+    /// to the forked instance. <see cref="ComputeStateRoot"/> is called first to flush all
+    /// pending storage trie roots into account state, so the fork reconstructs storage tries
+    /// from the committed storage root on demand. Any storage mutations after the last
+    /// <c>ComputeStateRoot()</c> call but before <c>Fork()</c> are correctly captured because
+    /// <c>Fork()</c> calls <c>ComputeStateRoot()</c> internally.</para>
+    /// <para>Callers that bypass <see cref="FlatStateDb"/> and use <c>TrieStateDb.Fork()</c>
+    /// directly should be aware of this: the fork sees committed storage state only.</para>
+    /// </remarks>
     public IStateDatabase Fork()
     {
         var currentRoot = ComputeStateRoot();

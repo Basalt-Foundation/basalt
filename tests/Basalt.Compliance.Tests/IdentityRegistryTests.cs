@@ -147,6 +147,35 @@ public class IdentityRegistryTests
     }
 
     [Fact]
+    public void GetCountryCode_Returns_Zero_For_Expired_Attestation()
+    {
+        // M-02: GetCountryCode should check attestation expiry
+        _registry.ApproveProvider(_provider);
+        _registry.IssueAttestation(_provider, new IdentityAttestation
+        {
+            Subject = _subject, Issuer = _provider, IssuedAt = 1000,
+            ExpiresAt = 3000, Level = KycLevel.Basic, CountryCode = 276, ClaimHash = new byte[32],
+        });
+
+        _registry.GetCountryCode(_subject, currentTimestamp: 2000).Should().Be(276); // Not expired
+        _registry.GetCountryCode(_subject, currentTimestamp: 4000).Should().Be(0);   // Expired
+    }
+
+    [Fact]
+    public void GetCountryCode_NoTimestamp_IgnoresExpiry()
+    {
+        // Backward compatible: default timestamp=0 skips expiry check
+        _registry.ApproveProvider(_provider);
+        _registry.IssueAttestation(_provider, new IdentityAttestation
+        {
+            Subject = _subject, Issuer = _provider, IssuedAt = 1000,
+            ExpiresAt = 3000, Level = KycLevel.Basic, CountryCode = 276, ClaimHash = new byte[32],
+        });
+
+        _registry.GetCountryCode(_subject).Should().Be(276); // No timestamp = no expiry check
+    }
+
+    [Fact]
     public void AuditLog_Records_All_Operations()
     {
         _registry.ApproveProvider(_provider);

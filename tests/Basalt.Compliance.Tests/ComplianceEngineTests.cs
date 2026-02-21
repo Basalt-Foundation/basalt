@@ -1,4 +1,5 @@
 using Basalt.Compliance;
+using Basalt.Core;
 using FluentAssertions;
 using Xunit;
 
@@ -202,6 +203,24 @@ public class ComplianceEngineTests
     }
 
     [Fact]
+    public void HoldingLimit_Overflow_Still_Blocked()
+    {
+        // H-01: ulong overflow bypass — receiverCurrentBalance + amount wraps to small value
+        KycBoth();
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        });
+
+        // ulong.MaxValue + 500 would wrap to 499, which is < 1000
+        var result = _engine.CheckTransfer(_tokenAddr, _sender, _receiver, 500, 2000,
+            receiverCurrentBalance: ulong.MaxValue);
+        result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(ComplianceErrorCode.HoldingLimit);
+    }
+
+    [Fact]
     public void HoldingLimit_Allows_Under_Limit()
     {
         KycBoth();
@@ -347,5 +366,120 @@ public class ComplianceEngineTests
     public void GetPolicy_Returns_Null_For_Unknown_Token()
     {
         _engine.GetPolicy(Addr(99)).Should().BeNull();
+    }
+
+    // --- GetPolicy defensive copy (H-03) ---
+
+    [Fact]
+    public void GetPolicy_Returns_Defensive_Copy()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            Paused = false,
+        });
+
+        var policy = _engine.GetPolicy(_tokenAddr)!;
+        policy.Paused = true; // Mutate the copy
+
+        // Original should be unaffected
+        var original = _engine.GetPolicy(_tokenAddr)!;
+        original.Paused.Should().BeFalse();
+    }
+
+    // --- SetPolicy null caller bypass (M-04) ---
+
+    [Fact]
+    public void SetPolicy_NullCaller_Cannot_Override_Existing_With_Issuer()
+    {
+        // First caller sets the policy with an issuer
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        }, caller: _sender);
+
+        // Null caller tries to override — should fail
+        var result = _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 9999,
+        }, caller: null);
+        result.Should().BeFalse();
+
+        // Original policy should be unchanged
+        _engine.GetPolicy(_tokenAddr)!.MaxHoldingAmount.Should().Be(1000);
+    }
+
+    [Fact]
+    public void SetPolicy_OriginalIssuer_Can_Update()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        }, caller: _sender);
+
+        var result = _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 2000,
+        }, caller: _sender);
+        result.Should().BeTrue();
+
+        _engine.GetPolicy(_tokenAddr)!.MaxHoldingAmount.Should().Be(2000);
+    }
+
+    // --- CheckTransferCompliance (H-02: IComplianceVerifier integration) ---
+
+    [Fact]
+    public void CheckTransferCompliance_Returns_Success_Without_Policy()
+    {
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Blocks_Sanctioned_Sender()
+    {
+        _sanctions.AddSanction(_sender, "OFAC");
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            SanctionsCheckEnabled = true,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeFalse();
+        outcome.ErrorCode.Should().Be(BasaltErrorCode.SanctionedAddress);
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Blocks_Missing_KYC()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            RequiredSenderKycLevel = KycLevel.Basic,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeFalse();
+        outcome.ErrorCode.Should().Be(BasaltErrorCode.KycRequired);
+    }
+
+    [Fact]
+    public void CheckTransferCompliance_Allows_With_Valid_KYC()
+    {
+        KycBoth();
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            RequiredSenderKycLevel = KycLevel.Basic,
+            RequiredReceiverKycLevel = KycLevel.Basic,
+        });
+
+        var outcome = _engine.CheckTransferCompliance(_tokenAddr, _sender, _receiver, 100, 2000, 0);
+        outcome.Allowed.Should().BeTrue();
     }
 }

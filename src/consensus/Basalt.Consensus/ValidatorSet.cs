@@ -25,6 +25,7 @@ public sealed class ValidatorSet
     private readonly List<ValidatorInfo> _validators;
     private readonly Dictionary<PeerId, ValidatorInfo> _byPeerId;
     private readonly Dictionary<Address, ValidatorInfo> _byAddress;
+    private readonly object _lock = new();
     private Func<ulong, ValidatorInfo>? _leaderSelector;
 
     public ValidatorSet(IEnumerable<ValidatorInfo> validators)
@@ -51,10 +52,13 @@ public sealed class ValidatorSet
     public IReadOnlyList<ValidatorInfo> Validators => _validators;
 
     /// <summary>
-    /// Get validator by peer ID.
+    /// Get validator by peer ID. Thread-safe.
     /// </summary>
-    public ValidatorInfo? GetByPeerId(PeerId id) =>
-        _byPeerId.TryGetValue(id, out var v) ? v : null;
+    public ValidatorInfo? GetByPeerId(PeerId id)
+    {
+        lock (_lock)
+            return _byPeerId.TryGetValue(id, out var v) ? v : null;
+    }
 
     /// <summary>
     /// Get validator by address.
@@ -63,9 +67,13 @@ public sealed class ValidatorSet
         _byAddress.TryGetValue(address, out var v) ? v : null;
 
     /// <summary>
-    /// Check if a peer ID belongs to a validator.
+    /// Check if a peer ID belongs to a validator. Thread-safe.
     /// </summary>
-    public bool IsValidator(PeerId id) => _byPeerId.ContainsKey(id);
+    public bool IsValidator(PeerId id)
+    {
+        lock (_lock)
+            return _byPeerId.ContainsKey(id);
+    }
 
     /// <summary>
     /// Update a validator's identity after handshake reveals their real PeerId.
@@ -73,33 +81,39 @@ public sealed class ValidatorSet
     /// </summary>
     public bool UpdateValidatorIdentity(int validatorIndex, PeerId newPeerId, PublicKey newPublicKey, BlsPublicKey? newBlsPublicKey = null)
     {
-        var validator = _validators.FirstOrDefault(v => v.Index == validatorIndex);
-        if (validator == null)
-            return false;
+        lock (_lock)
+        {
+            var validator = _validators.FirstOrDefault(v => v.Index == validatorIndex);
+            if (validator == null)
+                return false;
 
-        // F-CON-04: Reject if the new PeerId is already claimed by a different validator
-        if (_byPeerId.TryGetValue(newPeerId, out var existing) && existing.Index != validatorIndex)
-            return false;
+            // F-CON-04: Reject if the new PeerId is already claimed by a different validator
+            if (_byPeerId.TryGetValue(newPeerId, out var existing) && existing.Index != validatorIndex)
+                return false;
 
-        // Remove old PeerId mapping
-        _byPeerId.Remove(validator.PeerId);
+            // Remove old PeerId mapping
+            _byPeerId.Remove(validator.PeerId);
 
-        // Update identity
-        validator.PeerId = newPeerId;
-        validator.PublicKey = newPublicKey;
-        if (newBlsPublicKey.HasValue)
-            validator.BlsPublicKey = newBlsPublicKey.Value;
+            // Update identity
+            validator.PeerId = newPeerId;
+            validator.PublicKey = newPublicKey;
+            if (newBlsPublicKey.HasValue)
+                validator.BlsPublicKey = newBlsPublicKey.Value;
 
-        // Add new PeerId mapping
-        _byPeerId[newPeerId] = validator;
-        return true;
+            // Add new PeerId mapping
+            _byPeerId[newPeerId] = validator;
+            return true;
+        }
     }
 
     /// <summary>
     /// Get the index of a validator by their PeerId. Returns -1 if not found.
     /// </summary>
-    public int GetValidatorIndex(PeerId id) =>
-        _byPeerId.TryGetValue(id, out var v) ? v.Index : -1;
+    public int GetValidatorIndex(PeerId id)
+    {
+        lock (_lock)
+            return _byPeerId.TryGetValue(id, out var v) ? v.Index : -1;
+    }
 
     /// <summary>
     /// Returns validators whose bit is set in the bitmap (bit i = validator at index i).
@@ -128,26 +142,37 @@ public sealed class ValidatorSet
     /// Copy PeerId, PublicKey, and BlsPublicKey from a previous ValidatorSet
     /// for validators that exist in both sets (matched by Address).
     /// Rebuilds the _byPeerId dictionary after transfer.
+    /// <para>
+    /// <b>Ordering constraint (L-06):</b> Must be called before the new ValidatorSet is used
+    /// for consensus, as validators start with placeholder identities. Callers (typically
+    /// <see cref="EpochManager"/>) must ensure this completes before <c>BasaltBft.UpdateValidatorSet</c>
+    /// or <c>PipelinedConsensus.UpdateValidatorSet</c> atomically swap in the new set.
+    /// If a validator in the new set was not in the previous set, it retains its placeholder
+    /// identity until a P2P handshake updates it via <see cref="UpdateValidatorIdentity"/>.
+    /// </para>
     /// </summary>
     public void TransferIdentities(ValidatorSet? previous)
     {
         if (previous == null) return;
 
-        foreach (var validator in _validators)
+        lock (_lock)
         {
-            var old = previous.GetByAddress(validator.Address);
-            if (old == null) continue;
+            foreach (var validator in _validators)
+            {
+                var old = previous.GetByAddress(validator.Address);
+                if (old == null) continue;
 
-            // Remove old PeerId mapping
-            _byPeerId.Remove(validator.PeerId);
+                // Remove old PeerId mapping
+                _byPeerId.Remove(validator.PeerId);
 
-            // Copy identity
-            validator.PeerId = old.PeerId;
-            validator.PublicKey = old.PublicKey;
-            validator.BlsPublicKey = old.BlsPublicKey;
+                // Copy identity
+                validator.PeerId = old.PeerId;
+                validator.PublicKey = old.PublicKey;
+                validator.BlsPublicKey = old.BlsPublicKey;
 
-            // Add new PeerId mapping
-            _byPeerId[validator.PeerId] = validator;
+                // Add new PeerId mapping
+                _byPeerId[validator.PeerId] = validator;
+            }
         }
     }
 

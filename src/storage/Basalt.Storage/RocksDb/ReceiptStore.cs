@@ -70,6 +70,11 @@ public sealed class ReceiptData
     public UInt256 EffectiveGasPrice { get; init; } = UInt256.Zero;
     public LogData[] Logs { get; init; } = [];
 
+    /// <remarks>
+    /// <para><b>L-06:</b> The size calculation assumes <see cref="Basalt.Codec.BasaltWriter.WriteBytes"/>
+    /// uses a 4-byte fixed-length prefix. The <c>4 + log.Data.Length</c> term per log accounts
+    /// for this. If the codec changes to varint length encoding, update the size formula.</para>
+    /// </remarks>
     public byte[] Encode()
     {
         int size = Hash256.Size * 3 + 8 + 4 + Address.Size * 2 + 8 + 1 + 4 + 32 + 4;

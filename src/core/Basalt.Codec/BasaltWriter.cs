@@ -111,6 +111,7 @@ public ref struct BasaltWriter
     /// </summary>
     public void WriteString(string value)
     {
+        ArgumentNullException.ThrowIfNull(value);
         var byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
         WriteVarInt((ulong)byteCount);
         EnsureCapacity(byteCount);

@@ -50,6 +50,10 @@ public static class KeystoreManager
         var json = JsonSerializer.Serialize(walletFile, WalletKeystoreJsonContext.Default.WalletKeystoreFile);
 
         await File.WriteAllTextAsync(filePath, json, cancellationToken).ConfigureAwait(false);
+
+        // M-17: Set restrictive file permissions (owner read/write only) on Unix platforms
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     /// <summary>

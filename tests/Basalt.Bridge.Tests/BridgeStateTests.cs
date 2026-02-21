@@ -188,6 +188,15 @@ public class BridgeStateTests
     }
 
     [Fact]
+    public void ConfirmDeposit_Stores_BlockHeight()
+    {
+        // HIGH-04: ConfirmDeposit must store blockHeight
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        _bridge.ConfirmDeposit(0, 42).Should().BeTrue();
+        _bridge.GetDeposit(0)!.BlockHeight.Should().Be(42);
+    }
+
+    [Fact]
     public void ConfirmDeposit_AlreadyConfirmed_Returns_False()
     {
         // BRIDGE-05: re-confirm is no longer allowed
@@ -319,9 +328,9 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         var sig = MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray());
-        withdrawal.Signatures.Add(sig);
+        withdrawal.AddSignature(sig);
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
     }
@@ -341,8 +350,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse(); // Replay blocked
@@ -365,8 +374,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray()));
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray()));
 
         // Only 1 of 2 required signatures
         _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
@@ -387,7 +396,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        withdrawal.Signatures.Add(new RelayerSignature
+        withdrawal.AddSignature(new RelayerSignature
         {
             PublicKey = pubKey.ToArray(),
             Signature = new byte[64], // invalid zeros
@@ -413,11 +422,124 @@ public class BridgeStateTests
                 StateRoot = new byte[32],
             };
 
-            var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
-            withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+            var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+            withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
             _bridge.Unlock(withdrawal, relayer).Should().BeTrue($"withdrawal nonce {i} should succeed");
         }
+    }
+
+    [Fact]
+    public void Unlock_With_Valid_MerkleProof_Succeeds()
+    {
+        // CRIT-01: Merkle proof must be verified during unlock
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        // Lock tokens first
+        _bridge.Lock(Addr(1), Addr(2), 1000);
+
+        // Build a valid Merkle tree from deposit leaves
+        var depositLeaf = BridgeState.ComputeDepositLeaf(0, Addr(2), 1000);
+        var otherLeaf1 = BridgeState.ComputeDepositLeaf(1, Addr(3), 2000);
+        var otherLeaf2 = BridgeState.ComputeDepositLeaf(2, Addr(4), 3000);
+        var otherLeaf3 = BridgeState.ComputeDepositLeaf(3, Addr(5), 4000);
+        var leaves = new[] { depositLeaf, otherLeaf1, otherLeaf2, otherLeaf3 };
+        var (root, proof) = BridgeProofVerifier.BuildMerkleProof(leaves, 0);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 1000,
+            StateRoot = root,
+            Proof = proof,
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Unlock_With_Invalid_MerkleProof_Fails()
+    {
+        // CRIT-01: Invalid Merkle proof must cause unlock to fail
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var fakeRoot = new byte[32];
+        fakeRoot[0] = 0xFF;
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = fakeRoot,
+            Proof = [new byte[32]], // Invalid proof
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Unlock_Decrements_Locked_Balance()
+    {
+        // HIGH-02: Unlock must decrement locked balance
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        _bridge.Lock(Addr(1), Addr(2), 5000);
+        _bridge.GetLockedBalance().Should().Be(5000);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 3000,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
+        _bridge.GetLockedBalance().Should().Be(2000); // 5000 - 3000
+    }
+
+    [Fact]
+    public void Unlock_Per_Token_Balance_Decremented()
+    {
+        // HIGH-02: Per-token locked balance decremented correctly
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var token = new byte[20]; token[0] = 0xAA;
+        _bridge.Lock(Addr(1), Addr(2), 10000, token);
+        _bridge.GetLockedBalance(token).Should().Be(10000);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 4000,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer, token).Should().BeTrue();
+        _bridge.GetLockedBalance(token).Should().Be(6000); // 10000 - 4000
     }
 
     // ── IsWithdrawalProcessed ────────────────────────────────────────────
@@ -438,8 +560,8 @@ public class BridgeStateTests
             Amount = 100,
             StateRoot = new byte[32],
         };
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
-        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer);
         _bridge.IsWithdrawalProcessed(0).Should().BeTrue();
@@ -466,8 +588,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var hash1 = BridgeState.ComputeWithdrawalHash(withdrawal);
-        var hash2 = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var hash1 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        var hash2 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
 
         hash1.Should().BeEquivalentTo(hash2);
     }
@@ -490,8 +612,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var h1 = BridgeState.ComputeWithdrawalHash(w1);
-        var h2 = BridgeState.ComputeWithdrawalHash(w2);
+        var h1 = BridgeState.ComputeWithdrawalHash(w1, 1);
+        var h2 = BridgeState.ComputeWithdrawalHash(w2, 1);
 
         h1.Should().NotBeEquivalentTo(h2);
     }
@@ -514,8 +636,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
     }
 
     [Fact]
@@ -536,8 +658,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
     }
 
     [Fact]
@@ -561,8 +683,26 @@ public class BridgeStateTests
             StateRoot = root2,
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
+    }
+
+    [Fact]
+    public void ComputeWithdrawalHash_Different_ChainIds_Produce_Different_Hashes()
+    {
+        // HIGH-01: chain ID is now required — different chains produce different hashes
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = new byte[32],
+        };
+
+        var h1 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        var h2 = BridgeState.ComputeWithdrawalHash(withdrawal, 42);
+
+        h1.Should().NotBeEquivalentTo(h2);
     }
 
     [Fact]
@@ -576,7 +716,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(withdrawal).Should().HaveCount(32);
+        BridgeState.ComputeWithdrawalHash(withdrawal, 1).Should().HaveCount(32);
     }
 
     // ── Chain ID configuration ───────────────────────────────────────────
@@ -589,6 +729,92 @@ public class BridgeStateTests
 
         deposit.SourceChainId.Should().Be(42);
         deposit.DestinationChainId.Should().Be(5);
+    }
+
+    // ── Pause (MED-04) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Lock_While_Paused_Throws()
+    {
+        _bridge.Pause();
+        var act = () => _bridge.Lock(Addr(1), Addr(2), 100);
+        act.Should().Throw<BridgeException>().WithMessage("*paused*");
+    }
+
+    [Fact]
+    public void Unlock_While_Paused_Returns_False()
+    {
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Pause();
+        _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Resume_After_Pause_Allows_Operations()
+    {
+        _bridge.Pause();
+        _bridge.IsPaused.Should().BeTrue();
+
+        _bridge.Resume();
+        _bridge.IsPaused.Should().BeFalse();
+
+        // Should work after resume
+        var deposit = _bridge.Lock(Addr(1), Addr(2), 100);
+        deposit.Amount.Should().Be(100);
+    }
+
+    // ── Deposit expiry/cancellation (MED-01) ─────────────────────────
+
+    [Fact]
+    public void CancelExpiredDeposit_Cancels_Old_Pending_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 100 };
+        bridge.Lock(Addr(1), Addr(2), 5000);
+        bridge.GetLockedBalance().Should().Be(5000);
+
+        // Simulate enough time passing
+        var futureTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 200;
+        bridge.CancelExpiredDeposit(0, futureTime).Should().BeTrue();
+
+        bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Failed);
+        bridge.GetLockedBalance().Should().Be(0); // Refunded
+    }
+
+    [Fact]
+    public void CancelExpiredDeposit_Rejects_NonExpired_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 86400 };
+        bridge.Lock(Addr(1), Addr(2), 1000);
+
+        // Try to cancel immediately (not expired yet)
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        bridge.CancelExpiredDeposit(0, now).Should().BeFalse();
+        bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Pending);
+    }
+
+    [Fact]
+    public void CancelExpiredDeposit_Rejects_Confirmed_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 100 };
+        bridge.Lock(Addr(1), Addr(2), 1000);
+        bridge.ConfirmDeposit(0, 42);
+
+        var futureTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 200;
+        bridge.CancelExpiredDeposit(0, futureTime).Should().BeFalse();
     }
 
     // ── Thread safety ────────────────────────────────────────────────────

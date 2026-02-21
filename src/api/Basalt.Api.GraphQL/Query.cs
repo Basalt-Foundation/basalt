@@ -7,6 +7,70 @@ namespace Basalt.Api.GraphQL;
 
 public class Query
 {
+    /// <summary>L-6: Shared helper — convert in-memory TransactionReceipt to ReceiptData.</summary>
+    private static ReceiptData MapToReceiptData(TransactionReceipt r) => new()
+    {
+        TransactionHash = r.TransactionHash,
+        BlockHash = r.BlockHash,
+        BlockNumber = r.BlockNumber,
+        TransactionIndex = r.TransactionIndex,
+        From = r.From,
+        To = r.To,
+        GasUsed = r.GasUsed,
+        Success = r.Success,
+        ErrorCode = (int)r.ErrorCode,
+        PostStateRoot = r.PostStateRoot,
+        EffectiveGasPrice = r.EffectiveGasPrice,
+        Logs = (r.Logs ?? []).Select(l => new LogData
+        {
+            Contract = l.Contract,
+            EventSignature = l.EventSignature,
+            Topics = l.Topics ?? [],
+            Data = l.Data ?? [],
+        }).ToArray(),
+    };
+
+    /// <summary>L-6: Shared helper — convert ReceiptData to ReceiptResult.</summary>
+    private static ReceiptResult MapToReceiptResult(ReceiptData receipt) => new()
+    {
+        TransactionHash = receipt.TransactionHash.ToHexString(),
+        BlockHash = receipt.BlockHash.ToHexString(),
+        BlockNumber = receipt.BlockNumber,
+        TransactionIndex = receipt.TransactionIndex,
+        From = receipt.From.ToHexString(),
+        To = receipt.To.ToHexString(),
+        GasUsed = receipt.GasUsed,
+        Success = receipt.Success,
+        ErrorCode = ((BasaltErrorCode)receipt.ErrorCode).ToString(),
+        PostStateRoot = receipt.PostStateRoot.ToHexString(),
+        EffectiveGasPrice = receipt.EffectiveGasPrice.ToString(),
+        Logs = receipt.Logs.Select(l => new EventLogResult
+        {
+            Contract = l.Contract.ToHexString(),
+            EventSignature = l.EventSignature.ToHexString(),
+            Topics = l.Topics.Select(t => t.ToHexString()).ToList(),
+            Data = l.Data.Length > 0 ? Convert.ToHexString(l.Data) : null,
+        }).ToList(),
+    };
+
+    /// <summary>L-6: Shared receipt lookup — persistent store first, then in-memory fallback.</summary>
+    private static ReceiptData? LookupReceipt(Hash256 hash, ChainManager chainManager, ReceiptStore? receiptStore)
+    {
+        var receipt = receiptStore?.GetReceipt(hash);
+        if (receipt != null) return receipt;
+
+        var latestNum = chainManager.LatestBlockNumber;
+        var scanDepth = Math.Min(latestNum + 1, 1000UL);
+        for (ulong i = 0; i < scanDepth; i++)
+        {
+            var block = chainManager.GetBlockByNumber(latestNum - i);
+            if (block?.Receipts == null) continue;
+            var r = block.Receipts.FirstOrDefault(r => r.TransactionHash == hash);
+            if (r != null) return MapToReceiptData(r);
+        }
+        return null;
+    }
+
     public ReceiptResult? GetReceipt(string txHash,
         [Service] ChainManager chainManager,
         [Service] IServiceProvider serviceProvider)
@@ -15,69 +79,8 @@ public class Query
             return null;
 
         var receiptStore = serviceProvider.GetService(typeof(ReceiptStore)) as ReceiptStore;
-        ReceiptData? receipt = receiptStore?.GetReceipt(hash);
-
-        // Fallback: scan recent blocks for in-memory receipts
-        if (receipt == null)
-        {
-            var latestNum = chainManager.LatestBlockNumber;
-            var scanDepth = Math.Min(latestNum + 1, 1000UL);
-            for (ulong i = 0; i < scanDepth; i++)
-            {
-                var block = chainManager.GetBlockByNumber(latestNum - i);
-                if (block?.Receipts == null) continue;
-                var r = block.Receipts.FirstOrDefault(r => r.TransactionHash == hash);
-                if (r != null)
-                {
-                    receipt = new ReceiptData
-                    {
-                        TransactionHash = r.TransactionHash,
-                        BlockHash = r.BlockHash,
-                        BlockNumber = r.BlockNumber,
-                        TransactionIndex = r.TransactionIndex,
-                        From = r.From,
-                        To = r.To,
-                        GasUsed = r.GasUsed,
-                        Success = r.Success,
-                        ErrorCode = (int)r.ErrorCode,
-                        PostStateRoot = r.PostStateRoot,
-                        EffectiveGasPrice = r.EffectiveGasPrice,
-                        Logs = (r.Logs ?? []).Select(l => new LogData
-                        {
-                            Contract = l.Contract,
-                            EventSignature = l.EventSignature,
-                            Topics = l.Topics ?? [],
-                            Data = l.Data ?? [],
-                        }).ToArray(),
-                    };
-                    break;
-                }
-            }
-        }
-
-        if (receipt == null) return null;
-
-        return new ReceiptResult
-        {
-            TransactionHash = receipt.TransactionHash.ToHexString(),
-            BlockHash = receipt.BlockHash.ToHexString(),
-            BlockNumber = receipt.BlockNumber,
-            TransactionIndex = receipt.TransactionIndex,
-            From = receipt.From.ToHexString(),
-            To = receipt.To.ToHexString(),
-            GasUsed = receipt.GasUsed,
-            Success = receipt.Success,
-            ErrorCode = ((BasaltErrorCode)receipt.ErrorCode).ToString(),
-            PostStateRoot = receipt.PostStateRoot.ToHexString(),
-            EffectiveGasPrice = receipt.EffectiveGasPrice.ToString(),
-            Logs = receipt.Logs.Select(l => new EventLogResult
-            {
-                Contract = l.Contract.ToHexString(),
-                EventSignature = l.EventSignature.ToHexString(),
-                Topics = l.Topics.Select(t => t.ToHexString()).ToList(),
-                Data = l.Data.Length > 0 ? Convert.ToHexString(l.Data) : null,
-            }).ToList(),
-        };
+        var receipt = LookupReceipt(hash, chainManager, receiptStore);
+        return receipt != null ? MapToReceiptResult(receipt) : null;
     }
 
     public TransactionDetailResult? GetTransaction(string txHash,
@@ -117,33 +120,10 @@ public class Query
                     TransactionIndex = j,
                 };
 
-                // Try to get receipt
+                // Try to get receipt from store or in-memory
                 ReceiptData? receipt = receiptStore?.GetReceipt(hash);
                 if (receipt == null && block.Receipts != null && j < block.Receipts.Count)
-                {
-                    var r = block.Receipts[j];
-                    receipt = new ReceiptData
-                    {
-                        TransactionHash = r.TransactionHash,
-                        BlockHash = r.BlockHash,
-                        BlockNumber = r.BlockNumber,
-                        TransactionIndex = r.TransactionIndex,
-                        From = r.From,
-                        To = r.To,
-                        GasUsed = r.GasUsed,
-                        Success = r.Success,
-                        ErrorCode = (int)r.ErrorCode,
-                        PostStateRoot = r.PostStateRoot,
-                        EffectiveGasPrice = r.EffectiveGasPrice,
-                        Logs = (r.Logs ?? []).Select(l => new LogData
-                        {
-                            Contract = l.Contract,
-                            EventSignature = l.EventSignature,
-                            Topics = l.Topics ?? [],
-                            Data = l.Data ?? [],
-                        }).ToArray(),
-                    };
-                }
+                    receipt = MapToReceiptData(block.Receipts[j]);
 
                 if (receipt != null)
                 {
@@ -206,7 +186,7 @@ public class Query
         if (latest == null) return results;
 
         var count = Math.Clamp(last, 1, 100);
-        // Include genesis block (i >= 0) — use long to avoid ulong underflow
+        // M-6: Include genesis block (i >= 0) — use long to avoid ulong underflow
         for (long i = (long)latest.Number; i >= 0 && results.Count < count; i--)
         {
             var block = chainManager.GetBlockByNumber((ulong)i);

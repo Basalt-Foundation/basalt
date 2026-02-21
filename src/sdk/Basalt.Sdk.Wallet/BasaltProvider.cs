@@ -40,6 +40,7 @@ public sealed class BasaltProvider : IDisposable
     private readonly bool _ownsClient;
     private readonly NonceManager _nonceManager;
     private readonly uint _chainId;
+    private readonly string _baseUrl;
 
     /// <summary>
     /// Gets the underlying RPC client for advanced operations.
@@ -67,6 +68,7 @@ public sealed class BasaltProvider : IDisposable
         _ownsClient = true;
         _nonceManager = new NonceManager();
         _chainId = chainId;
+        _baseUrl = baseUrl;
     }
 
     /// <summary>
@@ -81,6 +83,7 @@ public sealed class BasaltProvider : IDisposable
         _ownsClient = false;
         _nonceManager = new NonceManager();
         _chainId = chainId;
+        _baseUrl = "http://localhost:5100";
     }
 
     // ── Query Methods ──────────────────────────────────────────────────
@@ -204,6 +207,8 @@ public sealed class BasaltProvider : IDisposable
             Value = unsignedTx.Value,
             GasLimit = unsignedTx.GasLimit,
             GasPrice = unsignedTx.GasPrice,
+            MaxFeePerGas = unsignedTx.MaxFeePerGas,
+            MaxPriorityFeePerGas = unsignedTx.MaxPriorityFeePerGas,
             Data = unsignedTx.Data,
             Priority = unsignedTx.Priority,
             ChainId = _chainId,
@@ -327,9 +332,8 @@ public sealed class BasaltProvider : IDisposable
     /// <returns>A block subscription that can be used to stream new block events.</returns>
     public IBlockSubscription SubscribeToBlocks(SubscriptionOptions? options = null)
     {
-        // Derive the WS URL from the HTTP base URL
-        var baseUrl = (_client as BasaltClient)?.ToString() ?? "http://localhost:5100";
-        return new BlockSubscription(baseUrl, options);
+        // M-20: Use stored base URL instead of broken ToString() cast
+        return new BlockSubscription(_baseUrl, options);
     }
 
     /// <summary>

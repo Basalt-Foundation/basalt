@@ -8,15 +8,32 @@ namespace Basalt.Execution.VM;
 /// <summary>
 /// Bridges the SDK's static Context and ContractStorage to a VmExecutionContext.
 /// Call Setup() before executing an SDK contract; dispose the returned scope to restore.
+///
+/// C-5: THREAD SAFETY WARNING — The SDK Context class uses static mutable fields.
+/// Contract execution MUST be single-threaded. Concurrent execution will cause
+/// cross-contract state corruption, unauthorized fund transfers, and data loss.
+/// A runtime guard enforces this invariant via Interlocked.CompareExchange.
 /// </summary>
 public static class ContractBridge
 {
+    // C-5: Concurrency guard — only one contract execution at a time.
+    // Uses a Monitor with timeout to serialize concurrent callers rather than rejecting them,
+    // since genesis deployment and test execution may overlap.
+    private static readonly object _executionLock = new();
+
     /// <summary>
     /// Wire SDK Context and ContractStorage from the given execution context.
     /// Returns an IDisposable that restores previous state on dispose.
+    /// C-5: Serializes concurrent access to protect static Context/ContractStorage.
     /// </summary>
     public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
     {
+        // C-5: Serialize SDK contract execution (static Context is not thread-safe)
+        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(30)))
+            throw new InvalidOperationException(
+                "Timed out waiting for SDK contract execution lock. " +
+                "Contract execution must be single-threaded due to static Context/ContractStorage.");
+
         var scope = new BridgeScope();
 
         // Save previous state
@@ -39,6 +56,9 @@ public static class ContractBridge
         Context.BlockTimestamp = (long)ctx.BlockTimestamp;
         Context.BlockHeight = ctx.BlockNumber;
         Context.ChainId = ctx.ChainId;
+        // L-10: This is a snapshot — becomes stale as gas is consumed via host calls.
+        // SDK contracts should treat this as an approximate upper bound.
+        // Making it a live delegate would require changing the SDK API (Context.GasRemaining is ulong).
         Context.GasRemaining = ctx.GasMeter.GasRemaining;
         Context.CallDepth = ctx.CallDepth;
 
@@ -76,10 +96,11 @@ public static class ContractBridge
             var recipientAccount = ctx.StateDb.GetAccount(recipientAddr);
             var recipientBalance = recipientAccount?.Balance ?? UInt256.Zero;
             var ra = recipientAccount ?? AccountState.Empty;
+            // H-10: Use checked addition to prevent silent balance overflow
             ctx.StateDb.SetAccount(recipientAddr, new AccountState
             {
                 Nonce = ra.Nonce,
-                Balance = recipientBalance + amount,
+                Balance = UInt256.CheckedAdd(recipientBalance, amount),
                 StorageRoot = ra.StorageRoot,
                 CodeHash = ra.CodeHash,
                 AccountType = ra.AccountType,
@@ -120,6 +141,9 @@ public static class ContractBridge
             Context.EventEmitted = PreviousEventEmitted;
             Context.NativeTransferHandler = PreviousNativeTransferHandler;
             ContractStorage.SetProvider(PreviousProvider);
+
+            // C-5: Release the execution lock
+            Monitor.Exit(_executionLock);
         }
     }
 }

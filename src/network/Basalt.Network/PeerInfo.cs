@@ -57,8 +57,23 @@ public sealed class PeerInfo
         set => Volatile.Write(ref _reputationScore, value);
     }
 
-    public DateTimeOffset LastSeen { get; set; }
-    public DateTimeOffset ConnectedAt { get; set; }
+    // L-6: LastSeen and ConnectedAt use Interlocked on ticks for thread-safe access.
+    // DateTimeOffset is 12 bytes (not guaranteed atomic on all platforms), so we store
+    // as long ticks and convert on read/write.
+    private long _lastSeenTicks;
+    private long _connectedAtTicks;
+
+    public DateTimeOffset LastSeen
+    {
+        get => new(Volatile.Read(ref _lastSeenTicks), TimeSpan.Zero);
+        set => Volatile.Write(ref _lastSeenTicks, value.UtcTicks);
+    }
+
+    public DateTimeOffset ConnectedAt
+    {
+        get => new(Volatile.Read(ref _connectedAtTicks), TimeSpan.Zero);
+        set => Volatile.Write(ref _connectedAtTicks, value.UtcTicks);
+    }
     public int FailedAttempts { get; set; }
 
     /// <summary>

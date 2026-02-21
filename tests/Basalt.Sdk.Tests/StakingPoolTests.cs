@@ -25,6 +25,16 @@ public class StakingPoolTests : IDisposable
         Context.NativeTransferHandler = (to, amount) => { };
     }
 
+    /// <summary>
+    /// Advance block timestamp past the minimum delegation period (H-12).
+    /// Uses host.AdvanceBlocks so PrepareContext keeps the advanced timestamp.
+    /// Each block advances by 2000s, need ceil(86401/2000) = 44 blocks.
+    /// </summary>
+    private void AdvancePastDelegationPeriod()
+    {
+        _host.AdvanceBlocks(44); // 44 * 2000 = 88000 > 86400
+    }
+
     [Fact]
     public void CreatePool_Returns_Id()
     {
@@ -168,6 +178,7 @@ public class StakingPoolTests : IDisposable
         Context.TxValue = 5000;
         _host.Call(() => _pool.Delegate(poolId));
 
+        AdvancePastDelegationPeriod();
         Context.TxValue = 0;
         _host.Call(() => _pool.Undelegate(poolId, 2000));
 
@@ -185,6 +196,7 @@ public class StakingPoolTests : IDisposable
         Context.TxValue = 5000;
         _host.Call(() => _pool.Delegate(poolId));
 
+        AdvancePastDelegationPeriod();
         Context.TxValue = 0;
         _host.Call(() => _pool.Undelegate(poolId, 5000));
 
@@ -202,6 +214,7 @@ public class StakingPoolTests : IDisposable
         Context.TxValue = 1000;
         _host.Call(() => _pool.Delegate(poolId));
 
+        AdvancePastDelegationPeriod();
         Context.TxValue = 0;
         var msg = _host.ExpectRevert(() => _pool.Undelegate(poolId, 2000));
         msg.Should().Contain("insufficient delegation");
@@ -232,6 +245,7 @@ public class StakingPoolTests : IDisposable
         Context.TxValue = 5000;
         _host.Call(() => _pool.Delegate(poolId));
 
+        AdvancePastDelegationPeriod();
         _host.ClearEvents();
         Context.TxValue = 0;
         _host.Call(() => _pool.Undelegate(poolId, 2000));
@@ -308,6 +322,7 @@ public class StakingPoolTests : IDisposable
         _host.Call(() => _pool.AddRewards(poolId));
 
         // Alice claims — she has 100% of the pool
+        AdvancePastDelegationPeriod();
         _host.SetCaller(_alice);
         Context.TxValue = 0;
         _host.Call(() => _pool.ClaimRewards(poolId));
@@ -337,6 +352,7 @@ public class StakingPoolTests : IDisposable
         _host.Call(() => _pool.AddRewards(poolId));
 
         // Alice claims: 3000/10000 * 10000 = 3000
+        AdvancePastDelegationPeriod();
         _host.SetCaller(_alice);
         _host.ClearEvents();
         Context.TxValue = 0;
@@ -381,6 +397,7 @@ public class StakingPoolTests : IDisposable
         _host.Call(() => _pool.Delegate(poolId));
 
         // No rewards added, try to claim
+        AdvancePastDelegationPeriod();
         Context.TxValue = 0;
         var msg = _host.ExpectRevert(() => _pool.ClaimRewards(poolId));
         msg.Should().Contain("no rewards to claim");
@@ -401,6 +418,7 @@ public class StakingPoolTests : IDisposable
         _host.Call(() => _pool.AddRewards(poolId));
 
         // First claim succeeds
+        AdvancePastDelegationPeriod();
         _host.SetCaller(_alice);
         Context.TxValue = 0;
         _host.Call(() => _pool.ClaimRewards(poolId));

@@ -15,6 +15,12 @@ public static class Ed25519Signer
     /// <summary>
     /// Generate a new Ed25519 key pair.
     /// </summary>
+    /// <remarks>
+    /// SECURITY: The returned PrivateKey byte[] is unprotected in managed memory.
+    /// Callers MUST zero the private key with <see cref="ZeroPrivateKey"/> or
+    /// <see cref="System.Security.Cryptography.CryptographicOperations.ZeroMemory"/>
+    /// as soon as it is no longer needed, to minimize exposure in memory.
+    /// </remarks>
     public static (byte[] PrivateKey, Core.PublicKey PublicKey) GenerateKeyPair()
     {
         using var key = Key.Create(Algorithm, new KeyCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport });
@@ -47,6 +53,12 @@ public static class Ed25519Signer
     /// <summary>
     /// Batch verify multiple signatures (validates all independently, returns false if any fail).
     /// </summary>
+    /// <remarks>
+    /// NOTE: This is a sequential implementation — each signature is verified independently.
+    /// It does NOT use multi-scalar multiplication or other batch verification optimizations.
+    /// Performance is O(n) individual verifications. A true batch verification scheme
+    /// (e.g., Bos-Coster) would provide ~2x speedup but is not yet implemented.
+    /// </remarks>
     public static bool BatchVerify(
         ReadOnlySpan<Core.PublicKey> publicKeys,
         ReadOnlySpan<byte[]> messages,

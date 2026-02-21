@@ -37,6 +37,7 @@ public sealed class ResourceLimiter
 
     /// <summary>
     /// Allocate <paramref name="bytes"/> from the memory budget.
+    /// L-11: Uses CompareExchange loop for atomic check-and-allocate (no TOCTOU race).
     /// </summary>
     /// <param name="bytes">Number of bytes to allocate.</param>
     /// <exception cref="BasaltException">
@@ -48,16 +49,22 @@ public sealed class ResourceLimiter
         if (bytes <= 0)
             return;
 
-        var newUsage = Interlocked.Add(ref _currentUsage, bytes);
-
-        if (newUsage > _memoryLimitBytes)
+        while (true)
         {
-            // Roll back the allocation before throwing
-            Interlocked.Add(ref _currentUsage, -bytes);
-            throw new BasaltException(
-                BasaltErrorCode.MemoryLimitExceeded,
-                $"Memory limit exceeded: attempted to allocate {bytes} bytes, " +
-                $"current usage {newUsage - bytes} bytes, limit {_memoryLimitBytes} bytes.");
+            var current = Interlocked.Read(ref _currentUsage);
+            var newUsage = current + bytes;
+
+            if (newUsage > _memoryLimitBytes)
+            {
+                throw new BasaltException(
+                    BasaltErrorCode.MemoryLimitExceeded,
+                    $"Memory limit exceeded: attempted to allocate {bytes} bytes, " +
+                    $"current usage {current} bytes, limit {_memoryLimitBytes} bytes.");
+            }
+
+            if (Interlocked.CompareExchange(ref _currentUsage, newUsage, current) == current)
+                return; // Successfully allocated
+            // Another thread changed _currentUsage — retry
         }
     }
 

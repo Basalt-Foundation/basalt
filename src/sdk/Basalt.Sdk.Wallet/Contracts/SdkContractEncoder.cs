@@ -20,12 +20,16 @@ public static class SdkContractEncoder
 {
     // ── Manifest Builders ───────────────────────────────────────────────
 
+    // M-18: Buffer size constant. Uses heap allocation for overflow safety.
+    private const int ManifestBufSize = 1024;
+
     /// <summary>
     /// Build a BST-20 deployment manifest.
     /// </summary>
     public static byte[] BuildBST20Manifest(string name, string symbol, byte decimals)
     {
-        Span<byte> buf = stackalloc byte[512];
+        var bufSize = 20 + Encoding.UTF8.GetByteCount(name) + Encoding.UTF8.GetByteCount(symbol);
+        var buf = bufSize <= ManifestBufSize ? stackalloc byte[ManifestBufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteString(name);
         writer.WriteString(symbol);
@@ -38,7 +42,8 @@ public static class SdkContractEncoder
     /// </summary>
     public static byte[] BuildBST721Manifest(string name, string symbol)
     {
-        Span<byte> buf = stackalloc byte[512];
+        var bufSize = 20 + Encoding.UTF8.GetByteCount(name) + Encoding.UTF8.GetByteCount(symbol);
+        var buf = bufSize <= ManifestBufSize ? stackalloc byte[ManifestBufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteString(name);
         writer.WriteString(symbol);
@@ -50,7 +55,8 @@ public static class SdkContractEncoder
     /// </summary>
     public static byte[] BuildBST1155Manifest(string baseUri)
     {
-        Span<byte> buf = stackalloc byte[512];
+        var bufSize = 10 + Encoding.UTF8.GetByteCount(baseUri);
+        var buf = bufSize <= ManifestBufSize ? stackalloc byte[ManifestBufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteString(baseUri);
         return ContractRegistry.BuildManifest(0x0003, buf[..writer.Position].ToArray());
@@ -64,7 +70,8 @@ public static class SdkContractEncoder
         if (prefix is null)
             return ContractRegistry.BuildManifest(0x0004, []);
 
-        Span<byte> buf = stackalloc byte[512];
+        var bufSize = 10 + Encoding.UTF8.GetByteCount(prefix);
+        var buf = bufSize <= ManifestBufSize ? stackalloc byte[ManifestBufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteString(prefix);
         return ContractRegistry.BuildManifest(0x0004, buf[..writer.Position].ToArray());
@@ -115,9 +122,11 @@ public static class SdkContractEncoder
     /// <summary>
     /// Encode a byte array with VarInt length prefix (BasaltWriter format).
     /// </summary>
+    /// <remarks>M-18: Uses heap allocation for large data instead of stackalloc to prevent stack overflow.</remarks>
     public static byte[] EncodeBytes(byte[] data)
     {
-        Span<byte> buf = stackalloc byte[10 + data.Length];
+        var bufSize = 10 + data.Length;
+        var buf = bufSize <= 1024 ? stackalloc byte[bufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteBytes(data);
         return buf[..writer.Position].ToArray();
@@ -126,10 +135,12 @@ public static class SdkContractEncoder
     /// <summary>
     /// Encode a UTF-8 string with VarInt length prefix (BasaltWriter format).
     /// </summary>
+    /// <remarks>M-18: Uses heap allocation for large strings instead of stackalloc to prevent stack overflow.</remarks>
     public static byte[] EncodeString(string value)
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
-        Span<byte> buf = stackalloc byte[10 + byteCount];
+        var bufSize = 10 + byteCount;
+        var buf = bufSize <= 1024 ? stackalloc byte[bufSize] : new byte[bufSize];
         var writer = new BasaltWriter(buf);
         writer.WriteString(value);
         return buf[..writer.Position].ToArray();

@@ -77,6 +77,11 @@ public class Account : IAccount
     /// <returns>An <see cref="Account"/> derived from the decoded key.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="hexPrivateKey"/> is null.</exception>
     /// <exception cref="FormatException">Thrown when <paramref name="hexPrivateKey"/> is not valid hex.</exception>
+    /// <remarks>
+    /// H-15: The intermediate <c>keyBytes</c> array is zeroed after use. The
+    /// <see cref="FromPrivateKey(byte[])"/> overload clones the input, so
+    /// zeroing the decoded hex bytes does not affect the Account's internal key.
+    /// </remarks>
     public static Account FromPrivateKey(string hexPrivateKey)
     {
         ArgumentNullException.ThrowIfNull(hexPrivateKey);
@@ -86,7 +91,15 @@ public class Account : IAccount
             : hexPrivateKey;
 
         var keyBytes = Convert.FromHexString(hex);
-        return FromPrivateKey(keyBytes);
+        try
+        {
+            return FromPrivateKey(keyBytes);
+        }
+        finally
+        {
+            // H-15: Zero intermediate key material
+            CryptographicOperations.ZeroMemory(keyBytes);
+        }
     }
 
     /// <inheritdoc />

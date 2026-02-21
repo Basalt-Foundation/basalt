@@ -223,6 +223,8 @@ public sealed class ReputationScorer
     /// NET-M20: Check if a peer has exceeded their reward cap in the current window.
     /// Returns true if the reward should be skipped (cap exceeded).
     /// Increments the counter and resets the window if expired.
+    /// M-5: Uses AddOrUpdate with atomic factory to eliminate TOCTOU race between
+    /// read-check-write on the concurrent dictionary.
     /// </summary>
     private bool IsRewardCapped(
         PeerId peerId,
@@ -232,23 +234,32 @@ public sealed class ReputationScorer
         long now = Stopwatch.GetTimestamp();
         long windowTicks = RewardWindowSeconds * Stopwatch.Frequency;
 
-        var current = windows.GetOrAdd(peerId, _ => (0, now));
+        // M-5: Use AddOrUpdate to atomically read + modify the window entry.
+        // The isCapped flag is captured from within the atomic update function.
+        bool isCapped = false;
+        windows.AddOrUpdate(
+            peerId,
+            // Add: new peer, first reward in a fresh window
+            _ => (1, now),
+            // Update: check window expiry and cap atomically
+            (_, current) =>
+            {
+                if (now - current.WindowStart >= windowTicks)
+                {
+                    // Window expired — reset with count=1
+                    return (1, now);
+                }
 
-        // Reset window if expired
-        if (now - current.WindowStart >= windowTicks)
-        {
-            current = (1, now);
-            windows[peerId] = current;
-            return false;
-        }
+                if (current.Count >= maxPerWindow)
+                {
+                    isCapped = true;
+                    return current; // Return unchanged
+                }
 
-        // Check cap
-        if (current.Count >= maxPerWindow)
-            return true;
+                return (current.Count + 1, current.WindowStart);
+            });
 
-        // Increment
-        windows[peerId] = (current.Count + 1, current.WindowStart);
-        return false;
+        return isCapped;
     }
 
     /// <summary>

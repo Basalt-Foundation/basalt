@@ -71,6 +71,14 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             var codeStorageKey = GetCodeStorageKey();
             host.StorageWrite(codeStorageKey, code);
 
+            // M-13: Run SDK contract constructor (matching ManagedContractRuntime behavior)
+            if (ContractRegistry.IsSdkContract(code))
+            {
+                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                using var scope = ContractBridge.Setup(ctx, host);
+                _registry.CreateInstance(typeId, ctorArgs);
+            }
+
             return new ContractDeployResult
             {
                 Success = true,
@@ -117,6 +125,16 @@ public sealed class SandboxedContractRuntime : IContractRuntime
 
     public ContractCallResult Execute(byte[] code, byte[] callData, VmExecutionContext ctx)
     {
+        // C-6: Enforce maximum call depth to prevent stack overflow attacks
+        if (ctx.CallDepth >= VmExecutionContext.MaxCallDepth)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = $"Maximum call depth ({VmExecutionContext.MaxCallDepth}) exceeded.",
+            };
+        }
+
         if (code == null || code.Length == 0)
         {
             return new ContractCallResult
@@ -141,18 +159,31 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             // Charge base call gas
             ctx.GasMeter.Consume(GasTable.Call);
 
-            // SDK contract path
+            // H-12: SDK contract path — now wrapped in timeout scope
             if (ContractRegistry.IsSdkContract(code))
             {
-                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
-                using var scope = ContractBridge.Setup(ctx, host);
-                var contract = _registry.CreateInstance(typeId, ctorArgs);
+                using var sdkCts = new CancellationTokenSource(_config.ExecutionTimeout);
+                try
+                {
+                    var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                    using var scope = ContractBridge.Setup(ctx, host);
+                    var contract = _registry.CreateInstance(typeId, ctorArgs);
 
-                if (callData.Length < 4)
-                    return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
+                    sdkCts.Token.ThrowIfCancellationRequested();
 
-                var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
-                return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
+                    if (callData.Length < 4)
+                        return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
+
+                    var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
+
+                    sdkCts.Token.ThrowIfCancellationRequested();
+
+                    return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
+                }
+                catch (OperationCanceledException) when (sdkCts.IsCancellationRequested)
+                {
+                    throw new SandboxTimeoutException(_config.ExecutionTimeout);
+                }
             }
 
             // Short-circuit: if callData is too short for a selector, treat as fallback

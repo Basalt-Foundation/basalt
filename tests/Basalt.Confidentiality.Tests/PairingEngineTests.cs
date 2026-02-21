@@ -389,6 +389,92 @@ public class PairingEngineTests
         act.Should().Throw<ArgumentException>();
     }
 
+    // ── IsG2Identity ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void IsG2Identity_TrueForIdentity()
+    {
+        var identity = new byte[PairingEngine.G2CompressedSize];
+        identity[0] = 0xC0;
+
+        PairingEngine.IsG2Identity(identity).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsG2Identity_FalseForGenerator()
+    {
+        var g2 = PairingEngine.G2Generator;
+        PairingEngine.IsG2Identity(g2).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsG2Identity_WrongSize_Throws()
+    {
+        var badPoint = new byte[48];
+        var act = () => PairingEngine.IsG2Identity(badPoint);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // ── IsValidG1 / IsValidG2 ───────────────────────────────────────────────
+
+    [Fact]
+    public void IsValidG1_GeneratorIsValid()
+    {
+        PairingEngine.IsValidG1(PairingEngine.G1Generator).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsValidG1_IdentityIsValid()
+    {
+        var identity = new byte[PairingEngine.G1CompressedSize];
+        identity[0] = 0xC0;
+        PairingEngine.IsValidG1(identity).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsValidG1_WrongSize_ReturnsFalse()
+    {
+        PairingEngine.IsValidG1(new byte[47]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsValidG1_InvalidBytes_ReturnsFalse()
+    {
+        var bad = new byte[PairingEngine.G1CompressedSize];
+        bad[0] = 0x80;
+        bad[1] = 0xFF; // not a valid curve point
+        PairingEngine.IsValidG1(bad).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsValidG2_GeneratorIsValid()
+    {
+        PairingEngine.IsValidG2(PairingEngine.G2Generator).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsValidG2_IdentityIsValid()
+    {
+        var identity = new byte[PairingEngine.G2CompressedSize];
+        identity[0] = 0xC0;
+        PairingEngine.IsValidG2(identity).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsValidG2_WrongSize_ReturnsFalse()
+    {
+        PairingEngine.IsValidG2(new byte[48]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsValidG2_InvalidBytes_ReturnsFalse()
+    {
+        var bad = new byte[PairingEngine.G2CompressedSize];
+        bad[0] = 0x80;
+        bad[1] = 0xFF;
+        PairingEngine.IsValidG2(bad).Should().BeFalse();
+    }
+
     [Fact]
     public void G1Generator_ConsistentAcrossInvocations()
     {

@@ -12,6 +12,7 @@ public partial class BSTDIDRegistry : IBSTDID
     private readonly StorageMap<string, string> _attestationTypes;   // "did:type" -> attestation ID
     private readonly StorageMap<string, string> _attestationStatus;  // "did:attId:revoked" -> "1"/"0"
     private readonly StorageValue<ulong> _nextDIDIndex;
+    private readonly StorageValue<ulong> _nextAttestationIndex;    // M-13: monotonic counter for attestation IDs
     private readonly string _chainPrefix;
 
     public BSTDIDRegistry(string chainPrefix = "did:basalt:")
@@ -23,6 +24,7 @@ public partial class BSTDIDRegistry : IBSTDID
         _attestationTypes = new StorageMap<string, string>("did_att_type");
         _attestationStatus = new StorageMap<string, string>("did_att_status");
         _nextDIDIndex = new StorageValue<ulong>("did_next");
+        _nextAttestationIndex = new StorageValue<ulong>("did_att_next");
     }
 
     [BasaltEntrypoint]
@@ -65,13 +67,19 @@ public partial class BSTDIDRegistry : IBSTDID
     {
         var controllerHex = _controllers.Get(did);
         Context.Require(!string.IsNullOrEmpty(controllerHex), "BST-DID: DID not found");
+        // M-12: Reject mutations on deactivated DIDs
+        Context.Require(_attestationStatus.Get($"{did}:deactivated") != "1", "BST-DID: DID deactivated");
 
-        // Only controller or issuer can add attestations
+        // H-9: Only the DID controller can add attestations (issuer parameter is
+        // informational metadata, not an authorization check — comparing a caller
+        // address against a user-supplied string was bypassable)
         var callerHex = Convert.ToHexString(Context.Caller);
-        Context.Require(callerHex == controllerHex || callerHex == issuer,
-            "BST-DID: not authorized");
+        Context.Require(callerHex == controllerHex, "BST-DID: not controller");
 
-        var attId = $"{credentialType}:{Context.BlockHeight}";
+        // M-13: Use monotonic counter for attestation IDs to prevent same-block collisions
+        var attIndex = _nextAttestationIndex.Get();
+        _nextAttestationIndex.Set(attIndex + 1);
+        var attId = $"{credentialType}:{attIndex}";
         _attestations.Set($"{did}:{attId}", Convert.ToHexString(data));
         _attestationTypes.Set($"{did}:{credentialType}", attId);
         _attestationStatus.Set($"{did}:{attId}:revoked", "0");
@@ -90,6 +98,8 @@ public partial class BSTDIDRegistry : IBSTDID
     {
         var controllerHex = _controllers.Get(did);
         Context.Require(!string.IsNullOrEmpty(controllerHex), "BST-DID: DID not found");
+        // M-12: Reject mutations on deactivated DIDs
+        Context.Require(_attestationStatus.Get($"{did}:deactivated") != "1", "BST-DID: DID deactivated");
 
         var callerHex = Convert.ToHexString(Context.Caller);
         Context.Require(callerHex == controllerHex, "BST-DID: not controller");
@@ -119,6 +129,8 @@ public partial class BSTDIDRegistry : IBSTDID
     {
         var controllerHex = _controllers.Get(did);
         Context.Require(!string.IsNullOrEmpty(controllerHex), "BST-DID: DID not found");
+        // M-12: Reject mutations on deactivated DIDs
+        Context.Require(_attestationStatus.Get($"{did}:deactivated") != "1", "BST-DID: DID deactivated");
 
         var callerHex = Convert.ToHexString(Context.Caller);
         Context.Require(callerHex == controllerHex, "BST-DID: not controller");

@@ -116,13 +116,14 @@ public static class ViewingKey
 
         // F-14: Zero shared secret after use
         byte[]? sharedSecret = null;
+        byte[]? plaintext = null;
         try
         {
             // Derive shared secret
             sharedSecret = X25519KeyExchange.DeriveSharedSecret(viewerPrivateKey, ephPubKey);
 
             // Decrypt
-            var plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
+            plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
 
             // Parse: value (32 bytes BE) || blindingFactor (32 bytes)
             var value = new UInt256(plaintext.AsSpan(0, 32), isBigEndian: true);
@@ -134,6 +135,10 @@ public static class ViewingKey
         {
             if (sharedSecret != null)
                 CryptographicOperations.ZeroMemory(sharedSecret);
+            // L-05: Zero plaintext after parsing to prevent secret data from
+            // lingering in memory (value + blinding factor are sensitive).
+            if (plaintext != null)
+                CryptographicOperations.ZeroMemory(plaintext);
         }
     }
 }
@@ -142,6 +147,14 @@ public static class ViewingKey
 /// F-16: Viewing key with time-based validity window.
 /// Prevents indefinite access to confidential transaction data by
 /// binding the viewing key to a specific time range.
+///
+/// <para><b>H-02 Security Note:</b> This class provides <em>advisory</em> time bounds only.
+/// The <see cref="IsValid"/> check must be enforced by callers before granting access
+/// to confidential data. The viewing key material itself does not expire — the
+/// X25519 key pair remains cryptographically valid regardless of the time window.
+/// Callers MUST check <see cref="IsValid"/> before using the key for decryption
+/// and SHOULD revoke access through other means (e.g., re-encryption) when the
+/// window expires.</para>
 /// </summary>
 public sealed class TimeBoundViewingKey
 {
@@ -156,6 +169,7 @@ public sealed class TimeBoundViewingKey
 
     /// <summary>
     /// Check whether this viewing key is valid at the given timestamp.
+    /// Callers MUST enforce this check before granting access to confidential data.
     /// </summary>
     /// <param name="currentTimestamp">Current Unix timestamp in milliseconds.</param>
     /// <returns><c>true</c> if the current time falls within [ValidFrom, ValidUntil].</returns>

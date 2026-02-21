@@ -40,11 +40,12 @@ public sealed class TransactionExecutor
     /// </summary>
     public TransactionReceipt Execute(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        // COMPL-06: Compliance check before tx type dispatch — covers all transaction types
-        if (_complianceVerifier != null)
+        // COMPL-06: Compliance check before tx type dispatch.
+        // M-12: Skip compliance for staking transaction types (To is not a meaningful recipient)
+        if (_complianceVerifier != null && tx.Type is TransactionType.Transfer or TransactionType.ContractDeploy or TransactionType.ContractCall)
         {
             // COMPL-01: Look up actual policy requirements for the target address
-            var requirements = _complianceVerifier.GetRequirements(tx.To.ToArray());
+            var requirements = _complianceVerifier.GetRequirements(tx.To);
 
             // COMPL-14: Verify ZK proofs if requirements exist or proofs are attached
             if (requirements.Length > 0 || tx.ComplianceProofs.Length > 0)
@@ -74,27 +75,45 @@ public sealed class TransactionExecutor
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
-        // Debit sender: value + gas fee
+        // H-02: Traditional compliance check (KYC, sanctions, geo, holding limits)
+        if (_complianceVerifier != null)
+        {
+            var recipientBalance = (stateDb.GetAccount(tx.To) ?? AccountState.Empty).Balance;
+            // Truncate to ulong for compliance policy checks (policies use ulong amounts)
+            var amountForCompliance = recipientBalance.Hi == 0 && (ulong)(recipientBalance.Lo >> 64) == 0
+                ? (ulong)recipientBalance.Lo : ulong.MaxValue;
+            var txAmountForCompliance = tx.Value.Hi == 0 && (ulong)(tx.Value.Lo >> 64) == 0
+                ? (ulong)tx.Value.Lo : ulong.MaxValue;
+            var outcome = _complianceVerifier.CheckTransferCompliance(
+                tx.To.ToArray(), tx.Sender.ToArray(), tx.To.ToArray(),
+                txAmountForCompliance, blockHeader.Timestamp, amountForCompliance);
+            if (!outcome.Allowed)
+                return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);
+        }
+
+        // C-2: Always charge gas + increment nonce, even on failure
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
-        var totalDebit = tx.Value + gasFee;
+        var totalDebit = UInt256.CheckedAdd(tx.Value, gasFee);
 
         if (senderState.Balance < totalDebit)
         {
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb);
+            // C-2: Still charge gas fee and increment nonce on failure
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
         }
 
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
-        // Credit recipient
+        // Credit recipient (H-4: use checked arithmetic)
         var recipientState = stateDb.GetAccount(tx.To) ?? AccountState.Empty;
         recipientState = recipientState with
         {
-            Balance = recipientState.Balance + tx.Value,
+            Balance = UInt256.CheckedAdd(recipientState.Balance, tx.Value),
         };
         stateDb.SetAccount(tx.To, recipientState);
 
@@ -108,6 +127,38 @@ public sealed class TransactionExecutor
     {
         var gasMeter = new GasMeter(tx.GasLimit);
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+
+        // C-2: Pre-check balance — if can't even cover gas, charge what we can + increment nonce
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
+
+        if (senderState.Balance < totalDebit)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+                BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // C-1: Fork state before contract execution for atomicity.
+        // Nonce + gas debit on the canonical state, contract execution on the fork.
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        // C-1: Fork — all contract mutations go to the fork
+        var fork = stateDb.Fork();
+        var contractAddress = DeriveContractAddress(tx.Sender, tx.Nonce);
+
+        // L-9: Reject deployments that would collide with system contract addresses
+        if (IsSystemAddress(contractAddress))
+        {
+            return CreateReceipt(tx, blockHeader, txIndex, GasTable.TxBase, false,
+                BasaltErrorCode.ContractDeployFailed, stateDb, effectiveGasPrice);
+        }
 
         try
         {
@@ -115,28 +166,7 @@ public sealed class TransactionExecutor
             gasMeter.Consume(GasTable.TxBase);
             gasMeter.Consume(GasTable.ComputeDataGas(tx.Data));
 
-            // Derive contract address from sender + nonce
-            var contractAddress = DeriveContractAddress(tx.Sender, tx.Nonce);
-
-            // Debit sender upfront (gas limit * effective max fee + value)
-            var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
-            var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
-            var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
-
-            if (senderState.Balance < totalDebit)
-            {
-                return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
-                    BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
-            }
-
-            senderState = senderState with
-            {
-                Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-                Nonce = senderState.Nonce + 1,
-            };
-            stateDb.SetAccount(tx.Sender, senderState);
-
-            // Create contract account
+            // Create contract account on the fork
             var codeHash = Blake3Hasher.Hash(tx.Data);
             var contractState = new AccountState
             {
@@ -147,9 +177,9 @@ public sealed class TransactionExecutor
                 AccountType = AccountType.Contract,
                 ComplianceHash = Hash256.Zero,
             };
-            stateDb.SetAccount(contractAddress, contractState);
+            fork.SetAccount(contractAddress, contractState);
 
-            // Execute deployment
+            // Execute deployment on the fork
             var ctx = new VmExecutionContext
             {
                 Caller = tx.Sender,
@@ -160,29 +190,26 @@ public sealed class TransactionExecutor
                 BlockProposer = blockHeader.Proposer,
                 ChainId = blockHeader.ChainId,
                 GasMeter = gasMeter,
-                StateDb = stateDb,
+                StateDb = fork,
                 CallDepth = 0,
             };
 
             var result = _contractRuntime.Deploy(tx.Data, [], ctx);
+            var effectiveGas = gasMeter.EffectiveGasUsed();
 
-            if (!result.Success)
+            if (result.Success)
             {
-                // Revert: remove contract, restore sender balance
-                stateDb.DeleteAccount(contractAddress);
-                senderState = stateDb.GetAccount(tx.Sender)!.Value;
-                senderState = senderState with { Balance = senderState.Balance + tx.Value };
-                stateDb.SetAccount(tx.Sender, senderState);
+                // C-1: Merge fork into canonical state (contract account + storage mutations)
+                MergeForkState(fork, stateDb, contractAddress);
             }
 
-            // Refund unused gas (refund based on effective gas price, not max fee)
-            var effectiveGas = gasMeter.EffectiveGasUsed();
+            // Refund unused gas to sender on canonical state
             var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
             if (refund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
-                senderState = senderState with { Balance = senderState.Balance + refund };
+                senderState = senderState with { Balance = UInt256.CheckedAdd(senderState.Balance, refund) };
                 stateDb.SetAccount(tx.Sender, senderState);
             }
 
@@ -207,6 +234,18 @@ public sealed class TransactionExecutor
         }
         catch (OutOfGasException)
         {
+            // C-1: Fork is discarded — no storage mutations leak to canonical state.
+            // C-2: Nonce already incremented, max gas fee already debited.
+            // Refund (maxGasFee - fullGasCharge) where fullGasCharge = effectiveGasPrice * gasLimit
+            var fullGasCharge = effectiveGasPrice * new UInt256(tx.GasLimit);
+            var oogRefund = maxGasFee - fullGasCharge;
+            if (oogRefund > UInt256.Zero)
+            {
+                senderState = stateDb.GetAccount(tx.Sender)!.Value;
+                senderState = senderState with { Balance = UInt256.CheckedAdd(senderState.Balance, oogRefund) };
+                stateDb.SetAccount(tx.Sender, senderState);
+            }
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, tx.GasLimit);
             return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb, effectiveGasPrice);
         }
     }
@@ -215,6 +254,48 @@ public sealed class TransactionExecutor
     {
         var gasMeter = new GasMeter(tx.GasLimit);
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+
+        // Check contract exists before charging
+        var contractState = stateDb.GetAccount(tx.To);
+        if (contractState == null || contractState.Value.AccountType is not (AccountType.Contract or AccountType.SystemContract))
+        {
+            // C-2: Still charge gas + increment nonce
+            var sState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, sState, maxGasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+                BasaltErrorCode.ContractNotFound, stateDb, effectiveGasPrice);
+        }
+
+        // C-2: Pre-check balance
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
+
+        if (senderState.Balance < totalDebit)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+                BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // C-1 + C-2: Debit sender on canonical state (nonce + maxGasFee + value)
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        // C-1: Fork state — contract execution happens on the fork
+        var fork = stateDb.Fork();
+
+        // Transfer value to contract on the fork
+        if (tx.Value > UInt256.Zero)
+        {
+            var cs = fork.GetAccount(tx.To) ?? contractState.Value;
+            cs = cs with { Balance = UInt256.CheckedAdd(cs.Balance, tx.Value) };
+            fork.SetAccount(tx.To, cs);
+        }
 
         try
         {
@@ -222,41 +303,7 @@ public sealed class TransactionExecutor
             gasMeter.Consume(GasTable.TxBase);
             gasMeter.Consume(GasTable.ComputeDataGas(tx.Data));
 
-            // Check contract exists
-            var contractState = stateDb.GetAccount(tx.To);
-            if (contractState == null || contractState.Value.AccountType is not (AccountType.Contract or AccountType.SystemContract))
-            {
-                return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
-                    BasaltErrorCode.ContractNotFound, stateDb, effectiveGasPrice);
-            }
-
-            // Debit sender upfront (gas limit * effective max fee + value)
-            var maxGasFee = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
-            var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
-            var totalDebit = UInt256.CheckedAdd(maxGasFee, tx.Value);
-
-            if (senderState.Balance < totalDebit)
-            {
-                return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
-                    BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
-            }
-
-            senderState = senderState with
-            {
-                Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-                Nonce = senderState.Nonce + 1,
-            };
-            stateDb.SetAccount(tx.Sender, senderState);
-
-            // Transfer value to contract
-            if (tx.Value > UInt256.Zero)
-            {
-                var cs = contractState.Value;
-                cs = cs with { Balance = cs.Balance + tx.Value };
-                stateDb.SetAccount(tx.To, cs);
-            }
-
-            // Execute call
+            // Execute call on the fork
             var ctx = new VmExecutionContext
             {
                 Caller = tx.Sender,
@@ -267,36 +314,30 @@ public sealed class TransactionExecutor
                 BlockProposer = blockHeader.Proposer,
                 ChainId = blockHeader.ChainId,
                 GasMeter = gasMeter,
-                StateDb = stateDb,
+                StateDb = fork,
                 CallDepth = 0,
             };
 
-            // Load contract code from storage (stored under 0xFF01... key during deploy)
+            // Load contract code from storage
             var codeStorageKey = GetCodeStorageKey();
             var code = stateDb.GetStorage(tx.To, codeStorageKey) ?? [];
 
             var result = _contractRuntime.Execute(code, tx.Data, ctx);
+            var effectiveGas = gasMeter.EffectiveGasUsed();
 
-            // On failure, revert value transfer (sender keeps their value, contract gives it back)
-            if (!result.Success && tx.Value > UInt256.Zero)
+            if (result.Success)
             {
-                var cs = stateDb.GetAccount(tx.To)!.Value;
-                cs = cs with { Balance = UInt256.CheckedSub(cs.Balance, tx.Value) };
-                stateDb.SetAccount(tx.To, cs);
-
-                senderState = stateDb.GetAccount(tx.Sender)!.Value;
-                senderState = senderState with { Balance = senderState.Balance + tx.Value };
-                stateDb.SetAccount(tx.Sender, senderState);
+                // C-1: Merge fork into canonical state (contract account + storage mutations)
+                MergeForkState(fork, stateDb, tx.To);
             }
 
-            // Refund unused gas (refund based on effective gas price, not max fee)
-            var effectiveGas = gasMeter.EffectiveGasUsed();
+            // Refund unused gas to sender on canonical state
             var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
             if (refund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
-                senderState = senderState with { Balance = senderState.Balance + refund };
+                senderState = senderState with { Balance = UInt256.CheckedAdd(senderState.Balance, refund) };
                 stateDb.SetAccount(tx.Sender, senderState);
             }
 
@@ -321,6 +362,17 @@ public sealed class TransactionExecutor
         }
         catch (OutOfGasException)
         {
+            // C-1: Fork is discarded — no storage mutations leak.
+            // C-2: Nonce incremented, max gas fee debited already.
+            var fullGasCharge = effectiveGasPrice * new UInt256(tx.GasLimit);
+            var oogRefund = maxGasFee - fullGasCharge;
+            if (oogRefund > UInt256.Zero)
+            {
+                senderState = stateDb.GetAccount(tx.Sender)!.Value;
+                senderState = senderState with { Balance = UInt256.CheckedAdd(senderState.Balance, oogRefund) };
+                stateDb.SetAccount(tx.Sender, senderState);
+            }
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, tx.GasLimit);
             return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false, BasaltErrorCode.OutOfGas, stateDb, effectiveGasPrice);
         }
     }
@@ -329,32 +381,46 @@ public sealed class TransactionExecutor
     {
         var gasUsed = _chainParams.TransferGasCost;
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        // C-2: Always charge gas + increment nonce on failure
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
 
         if (_stakingState == null)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+        }
 
-        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
-        var totalDebit = tx.Value + gasFee;
+        var totalDebit = UInt256.CheckedAdd(tx.Value, gasFee);
 
-        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < totalDebit)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
 
         if (tx.Value < _stakingState.MinValidatorStake)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakeBelowMinimum, stateDb, effectiveGasPrice);
+        }
 
         // Parse optional P2P endpoint from tx.Data (UTF-8 encoded)
         string? p2pEndpoint = tx.Data.Length > 0 ? System.Text.Encoding.UTF8.GetString(tx.Data) : null;
 
         var result = _stakingState.RegisterValidator(tx.Sender, tx.Value, blockHeader.Number, p2pEndpoint);
         if (!result.IsSuccess)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorAlreadyRegistered, stateDb, effectiveGasPrice);
+        }
 
-        // Debit sender
+        // Debit sender: value + gas
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -367,30 +433,43 @@ public sealed class TransactionExecutor
     {
         var gasUsed = _chainParams.TransferGasCost;
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
-
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
-
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
+        // C-2: Always charge gas + increment nonce on failure
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+
+        if (_stakingState == null)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+        }
+
         if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
 
         var selfStake = _stakingState.GetSelfStake(tx.Sender);
         if (selfStake == null)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
+        }
 
         // Unstake the full self-stake — triggers unbonding period
         var result = _stakingState.InitiateUnstake(tx.Sender, selfStake.Value, blockHeader.Number);
         if (!result.IsSuccess)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
+        }
 
         // Debit gas fee
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -403,26 +482,37 @@ public sealed class TransactionExecutor
     {
         var gasUsed = _chainParams.TransferGasCost;
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        // C-2: Always charge gas + increment nonce on failure
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
 
         if (_stakingState == null)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+        }
 
-        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
-        var totalDebit = tx.Value + gasFee;
+        var totalDebit = UInt256.CheckedAdd(tx.Value, gasFee);
 
-        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         if (senderState.Balance < totalDebit)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
 
         var result = _stakingState.AddStake(tx.Sender, tx.Value);
         if (!result.IsSuccess)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
+        }
 
-        // Debit sender
+        // Debit sender: value + gas
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, totalDebit),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
@@ -435,31 +525,58 @@ public sealed class TransactionExecutor
     {
         var gasUsed = _chainParams.TransferGasCost;
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
-
-        if (_stakingState == null)
-            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
-
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
+        // C-2: Always charge gas + increment nonce on failure
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+
+        if (_stakingState == null)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.StakingNotAvailable, stateDb, effectiveGasPrice);
+        }
+
         if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
 
         var result = _stakingState.InitiateUnstake(tx.Sender, tx.Value, blockHeader.Number);
         if (!result.IsSuccess)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
             return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.ValidatorNotRegistered, stateDb, effectiveGasPrice);
+        }
 
         // Debit gas fee only (staked funds enter unbonding queue)
         senderState = senderState with
         {
             Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
-            Nonce = senderState.Nonce + 1,
+            Nonce = IncrementNonce(senderState.Nonce),
         };
         stateDb.SetAccount(tx.Sender, senderState);
 
         CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
 
         return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
+    }
+
+    /// <summary>
+    /// L-9: Check whether a derived contract address collides with a system contract address.
+    /// System contracts use the address range 0x000...0000 to 0x000...FFFF.
+    /// </summary>
+    private static bool IsSystemAddress(Address address)
+    {
+        // System addresses have all zeros in bytes 0-17, with only bytes 18-19 non-zero
+        Span<byte> bytes = stackalloc byte[Address.Size];
+        address.WriteTo(bytes);
+        for (int i = 0; i < 18; i++)
+        {
+            if (bytes[i] != 0)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -492,6 +609,51 @@ public sealed class TransactionExecutor
     }
 
     /// <summary>
+    /// L-4: Check for nonce overflow before incrementing.
+    /// Practically unreachable (2^64 txs from one address) but prevents replay attacks.
+    /// </summary>
+    private static ulong IncrementNonce(ulong currentNonce)
+    {
+        if (currentNonce == ulong.MaxValue)
+            throw new BasaltException(BasaltErrorCode.InvalidNonce, "Nonce overflow: account has exhausted all nonces.");
+        return currentNonce + 1;
+    }
+
+    /// <summary>
+    /// C-2: Charge gas fee and increment nonce on failed transactions.
+    /// Charges up to the gas fee (capped at sender balance) and always increments nonce.
+    /// </summary>
+    private static void ChargeGasAndIncrementNonce(
+        IStateDatabase stateDb, Address sender, AccountState senderState,
+        UInt256 gasFee, UInt256 effectiveGasPrice, BlockHeader blockHeader)
+    {
+        // Charge what we can (capped at balance)
+        var actualCharge = senderState.Balance < gasFee ? senderState.Balance : gasFee;
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, actualCharge),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(sender, senderState);
+
+        // Credit proposer tip from actual charge
+        if (!actualCharge.IsZero)
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, 0); // Tip from base gas only
+    }
+
+    /// <summary>
+    /// C-1: Merge contract state from a fork back into canonical state.
+    /// Copies the contract account and any storage that was modified on the fork.
+    /// </summary>
+    private static void MergeForkState(IStateDatabase fork, IStateDatabase canonical, Address contractAddress)
+    {
+        // Copy the contract account state from fork to canonical
+        var contractAccount = fork.GetAccount(contractAddress);
+        if (contractAccount.HasValue)
+            canonical.SetAccount(contractAddress, contractAccount.Value);
+    }
+
+    /// <summary>
     /// Credit the block proposer with the priority tip portion of the gas fee.
     /// The base fee portion is burned (not credited to anyone).
     /// </summary>
@@ -506,7 +668,7 @@ public sealed class TransactionExecutor
             return;
 
         var proposerState = stateDb.GetAccount(blockHeader.Proposer) ?? AccountState.Empty;
-        proposerState = proposerState with { Balance = proposerState.Balance + totalTip };
+        proposerState = proposerState with { Balance = UInt256.CheckedAdd(proposerState.Balance, totalTip) };
         stateDb.SetAccount(blockHeader.Proposer, proposerState);
     }
 

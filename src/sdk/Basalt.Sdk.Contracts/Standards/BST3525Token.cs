@@ -23,6 +23,7 @@ public partial class BST3525Token : IBST3525
     private readonly StorageMap<string, UInt256> _valueAllowances;
     private readonly StorageMap<string, string> _slotUris;
     private readonly StorageMap<string, string> _tokenUris;
+    private readonly StorageMap<string, string> _contractAdmin;
 
     public BST3525Token(string name, string symbol, byte valueDecimals = 0)
     {
@@ -38,6 +39,8 @@ public partial class BST3525Token : IBST3525
         _valueAllowances = new StorageMap<string, UInt256>("sft_vallw");
         _slotUris = new StorageMap<string, string>("sft_suri");
         _tokenUris = new StorageMap<string, string>("sft_turi");
+        _contractAdmin = new StorageMap<string, string>("sft_admin");
+        _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
 
     // --- Views ---
@@ -95,9 +98,11 @@ public partial class BST3525Token : IBST3525
 
     // --- Entrypoints ---
 
+    /// <remarks>H-7: Only callable by the contract owner.</remarks>
     [BasaltEntrypoint]
     public ulong Mint(byte[] to, ulong slot, UInt256 value)
     {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "SFT: not owner");
         Context.Require(to.Length > 0, "SFT: mint to zero address");
         return MintInternal(to, slot, value);
     }
@@ -220,9 +225,11 @@ public partial class BST3525Token : IBST3525
         });
     }
 
+    /// <remarks>L-5: Restricted to contract owner to prevent unauthorized metadata overwrites.</remarks>
     [BasaltEntrypoint]
     public void SetSlotUri(ulong slot, string uri)
     {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "SFT: not owner");
         _slotUris.Set(slot.ToString(), uri);
     }
 

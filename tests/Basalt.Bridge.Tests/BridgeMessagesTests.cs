@@ -115,6 +115,32 @@ public class BridgeMessagesTests
     }
 
     [Fact]
+    public void BridgeDeposit_Invalid_Transition_Throws()
+    {
+        // MED-03: Pending → Finalized is invalid (must go through Confirmed)
+        var deposit = new BridgeDeposit();
+        var act = () => deposit.Status = BridgeTransferStatus.Finalized;
+        act.Should().Throw<InvalidOperationException>().WithMessage("*MED-03*");
+    }
+
+    [Fact]
+    public void BridgeDeposit_TransitionStatus_Returns_False_For_Invalid()
+    {
+        var deposit = new BridgeDeposit();
+        deposit.TransitionStatus(BridgeTransferStatus.Finalized).Should().BeFalse();
+        deposit.Status.Should().Be(BridgeTransferStatus.Pending);
+    }
+
+    [Fact]
+    public void BridgeDeposit_Any_State_Can_Transition_To_Failed()
+    {
+        // LOW-03: Failed is now reachable from any state
+        var deposit = new BridgeDeposit();
+        deposit.TransitionStatus(BridgeTransferStatus.Failed).Should().BeTrue();
+        deposit.Status.Should().Be(BridgeTransferStatus.Failed);
+    }
+
+    [Fact]
     public void BridgeDeposit_With_EthereumToBasalt_Direction()
     {
         var deposit = new BridgeDeposit
@@ -182,8 +208,9 @@ public class BridgeMessagesTests
     }
 
     [Fact]
-    public void BridgeWithdrawal_Signatures_List_Is_Mutable()
+    public void BridgeWithdrawal_Signatures_AddSignature_Works()
     {
+        // LOW-02: Signatures exposed as IReadOnlyList, added via AddSignature
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
@@ -200,10 +227,10 @@ public class BridgeMessagesTests
             Signature = new byte[64],
         };
 
-        withdrawal.Signatures.Add(sig);
+        withdrawal.AddSignature(sig);
         withdrawal.Signatures.Should().HaveCount(1);
 
-        withdrawal.Signatures.Add(sig);
+        withdrawal.AddSignature(sig);
         withdrawal.Signatures.Should().HaveCount(2);
     }
 
@@ -254,6 +281,44 @@ public class BridgeMessagesTests
 
         sig.PublicKey.Should().HaveCount(3);
         sig.Signature.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void RelayerSignature_Validate_Accepts_Correct_Lengths()
+    {
+        // LOW-01: Correct Ed25519 lengths pass validation
+        var sig = new RelayerSignature
+        {
+            PublicKey = new byte[32],
+            Signature = new byte[64],
+        };
+        sig.Validate(); // Should not throw
+    }
+
+    [Fact]
+    public void RelayerSignature_Validate_Rejects_Wrong_PublicKey_Length()
+    {
+        // LOW-01: Wrong public key length
+        var sig = new RelayerSignature
+        {
+            PublicKey = new byte[16],
+            Signature = new byte[64],
+        };
+        var act = () => sig.Validate();
+        act.Should().Throw<ArgumentException>().WithMessage("*PublicKey*32*");
+    }
+
+    [Fact]
+    public void RelayerSignature_Validate_Rejects_Wrong_Signature_Length()
+    {
+        // LOW-01: Wrong signature length
+        var sig = new RelayerSignature
+        {
+            PublicKey = new byte[32],
+            Signature = new byte[32],
+        };
+        var act = () => sig.Validate();
+        act.Should().Throw<ArgumentException>().WithMessage("*Signature*64*");
     }
 
     // ── BridgeException ──────────────────────────────────────────────────

@@ -24,6 +24,7 @@ public sealed class PipelinedConsensus
     private readonly byte[] _privateKey;
     private readonly IBlsSigner _blsSigner;
     private readonly ILogger<PipelinedConsensus> _logger;
+    private readonly uint _chainId;
 
     // Active consensus rounds (one per block height)
     private readonly ConcurrentDictionary<ulong, ConsensusRound> _activeRounds = new();
@@ -61,11 +62,13 @@ public sealed class PipelinedConsensus
         byte[] privateKey,
         IBlsSigner blsSigner,
         ILogger<PipelinedConsensus> logger,
-        ulong lastFinalizedBlock = 0)
+        ulong lastFinalizedBlock = 0,
+        uint chainId = 0)
     {
         _validatorSet = validatorSet;
         _localPeerId = localPeerId;
         _privateKey = privateKey;
+        _chainId = chainId;
         _blsSigner = blsSigner;
         _logger = logger;
         _lastFinalizedBlock = lastFinalizedBlock;
@@ -169,7 +172,7 @@ public sealed class PipelinedConsensus
 
         // Sign and propose (domain-separated: phase || view || blockNumber || blockHash)
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
-        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, round.View, blockNumber, blockHash);
+        WriteConsensusSigningPayload(sigPayload, _chainId, VotePhase.Prepare, round.View, blockNumber, blockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
 
@@ -220,6 +223,19 @@ public sealed class PipelinedConsensus
         if (round.State == ConsensusState.Finalized)
             return null;
 
+        // M-01: Reject conflicting proposals for the same block
+        // If round already has a different block hash at the same or lower view, this is
+        // either equivocation (same view) or a stale proposal (lower view). Only accept
+        // proposals from a strictly higher view (view change rotated the leader).
+        if (round.BlockHash != Hash256.Zero && round.BlockHash != proposal.BlockHash
+            && proposal.ViewNumber <= round.View)
+        {
+            _logger.LogWarning(
+                "Rejecting conflicting proposal for block {Block}: existing view {ExistingView} hash {ExistingHash}, proposed view {ProposedView} hash {ProposedHash}",
+                proposal.BlockNumber, round.View, round.BlockHash, proposal.ViewNumber, proposal.BlockHash);
+            return null;
+        }
+
         // Verify leader
         var leader = _validatorSet.GetLeader(proposal.ViewNumber);
         if (proposal.SenderId != leader.PeerId)
@@ -227,10 +243,11 @@ public sealed class PipelinedConsensus
 
         // Verify signature (domain-separated)
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
-        WriteConsensusSigningPayload(sigPayload, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
+        WriteConsensusSigningPayload(sigPayload, _chainId, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
         if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
             return null;
 
+        round.View = proposal.ViewNumber;
         round.BlockHash = proposal.BlockHash;
         round.BlockData = proposal.BlockData;
         round.State = ConsensusState.Preparing;
@@ -262,7 +279,7 @@ public sealed class PipelinedConsensus
 
         // Verify signature (domain-separated)
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
-        WriteConsensusSigningPayload(sigPayload, vote.Phase, vote.ViewNumber, vote.BlockNumber, vote.BlockHash);
+        WriteConsensusSigningPayload(sigPayload, _chainId, vote.Phase, vote.ViewNumber, vote.BlockNumber, vote.BlockHash);
         if (!_blsSigner.Verify(vote.VoterPublicKey.ToArray(), sigPayload, vote.VoterSignature.ToArray()))
             return null;
 
@@ -313,6 +330,22 @@ public sealed class PipelinedConsensus
     /// </summary>
     public ViewChangeMessage? HandleViewChange(ViewChangeMessage viewChange)
     {
+        // M-06: Only accept view changes from known validators
+        if (!_validatorSet.IsValidator(viewChange.SenderId))
+        {
+            _logger.LogWarning("View change from non-validator {Sender}", viewChange.SenderId);
+            return null;
+        }
+
+        // H-01: Verify view change signature (domain-separated)
+        Span<byte> sigPayload = stackalloc byte[ViewChangePayloadSize];
+        WriteViewChangeSigningPayload(sigPayload, _chainId, viewChange.ProposedView);
+        if (!_blsSigner.Verify(viewChange.VoterPublicKey.ToArray(), sigPayload, viewChange.VoterSignature.ToArray()))
+        {
+            _logger.LogWarning("Invalid view change signature from {Sender}", viewChange.SenderId);
+            return null;
+        }
+
         var votes = _viewChangeVotes.GetOrAdd(viewChange.ProposedView, _ => new HashSet<PeerId>());
         bool newAutoJoin = false;
 
@@ -374,7 +407,7 @@ public sealed class PipelinedConsensus
         if (newAutoJoin)
         {
             Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
-            WriteViewChangeSigningPayload(viewPayload, viewChange.ProposedView);
+            WriteViewChangeSigningPayload(viewPayload, _chainId, viewChange.ProposedView);
             var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
             var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
@@ -436,11 +469,12 @@ public sealed class PipelinedConsensus
             _ => throw new ArgumentException($"Unknown phase: {phase}"),
         };
 
+        bool isNew;
         lock (votes)
-            votes.Add(voter);
+            isNew = votes.Add(voter);
 
-        // Track signatures for aggregation
-        if (signature != null && publicKey != null)
+        // M-02: Only track signatures for new votes (prevent duplicate aggregation)
+        if (isNew && signature != null && publicKey != null)
         {
             var sigList = phase switch
             {
@@ -584,7 +618,7 @@ public sealed class PipelinedConsensus
     private void RecordSelfVote(ConsensusRound round, VotePhase phase)
     {
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
-        WriteConsensusSigningPayload(sigPayload, phase, round.View, round.BlockNumber, round.BlockHash);
+        WriteConsensusSigningPayload(sigPayload, _chainId, phase, round.View, round.BlockNumber, round.BlockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
         RecordVote(round, phase, _localPeerId, signatureBytes, publicKeyBytes);
@@ -593,7 +627,7 @@ public sealed class PipelinedConsensus
     private ConsensusVoteMessage CreateVote(ConsensusRound round, VotePhase phase)
     {
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
-        WriteConsensusSigningPayload(sigPayload, phase, round.View, round.BlockNumber, round.BlockHash);
+        WriteConsensusSigningPayload(sigPayload, _chainId, phase, round.View, round.BlockNumber, round.BlockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
         var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
@@ -621,7 +655,7 @@ public sealed class PipelinedConsensus
     {
         var proposedView = round.View + 1;
         Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
-        WriteViewChangeSigningPayload(viewPayload, proposedView);
+        WriteViewChangeSigningPayload(viewPayload, _chainId, proposedView);
         var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
@@ -638,29 +672,32 @@ public sealed class PipelinedConsensus
 
     /// <summary>
     /// Build the domain-separated signing payload for BLS consensus signatures.
-    /// Format: [1-byte phase tag || 8-byte view LE || 8-byte blockNumber LE || 32-byte blockHash]
-    /// This prevents cross-phase and cross-view signature replay attacks (F-CON-01).
+    /// Format: [4-byte chainId LE || 1-byte phase tag || 8-byte view LE || 8-byte blockNumber LE || 32-byte blockHash]
+    /// L-03: Chain ID prevents cross-chain signature replay (F-CON-01).
     /// </summary>
-    private const int ConsensusPayloadSize = 1 + 8 + 8 + Hash256.Size; // 49 bytes
+    private const int ConsensusPayloadSize = 4 + 1 + 8 + 8 + Hash256.Size; // 53 bytes
 
-    private static void WriteConsensusSigningPayload(Span<byte> buffer, VotePhase phase, ulong view, ulong blockNumber, Hash256 blockHash)
+    private static void WriteConsensusSigningPayload(Span<byte> buffer, uint chainId, VotePhase phase, ulong view, ulong blockNumber, Hash256 blockHash)
     {
-        buffer[0] = (byte)phase;
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], view);
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[9..], blockNumber);
-        blockHash.WriteTo(buffer[17..]);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(buffer, chainId);
+        buffer[4] = (byte)phase;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[5..], view);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[13..], blockNumber);
+        blockHash.WriteTo(buffer[21..]);
     }
 
     /// <summary>
     /// Build the domain-separated signing payload for view change messages.
-    /// Format: [0xFF tag || 8-byte proposedView LE]
+    /// Format: [4-byte chainId LE || 0xFF tag || 8-byte proposedView LE]
+    /// L-04: Chain ID prevents cross-chain view change replay.
     /// </summary>
-    private const int ViewChangePayloadSize = 1 + 8; // 9 bytes
+    private const int ViewChangePayloadSize = 4 + 1 + 8; // 13 bytes
 
-    private static void WriteViewChangeSigningPayload(Span<byte> buffer, ulong proposedView)
+    private static void WriteViewChangeSigningPayload(Span<byte> buffer, uint chainId, ulong proposedView)
     {
-        buffer[0] = 0xFF;
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[1..], proposedView);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(buffer, chainId);
+        buffer[4] = 0xFF;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buffer[5..], proposedView);
     }
 
     /// <summary>
@@ -669,7 +706,7 @@ public sealed class PipelinedConsensus
     private sealed class ConsensusRound
     {
         public ulong BlockNumber { get; init; }
-        public ulong View { get; init; }
+        public ulong View { get; set; }
         public ConsensusState State { get; set; }
         public Hash256 BlockHash { get; set; }
         public byte[]? BlockData { get; set; }

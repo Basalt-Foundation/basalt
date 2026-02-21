@@ -143,38 +143,31 @@ public class ZkComplianceVerifierTests
     }
 
     [Fact]
-    public void DuplicateNullifier_ReturnsInvalid()
+    public void DuplicateNullifier_NotConsumedOnVerificationFailure()
     {
+        // M-03: Nullifier is only consumed AFTER successful Groth16 verification.
+        // A failed proof should NOT consume the nullifier, allowing legitimate retries.
         var schema = SchemaId(4);
         var verifier = new ZkComplianceVerifier(_ => new byte[128]);
 
         var sharedNullifier = Nullifier(4);
-
-        // Two requirements with the same schema, two proofs with the same nullifier
         var proofA = MakeProof(schema, sharedNullifier);
-        var requirements = new[]
-        {
-            MakeRequirement(schema),
-            MakeRequirement(schema),
-        };
 
-        // First call uses the nullifier
+        // First call fails at VK decode (synthetic VK) — nullifier NOT consumed
         var result1 = verifier.VerifyProofs(
             new[] { proofA },
             new[] { MakeRequirement(schema) },
             blockTimestamp: 1000);
+        result1.Allowed.Should().BeFalse();
 
-        // The first call will hit VK decode or Groth16 verification failure,
-        // but the nullifier is consumed before that step.
-        // Second call with the same nullifier should fail on duplicate.
+        // Second call with same nullifier should NOT fail with "Duplicate nullifier"
+        // because the first call's failed proof didn't consume it.
         var result2 = verifier.VerifyProofs(
             new[] { proofA },
             new[] { MakeRequirement(schema) },
             blockTimestamp: 1000);
-
         result2.Allowed.Should().BeFalse();
-        result2.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofInvalid);
-        result2.Reason.Should().Contain("Duplicate nullifier");
+        result2.Reason.Should().NotContain("Duplicate nullifier");
     }
 
     [Fact]
@@ -187,15 +180,14 @@ public class ZkComplianceVerifierTests
         var proof = MakeProof(schema, nullifier);
         var requirements = new[] { MakeRequirement(schema) };
 
-        // First use consumes the nullifier (even though Groth16 will fail)
+        // First use fails at Groth16 — nullifier not consumed (M-03)
         verifier.VerifyProofs(new[] { proof }, requirements, blockTimestamp: 1000);
 
-        // Reset nullifiers
+        // Reset nullifiers (no-op here since none were consumed, but verifies the API)
         verifier.ResetNullifiers();
 
-        // After reset, the same nullifier should be accepted again (not duplicate).
-        // It will still fail at Groth16 verification because the proof is synthetic,
-        // but it should NOT fail with "Duplicate nullifier".
+        // After reset, same nullifier is still available — no duplicate error.
+        // It will still fail at Groth16 verification because the proof is synthetic.
         var result = verifier.VerifyProofs(new[] { proof }, requirements, blockTimestamp: 1000);
 
         result.Reason.Should().NotContain("Duplicate nullifier");
@@ -283,14 +275,57 @@ public class ZkComplianceVerifierTests
         var proof = MakeProof(schema, Nullifier(11));
         var requirements = new[] { MakeRequirement(schema) };
 
+        // Requirements exist but no ZK verifier — fails with ComplianceProofMissing
         var result = engine.VerifyProofs(
             new[] { proof },
             requirements,
             blockTimestamp: 1000);
 
         result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofMissing);
+        result.Reason.Should().Contain("requirements exist");
+    }
+
+    [Fact]
+    public void Engine_WithoutZkVerifier_ProofsButNoRequirements_Fails()
+    {
+        var registry = new IdentityRegistry();
+        var sanctions = new SanctionsList();
+        var engine = new ComplianceEngine(registry, sanctions); // No ZK verifier
+
+        var schema = SchemaId(13);
+        var proof = MakeProof(schema, Nullifier(13));
+
+        // Proofs provided but no verifier to validate them
+        var result = engine.VerifyProofs(
+            new[] { proof },
+            Array.Empty<ProofRequirement>(),
+            blockTimestamp: 1000);
+
+        result.Allowed.Should().BeFalse();
         result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofInvalid);
         result.Reason.Should().Contain("ZK verification not available");
+    }
+
+    [Fact]
+    public void Engine_WithoutZkVerifier_RequirementsButNoProofs_Fails()
+    {
+        // C-01: Previously returned Success — requirements exist but no verifier and no proofs
+        var registry = new IdentityRegistry();
+        var sanctions = new SanctionsList();
+        var engine = new ComplianceEngine(registry, sanctions); // No ZK verifier
+
+        var schema = SchemaId(12);
+        var requirements = new[] { MakeRequirement(schema) };
+
+        var result = engine.VerifyProofs(
+            Array.Empty<ComplianceProof>(),
+            requirements,
+            blockTimestamp: 1000);
+
+        result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofMissing);
+        result.Reason.Should().Contain("requirements exist");
     }
 
     [Fact]

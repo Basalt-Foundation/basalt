@@ -318,6 +318,7 @@ public class GraphQLQueryTests
         var query = new Query();
 
         // Request 200 (capped to 100, but only 6 blocks exist including genesis)
+        // M-6: GetBlocks now includes genesis block
         var results = query.GetBlocks(200, chainManager);
 
         // Should get all 6 (genesis + 5 blocks)

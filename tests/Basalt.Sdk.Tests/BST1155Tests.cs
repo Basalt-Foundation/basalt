@@ -21,13 +21,13 @@ public class BST1155Tests : IDisposable
 
     public BST1155Tests()
     {
-        _token = new BST1155Token("https://tokens.basalt.io/");
         _owner = BasaltTestHost.CreateAddress(1);
         _alice = BasaltTestHost.CreateAddress(2);
         _bob = BasaltTestHost.CreateAddress(3);
         _carol = BasaltTestHost.CreateAddress(4);
         _operator = BasaltTestHost.CreateAddress(5);
         _host.SetCaller(_owner);
+        _token = new BST1155Token("https://tokens.basalt.io/");
     }
 
     // --- Mint ---

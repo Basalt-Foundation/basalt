@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Basalt.Core;
 using Basalt.Crypto;
 
@@ -72,7 +73,8 @@ public partial class BridgeETH
     public void TransferAdmin(byte[] newAdmin)
     {
         RequireAdmin();
-        Context.Require(newAdmin.Length > 0, "BRIDGE: invalid admin");
+        // L-7: Validate 20-byte address length
+        Context.Require(newAdmin.Length == 20, "BRIDGE: invalid admin address length");
         _admin.Set("admin", Convert.ToHexString(newAdmin));
     }
 
@@ -130,7 +132,7 @@ public partial class BridgeETH
     public void SetThreshold(uint newThreshold)
     {
         RequireAdmin();
-        Context.Require(newThreshold >= 1, "BRIDGE: threshold must be >= 1");
+        Context.Require(newThreshold >= 2, "BRIDGE: threshold must be >= 2");
         Context.Require(newThreshold <= _relayerCount.Get(), "BRIDGE: threshold exceeds relayer count");
 
         var old = _threshold.Get();
@@ -285,11 +287,15 @@ public partial class BridgeETH
 
         Context.Require(validCount >= threshold, "BRIDGE: insufficient valid signatures");
 
+        // C-9: Verify unlock amount does not exceed locked balance
+        var locked = _totalLocked.Get();
+        Context.Require(amount <= locked, "BRIDGE: amount exceeds locked balance");
+
         _processedWithdrawals.Set(nonceKey, true);
         Context.TransferNative(recipient, amount);
 
         // BRIDGE-02: Decrement total locked on unlock
-        _totalLocked.Set(_totalLocked.Get() - amount);
+        _totalLocked.Set(locked - amount);
 
         Context.Emit(new WithdrawalUnlockedEvent
         {
@@ -369,16 +375,16 @@ public partial class BridgeETH
         data[offset] = 0x02;
         offset += 1;
 
-        // Chain ID (BRIDGE-01)
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), Context.ChainId);
+        // Chain ID (BRIDGE-01) — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), Context.ChainId);
         offset += 4;
 
         // Contract address (BRIDGE-01)
         Context.Self.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
-        // Nonce
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), nonce);
+        // Nonce — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), nonce);
         offset += 8;
 
         // Recipient (fixed 20 bytes)

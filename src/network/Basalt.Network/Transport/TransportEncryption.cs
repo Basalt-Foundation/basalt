@@ -95,6 +95,12 @@ public sealed class TransportEncryption : IDisposable
     /// Decrypt an encrypted envelope received from the peer.
     /// Input format: [12-byte nonce || ciphertext || 16-byte GCM tag].
     /// Validates nonce monotonicity for anti-replay protection.
+    /// <para>
+    /// <b>M-3: Nonce anti-replay design.</b> Strict monotonicity (no gap tolerance) is
+    /// intentional: TCP guarantees in-order delivery, so any out-of-order nonce indicates
+    /// either replay attack or a broken connection (which TCP will surface as an error).
+    /// A sliding-window approach is unnecessary and would weaken replay detection.
+    /// </para>
     /// </summary>
     public byte[] Decrypt(ReadOnlySpan<byte> envelope)
     {

@@ -11,6 +11,14 @@ public interface IStateDatabase
     void SetAccount(Address address, AccountState state);
     bool AccountExists(Address address);
     void DeleteAccount(Address address);
+    /// <summary>
+    /// Compute the state root hash.
+    /// </summary>
+    /// <remarks>
+    /// The root hash algorithm is implementation-specific. <see cref="InMemoryStateDb"/>
+    /// uses a naive sorted hash; <see cref="TrieStateDb"/> uses a Merkle Patricia Trie.
+    /// Roots from different implementations are <b>not comparable</b>.
+    /// </remarks>
     Hash256 ComputeStateRoot();
     IEnumerable<(Address Address, AccountState State)> GetAllAccounts();
 

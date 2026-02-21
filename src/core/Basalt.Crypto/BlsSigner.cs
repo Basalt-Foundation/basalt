@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Basalt.Core;
 using Nethermind.Crypto;
@@ -23,15 +24,23 @@ public sealed class BlsSigner : IBlsSigner
     /// Sign a message with a BLS private key (32 bytes).
     /// Returns a 96-byte compressed G2 signature.
     /// </summary>
+    /// <remarks>
+    /// The first byte is masked with 0x3F to ensure the scalar is below the BLS12-381
+    /// field modulus (which starts with 0x73...). This wastes ~2 bits of key space
+    /// (reducing from 256 to ~254 effective bits) but guarantees validity without
+    /// rejection sampling. The security loss is negligible (254 bits >> 128-bit target).
+    /// </remarks>
     public byte[] Sign(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> message)
     {
-        // BLS12-381 requires the scalar to be less than the field modulus.
         Span<byte> masked = stackalloc byte[32];
         privateKey[..32].CopyTo(masked);
         masked[0] &= 0x3F;
 
         var sk = new Bls.SecretKey();
         sk.FromBendian(masked);
+
+        // AUDIT H-06: Zero masked key material immediately after use
+        CryptographicOperations.ZeroMemory(masked);
 
         var sig = new Bls.P2();
         sig.HashTo(message, Dst, ReadOnlySpan<byte>.Empty);
@@ -45,6 +54,12 @@ public sealed class BlsSigner : IBlsSigner
     /// Public key: 48-byte compressed G1 point.
     /// Signature: 96-byte compressed G2 point.
     /// </summary>
+    /// <remarks>
+    /// Returns false for any exception during verification (malformed points,
+    /// invalid encodings, etc.). This is intentional — verification failure
+    /// should never crash the node. The blst native library may throw various
+    /// exceptions for malformed inputs that cannot be narrowed safely.
+    /// </remarks>
     public bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
     {
         try
@@ -79,10 +94,11 @@ public sealed class BlsSigner : IBlsSigner
     /// <summary>
     /// Aggregate multiple BLS signatures into a single 96-byte signature.
     /// </summary>
+    /// <exception cref="ArgumentException">Thrown when signatures array is empty.</exception>
     public byte[] AggregateSignatures(ReadOnlySpan<byte[]> signatures)
     {
         if (signatures.Length == 0)
-            return [];
+            throw new ArgumentException("Cannot aggregate zero signatures.", nameof(signatures));
 
         if (signatures.Length == 1)
             return (byte[])signatures[0].Clone();
@@ -152,14 +168,15 @@ public sealed class BlsSigner : IBlsSigner
     /// </summary>
     public static byte[] GetPublicKeyStatic(ReadOnlySpan<byte> privateKey)
     {
-        // BLS12-381 requires the scalar to be less than the field modulus.
-        // Mask the first byte to ensure the key is in range.
         Span<byte> masked = stackalloc byte[32];
         privateKey[..32].CopyTo(masked);
         masked[0] &= 0x3F;
 
         var sk = new Bls.SecretKey();
         sk.FromBendian(masked);
+
+        // AUDIT H-06: Zero masked key material immediately after use
+        CryptographicOperations.ZeroMemory(masked);
 
         var pk = new Bls.P1();
         pk.FromSk(sk);

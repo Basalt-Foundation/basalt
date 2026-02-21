@@ -101,7 +101,8 @@ public static class GenesisContractDeployer
         stateDb.SetStorage(address, storageKey, manifest);
 
         // Initialize the contract (runs constructor, writes initial storage)
-        var gasMeter = new GasMeter(10_000_000);
+        // M-11: Use ulong.MaxValue for genesis gas — no economic constraint at genesis
+        var gasMeter = new GasMeter(ulong.MaxValue);
         var ctx = new VmExecutionContext
         {
             Caller = address,
@@ -117,10 +118,20 @@ public static class GenesisContractDeployer
         };
 
         var host = new HostInterface(ctx);
-        using var scope = ContractBridge.Setup(ctx, host);
-        registry.CreateInstance(typeId, constructorArgs);
+        // M-11: Catch constructor failures to prevent partial genesis state
+        try
+        {
+            using var scope = ContractBridge.Setup(ctx, host);
+            registry.CreateInstance(typeId, constructorArgs);
+        }
+        catch (Exception ex)
+        {
+            var name = registry.GetName(typeId) ?? $"0x{typeId:X4}";
+            throw new InvalidOperationException(
+                $"Failed to deploy system contract {name} at {address}: {ex.Message}", ex);
+        }
 
-        var name = registry.GetName(typeId) ?? $"0x{typeId:X4}";
-        logger?.LogInformation("Deployed system contract {Name} at {Address}", name, address);
+        var contractName = registry.GetName(typeId) ?? $"0x{typeId:X4}";
+        logger?.LogInformation("Deployed system contract {Name} at {Address}", contractName, address);
     }
 }

@@ -85,13 +85,16 @@ public class MultisigRelayerTests
     [Fact]
     public void RemoveRelayer_Deregisters()
     {
-        var (_, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var k1 = Ed25519Signer.GenerateKeyPair();
         var relayer = new MultisigRelayer(1);
-        relayer.AddRelayer(pubKey.ToArray());
-        relayer.RemoveRelayer(pubKey.ToArray());
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.AddRelayer(k1.PublicKey.ToArray());
+        relayer.RemoveRelayer(k0.PublicKey.ToArray());
 
-        relayer.IsRelayer(pubKey.ToArray()).Should().BeFalse();
-        relayer.RelayerCount.Should().Be(0);
+        relayer.IsRelayer(k0.PublicKey.ToArray()).Should().BeFalse();
+        relayer.IsRelayer(k1.PublicKey.ToArray()).Should().BeTrue();
+        relayer.RelayerCount.Should().Be(1);
     }
 
     [Fact]
@@ -125,16 +128,18 @@ public class MultisigRelayerTests
     [Fact]
     public void RemoveRelayer_Then_Readd_Works()
     {
-        var (_, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var k1 = Ed25519Signer.GenerateKeyPair();
         var relayer = new MultisigRelayer(1);
 
-        relayer.AddRelayer(pubKey.ToArray());
-        relayer.RemoveRelayer(pubKey.ToArray());
-        relayer.IsRelayer(pubKey.ToArray()).Should().BeFalse();
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.AddRelayer(k1.PublicKey.ToArray());
+        relayer.RemoveRelayer(k0.PublicKey.ToArray());
+        relayer.IsRelayer(k0.PublicKey.ToArray()).Should().BeFalse();
 
-        relayer.AddRelayer(pubKey.ToArray());
-        relayer.IsRelayer(pubKey.ToArray()).Should().BeTrue();
-        relayer.RelayerCount.Should().Be(1);
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.IsRelayer(k0.PublicKey.ToArray()).Should().BeTrue();
+        relayer.RelayerCount.Should().Be(2);
     }
 
     // ── IsRelayer ────────────────────────────────────────────────────────
@@ -412,19 +417,24 @@ public class MultisigRelayerTests
     [Fact]
     public void VerifyMessage_After_Relayer_Removed_Fails()
     {
-        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
-        var relayer = new MultisigRelayer(1);
-        relayer.AddRelayer(pubKey.ToArray());
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var k1 = Ed25519Signer.GenerateKeyPair();
+        var k2 = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(2);
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.AddRelayer(k1.PublicKey.ToArray());
+        relayer.AddRelayer(k2.PublicKey.ToArray());
 
         var msgHash = Blake3Hasher.Hash([42]).ToArray();
-        var sig = MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray());
+        var sig0 = MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray());
+        var sig1 = MultisigRelayer.Sign(msgHash, k1.PrivateKey, k1.PublicKey.ToArray());
 
-        // Valid while relayer is registered
-        relayer.VerifyMessage(msgHash, [sig]).Should().BeTrue();
+        // Valid while both relayers registered (2-of-3)
+        relayer.VerifyMessage(msgHash, [sig0, sig1]).Should().BeTrue();
 
-        // Remove the relayer, same signature should now fail
-        relayer.RemoveRelayer(pubKey.ToArray());
-        relayer.VerifyMessage(msgHash, [sig]).Should().BeFalse();
+        // Remove k0, now sig0+sig1 should fail because k0 is no longer a relayer
+        relayer.RemoveRelayer(k0.PublicKey.ToArray());
+        relayer.VerifyMessage(msgHash, [sig0, sig1]).Should().BeFalse();
     }
 
     [Fact]
@@ -434,7 +444,8 @@ public class MultisigRelayerTests
         var k1 = Ed25519Signer.GenerateKeyPair();
         var k2 = Ed25519Signer.GenerateKeyPair();
 
-        var relayer = new MultisigRelayer(1);
+        // HIGH-03: threshold must be majority (2 of 3)
+        var relayer = new MultisigRelayer(2);
         relayer.AddRelayer(k0.PublicKey.ToArray());
         relayer.AddRelayer(k1.PublicKey.ToArray());
         relayer.AddRelayer(k2.PublicKey.ToArray());
@@ -444,7 +455,7 @@ public class MultisigRelayerTests
         var sig1 = MultisigRelayer.Sign(msgHash, k1.PrivateKey, k1.PublicKey.ToArray());
         var sig2 = MultisigRelayer.Sign(msgHash, k2.PrivateKey, k2.PublicKey.ToArray());
 
-        // Threshold=1 but 3 valid sigs; should succeed
+        // Threshold=2 but 3 valid sigs; should succeed
         relayer.VerifyMessage(msgHash, [sig0, sig1, sig2]).Should().BeTrue();
     }
 
@@ -459,6 +470,62 @@ public class MultisigRelayerTests
         var sig = MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray());
 
         relayer.VerifyMessage(msgHash, [sig]).Should().BeFalse();
+    }
+
+    // ── Quorum enforcement (HIGH-03) ───────────────────────────────────
+
+    [Fact]
+    public void VerifyMessage_Rejects_Below_Majority_Quorum()
+    {
+        // HIGH-03: threshold=1 with 3 relayers is not strict majority
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var k1 = Ed25519Signer.GenerateKeyPair();
+        var k2 = Ed25519Signer.GenerateKeyPair();
+
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.AddRelayer(k1.PublicKey.ToArray());
+        relayer.AddRelayer(k2.PublicKey.ToArray());
+
+        var msgHash = Blake3Hasher.Hash([42]).ToArray();
+        var sig0 = MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray());
+
+        // 1-of-3 does not satisfy strict majority
+        relayer.VerifyMessage(msgHash, [sig0]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void VerifyMessage_Accepts_Majority_Quorum()
+    {
+        // HIGH-03: 2-of-3 satisfies strict majority (2*2=4 > 3)
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var k1 = Ed25519Signer.GenerateKeyPair();
+        var k2 = Ed25519Signer.GenerateKeyPair();
+
+        var relayer = new MultisigRelayer(2);
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+        relayer.AddRelayer(k1.PublicKey.ToArray());
+        relayer.AddRelayer(k2.PublicKey.ToArray());
+
+        var msgHash = Blake3Hasher.Hash([42]).ToArray();
+        var sig0 = MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray());
+        var sig1 = MultisigRelayer.Sign(msgHash, k1.PrivateKey, k1.PublicKey.ToArray());
+
+        relayer.VerifyMessage(msgHash, [sig0, sig1]).Should().BeTrue();
+    }
+
+    // ── RemoveRelayer guard (LOW-05) ─────────────────────────────────
+
+    [Fact]
+    public void RemoveRelayer_Below_Threshold_Throws()
+    {
+        // LOW-05: Cannot remove relayer if it would leave count < threshold
+        var k0 = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(k0.PublicKey.ToArray());
+
+        var act = () => relayer.RemoveRelayer(k0.PublicKey.ToArray());
+        act.Should().Throw<InvalidOperationException>().WithMessage("*below threshold*");
     }
 
     // ── Thread safety ────────────────────────────────────────────────────

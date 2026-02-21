@@ -1,8 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Api.Rest</RootNamespace>
-    <!-- Minimal API endpoint mapping is AOT-compatible in .NET 9 with source generators,
-         but the analyzers flag the delegate-based overloads. Suppress for the library. -->
+    <!--
+      M-7: IL2026/IL3050 suppressions explained:
+      .NET 9 Minimal API delegate-based MapGet/MapPost overloads trigger these warnings
+      because the analyzers cannot prove the delegates are AOT-safe at compile time.
+      However, the source-generated JsonSerializerContext (BasaltApiJsonContext) ensures
+      all serialized types have compile-time metadata. The suppression is safe because:
+      1. All JSON DTOs are registered in BasaltApiJsonContext
+      2. No reflection-based serialization is used
+      3. The project targets net9.0 with source generators enabled
+    -->
     <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
   </PropertyGroup>
   <ItemGroup>

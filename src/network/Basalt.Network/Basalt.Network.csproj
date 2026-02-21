@@ -3,6 +3,9 @@
     <RootNamespace>Basalt.Network</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Basalt.Network.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
     <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
     <ProjectReference Include="../../core/Basalt.Codec/Basalt.Codec.csproj" />
