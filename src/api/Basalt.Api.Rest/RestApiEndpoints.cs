@@ -294,9 +294,11 @@ public static class RestApiEndpoints
         {
             var maxTxs = Math.Clamp(count ?? 50, 1, 200);
             var latestNum = chainManager.LatestBlockNumber;
+            // H-1: Cap scan depth to prevent full-chain traversal DoS
+            var scanDepth = Math.Min(latestNum + 1, 1000UL);
             var transactions = new List<TransactionDetailResponse>();
 
-            for (ulong i = 0; i <= latestNum && transactions.Count < maxTxs; i++)
+            for (ulong i = 0; i < scanDepth && transactions.Count < maxTxs; i++)
             {
                 var block = chainManager.GetBlockByNumber(latestNum - i);
                 if (block == null) continue;
@@ -485,7 +487,8 @@ public static class RestApiEndpoints
                     ulong? deployBlockNumber = null;
 
                     var latestNum = chainManager.LatestBlockNumber;
-                    var scanDepth = Math.Min(latestNum + 1, 5000UL);
+                    // H-4: Cap deploy-tx scan depth to prevent expensive lookups
+                    var scanDepth = Math.Min(latestNum + 1, 1000UL);
 
                     for (ulong i = 0; i < scanDepth; i++)
                     {
