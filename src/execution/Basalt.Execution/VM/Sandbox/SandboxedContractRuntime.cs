@@ -71,6 +71,14 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             var codeStorageKey = GetCodeStorageKey();
             host.StorageWrite(codeStorageKey, code);
 
+            // M-13: Run SDK contract constructor (matching ManagedContractRuntime behavior)
+            if (ContractRegistry.IsSdkContract(code))
+            {
+                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                using var scope = ContractBridge.Setup(ctx, host);
+                _registry.CreateInstance(typeId, ctorArgs);
+            }
+
             return new ContractDeployResult
             {
                 Success = true,

@@ -134,18 +134,21 @@ public sealed class HostStorageProvider : IStorageProvider
         var tag = data[0];
         var payload = data.AsSpan(1);
 
+        // M-14: Validate payload length for fixed-size types before reading
         object result = tag switch
         {
-            TagULong => System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(payload),
-            TagLong => System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload),
-            TagInt => System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(payload),
-            TagUInt => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(payload),
-            TagUShort => System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(payload),
-            TagBool => payload[0] != 0,
-            TagByte => payload[0],
+            TagULong when payload.Length >= 8 => System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(payload),
+            TagLong when payload.Length >= 8 => System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload),
+            TagInt when payload.Length >= 4 => System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(payload),
+            TagUInt when payload.Length >= 4 => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(payload),
+            TagUShort when payload.Length >= 2 => System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(payload),
+            TagBool when payload.Length >= 1 => payload[0] != 0,
+            TagByte when payload.Length >= 1 => payload[0],
             TagString => Encoding.UTF8.GetString(payload),
             TagByteArray => payload.ToArray(),
-            TagUInt256 => new UInt256(payload),
+            TagUInt256 when payload.Length >= 32 => new UInt256(payload),
+            TagULong or TagLong or TagInt or TagUInt or TagUShort or TagBool or TagByte or TagUInt256 =>
+                throw new InvalidOperationException($"Corrupted storage: tag 0x{tag:X2} with insufficient payload length {payload.Length}"),
             _ => throw new NotSupportedException($"Unknown storage type tag: 0x{tag:X2}"),
         };
 

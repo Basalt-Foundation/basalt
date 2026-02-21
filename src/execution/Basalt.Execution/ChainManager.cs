@@ -181,7 +181,10 @@ public sealed class ChainManager
             Transactions = [],
         };
 
-        AddBlock(genesis);
+        // M-10: Check AddBlock result and throw on failure
+        var addResult = AddBlock(genesis);
+        if (!addResult.IsSuccess)
+            throw new InvalidOperationException($"Failed to add genesis block: {addResult.Message}");
         return genesis;
     }
 

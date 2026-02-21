@@ -16,20 +16,22 @@ namespace Basalt.Execution.VM;
 /// </summary>
 public static class ContractBridge
 {
-    // C-5: Concurrency guard — only one contract execution at a time
-    private static int _executionLock;
+    // C-5: Concurrency guard — only one contract execution at a time.
+    // Uses a Monitor with timeout to serialize concurrent callers rather than rejecting them,
+    // since genesis deployment and test execution may overlap.
+    private static readonly object _executionLock = new();
 
     /// <summary>
     /// Wire SDK Context and ContractStorage from the given execution context.
     /// Returns an IDisposable that restores previous state on dispose.
-    /// C-5: Throws if another contract execution is already in progress.
+    /// C-5: Serializes concurrent access to protect static Context/ContractStorage.
     /// </summary>
     public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
     {
-        // C-5: Enforce single-threaded execution of SDK contracts
-        if (Interlocked.CompareExchange(ref _executionLock, 1, 0) != 0)
+        // C-5: Serialize SDK contract execution (static Context is not thread-safe)
+        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(30)))
             throw new InvalidOperationException(
-                "Concurrent SDK contract execution detected. " +
+                "Timed out waiting for SDK contract execution lock. " +
                 "Contract execution must be single-threaded due to static Context/ContractStorage.");
 
         var scope = new BridgeScope();
@@ -138,7 +140,7 @@ public static class ContractBridge
             ContractStorage.SetProvider(PreviousProvider);
 
             // C-5: Release the execution lock
-            Interlocked.Exchange(ref _executionLock, 0);
+            Monitor.Exit(_executionLock);
         }
     }
 }

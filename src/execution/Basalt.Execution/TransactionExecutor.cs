@@ -40,8 +40,9 @@ public sealed class TransactionExecutor
     /// </summary>
     public TransactionReceipt Execute(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
-        // COMPL-06: Compliance check before tx type dispatch — covers all transaction types
-        if (_complianceVerifier != null)
+        // COMPL-06: Compliance check before tx type dispatch.
+        // M-12: Skip compliance for staking transaction types (To is not a meaningful recipient)
+        if (_complianceVerifier != null && tx.Type is TransactionType.Transfer or TransactionType.ContractDeploy or TransactionType.ContractCall)
         {
             // COMPL-01: Look up actual policy requirements for the target address
             var requirements = _complianceVerifier.GetRequirements(tx.To.ToArray());
