@@ -116,13 +116,14 @@ public static class ViewingKey
 
         // F-14: Zero shared secret after use
         byte[]? sharedSecret = null;
+        byte[]? plaintext = null;
         try
         {
             // Derive shared secret
             sharedSecret = X25519KeyExchange.DeriveSharedSecret(viewerPrivateKey, ephPubKey);
 
             // Decrypt
-            var plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
+            plaintext = ChannelEncryption.Decrypt(sharedSecret, nonce, ciphertextWithTag);
 
             // Parse: value (32 bytes BE) || blindingFactor (32 bytes)
             var value = new UInt256(plaintext.AsSpan(0, 32), isBigEndian: true);
@@ -134,6 +135,10 @@ public static class ViewingKey
         {
             if (sharedSecret != null)
                 CryptographicOperations.ZeroMemory(sharedSecret);
+            // L-05: Zero plaintext after parsing to prevent secret data from
+            // lingering in memory (value + blinding factor are sensitive).
+            if (plaintext != null)
+                CryptographicOperations.ZeroMemory(plaintext);
         }
     }
 }

@@ -180,32 +180,40 @@ public sealed class PrivateChannel
         var (senderPub, receiverPub) = ResolveSenderReceiver(senderX25519PublicKey);
         var directionalKey = DeriveDirectionalKey(sharedSecret, senderPub, receiverPub);
 
-        ulong currentNonce;
-
-        // H-03: Synchronize access to Status and Nonce
-        lock (_lock)
+        try
         {
-            if (_status != ChannelStatus.Active)
-                throw new InvalidOperationException($"Cannot send messages on a channel with status {_status}.");
+            ulong currentNonce;
 
-            currentNonce = Nonce;
-            Nonce = currentNonce + 1;
+            // H-03: Synchronize access to Status and Nonce
+            lock (_lock)
+            {
+                if (_status != ChannelStatus.Active)
+                    throw new InvalidOperationException($"Cannot send messages on a channel with status {_status}.");
+
+                currentNonce = Nonce;
+                Nonce = currentNonce + 1;
+            }
+
+            var nonce = ChannelEncryption.BuildNonce(currentNonce);
+            var encrypted = ChannelEncryption.Encrypt(directionalKey, nonce, payload);
+
+            // Sign: ChannelId || Nonce (8 bytes BE) || EncryptedPayload
+            var signData = BuildSignData(ChannelId, currentNonce, encrypted);
+            var signature = Ed25519Signer.Sign(senderPrivateKey, signData);
+
+            return new ChannelMessage
+            {
+                ChannelId = ChannelId,
+                Nonce = currentNonce,
+                EncryptedPayload = encrypted,
+                SenderSignature = signature,
+            };
         }
-
-        var nonce = ChannelEncryption.BuildNonce(currentNonce);
-        var encrypted = ChannelEncryption.Encrypt(directionalKey, nonce, payload);
-
-        // Sign: ChannelId || Nonce (8 bytes BE) || EncryptedPayload
-        var signData = BuildSignData(ChannelId, currentNonce, encrypted);
-        var signature = Ed25519Signer.Sign(senderPrivateKey, signData);
-
-        return new ChannelMessage
+        finally
         {
-            ChannelId = ChannelId,
-            Nonce = currentNonce,
-            EncryptedPayload = encrypted,
-            SenderSignature = signature,
-        };
+            // M-02: Zero directional key material after use.
+            CryptographicOperations.ZeroMemory(directionalKey);
+        }
     }
 
     /// <summary>
@@ -254,9 +262,17 @@ public sealed class PrivateChannel
         var (senderPub, receiverPub) = ResolveSenderReceiver(senderX25519PublicKey);
         var directionalKey = DeriveDirectionalKey(sharedSecret, senderPub, receiverPub);
 
-        // Decrypt
-        var nonce = ChannelEncryption.BuildNonce(message.Nonce);
-        return ChannelEncryption.Decrypt(directionalKey, nonce, message.EncryptedPayload);
+        try
+        {
+            // Decrypt
+            var nonce = ChannelEncryption.BuildNonce(message.Nonce);
+            return ChannelEncryption.Decrypt(directionalKey, nonce, message.EncryptedPayload);
+        }
+        finally
+        {
+            // M-02: Zero directional key material after use.
+            CryptographicOperations.ZeroMemory(directionalKey);
+        }
     }
 
     /// <summary>
