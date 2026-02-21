@@ -1,6 +1,7 @@
 @page "/faucet"
 @inject BasaltApiClient Api
 @inject Services.ToastService Toasts
+@implements IDisposable
 
 <PageTitle>Basalt Explorer - Faucet</PageTitle>
 
@@ -89,10 +90,24 @@
         if (e.Key == "Enter") await RequestTokens();
     }
 
+    private static bool IsValidAddress(string addr)
+    {
+        var hex = addr.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? addr[2..] : addr;
+        return hex.Length == 40 && hex.All(c => char.IsAsciiHexDigit(c));
+    }
+
     private async Task RequestTokens()
     {
         var addr = _requestAddress.Trim();
         if (string.IsNullOrEmpty(addr) || _requesting || _cooldown > 0) return;
+
+        // M-1: Validate address format before sending to API
+        if (!IsValidAddress(addr))
+        {
+            _lastResult = new FaucetResponseDto { Success = false, Message = "Invalid address format. Expected 40 hex characters (with optional 0x prefix)." };
+            Toasts.Warning("Invalid address format");
+            return;
+        }
 
         _requesting = true;
         _lastResult = null;
@@ -136,4 +151,11 @@
     }
 
     private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
+
+    // M-3: Dispose timer when component is removed
+    public void Dispose()
+    {
+        _cooldownTimer?.Dispose();
+        _cooldownTimer = null;
+    }
 }

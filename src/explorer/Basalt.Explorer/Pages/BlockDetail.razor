@@ -111,6 +111,13 @@
 
         try
         {
+            // M-2: Validate route parameter before API call
+            if (string.IsNullOrWhiteSpace(Id) || Id.Length > 66)
+            {
+                _error = "Invalid block identifier.";
+                return;
+            }
+
             _block = await Api.GetBlockAsync(Id);
             if (_block == null)
             {

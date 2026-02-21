@@ -258,6 +258,13 @@
 
         try
         {
+            // M-2: Validate route parameter (expect 40 hex chars, optionally 0x-prefixed)
+            if (string.IsNullOrWhiteSpace(Address) || Address.Length > 42)
+            {
+                _error = "Invalid address format.";
+                return;
+            }
+
             _account = await Api.GetAccountAsync(Address);
             if (_account == null)
             {
