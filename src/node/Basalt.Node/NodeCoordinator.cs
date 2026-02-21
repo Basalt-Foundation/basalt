@@ -231,13 +231,28 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _localPeerId = PeerId.FromPublicKey(_publicKey);
     }
 
-    // N-07: Reject trivially weak validator keys (all zeros, all same byte, sequential)
+    // N-07: Reject trivially weak validator keys (all zeros, all same byte, sequential, known-weak)
     private static void ValidateKeyEntropy(byte[] key, string keyName)
     {
         if (key.All(b => b == 0))
             throw new InvalidOperationException($"{keyName} is all zeros — this is not a valid key");
+        if (key.All(b => b == 0xFF))
+            throw new InvalidOperationException($"{keyName} is all 0xFF — this is not a valid key");
         if (key.Distinct().Count() <= 2)
             throw new InvalidOperationException($"{keyName} has very low entropy (<=2 distinct bytes) — generate a proper key");
+
+        // Reject sequential patterns (0x00,0x01,0x02,... or 0x01,0x00,0x00,...)
+        bool isSequential = true;
+        for (int i = 0; i < key.Length; i++)
+        {
+            if (key[i] != (byte)(i % 256))
+            {
+                isSequential = false;
+                break;
+            }
+        }
+        if (isSequential)
+            throw new InvalidOperationException($"{keyName} is a sequential pattern — generate a proper key");
     }
 
     private void SetupValidatorSet()

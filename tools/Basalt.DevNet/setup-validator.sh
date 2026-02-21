@@ -38,6 +38,7 @@ else
     # Use the Basalt CLI if available, otherwise use a placeholder
     if command -v basalt &> /dev/null; then
         basalt account create --output "$BASALT_CONFIG/validator.key"
+        chmod 600 "$BASALT_CONFIG/validator.key"
     else
         echo "  Basalt CLI not installed. Install with: dotnet tool install -g Basalt.Cli"
         echo "  Then run: basalt account create --output $BASALT_CONFIG/validator.key"
