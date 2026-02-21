@@ -149,11 +149,17 @@ public class AuditRemediationTests
         {
             FaucetAddress = "ABC123",
             Available = true,
+            Balance = "500000000000000000000000000",
+            Nonce = 5,
+            PendingNonce = 7,
             CooldownSeconds = 60,
         };
 
         response.FaucetAddress.Should().Be("ABC123");
         response.Available.Should().BeTrue();
+        response.Balance.Should().Be("500000000000000000000000000");
+        response.Nonce.Should().Be(5);
+        response.PendingNonce.Should().Be(7);
         response.CooldownSeconds.Should().Be(60);
     }
 

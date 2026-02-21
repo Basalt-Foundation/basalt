@@ -194,14 +194,24 @@ public static class FaucetEndpoint
             });
         });
 
-        // M-8: Status endpoint — expose only public-facing faucet state
+        // M-8: Status endpoint — expose public-facing faucet state
         app.MapGet("/v1/faucet/status", () =>
         {
             var faucetAccount = stateDb.GetAccount(FaucetAddress);
+            var balance = faucetAccount?.Balance ?? UInt256.Zero;
+            var onChainNonce = faucetAccount?.Nonce ?? 0UL;
+            ulong pendingNonce;
+            lock (_nonceLock)
+            {
+                pendingNonce = _nonceInitialized ? _pendingNonce : onChainNonce;
+            }
             return Results.Ok(new FaucetStatusResponse
             {
                 FaucetAddress = FaucetAddress.ToHexString(),
-                Available = faucetAccount != null && faucetAccount.Value.Balance > UInt256.Zero,
+                Available = balance > UInt256.Zero,
+                Balance = balance.ToString(),
+                Nonce = onChainNonce,
+                PendingNonce = pendingNonce,
                 CooldownSeconds = CooldownSeconds,
             });
         });
@@ -220,10 +230,13 @@ public sealed class FaucetResponse
     [JsonPropertyName("txHash")] public string? TxHash { get; set; }
 }
 
-/// <summary>M-8: Public-facing faucet status — no internal state exposed.</summary>
+/// <summary>Public-facing faucet status.</summary>
 public sealed class FaucetStatusResponse
 {
     [JsonPropertyName("faucetAddress")] public string FaucetAddress { get; set; } = "";
     [JsonPropertyName("available")] public bool Available { get; set; }
+    [JsonPropertyName("balance")] public string Balance { get; set; } = "0";
+    [JsonPropertyName("nonce")] public ulong Nonce { get; set; }
+    [JsonPropertyName("pendingNonce")] public ulong PendingNonce { get; set; }
     [JsonPropertyName("cooldownSeconds")] public int CooldownSeconds { get; set; }
 }
