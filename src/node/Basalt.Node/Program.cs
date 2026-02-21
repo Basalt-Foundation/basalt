@@ -323,6 +323,11 @@ try
     {
         // === STANDALONE MODE ===
         // Single-node block production on a timer (existing behavior)
+
+        // LOW-06: Warn if DataDir is set but blocks are not persisted in standalone mode
+        if (config.DataDir != null)
+            Log.Warning("DataDir is set but standalone mode does not persist blocks. State will be lost on restart.");
+
         var proposer = Address.FromHexString("0x0000000000000000000000000000000000000001");
         var blockProduction = new BlockProductionLoop(
             chainParams, chainManager, mempool, stateDbRef, proposer,

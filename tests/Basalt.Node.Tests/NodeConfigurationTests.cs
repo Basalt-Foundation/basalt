@@ -76,4 +76,41 @@ public class NodeConfigurationTests
         config.UsePipelining.Should().BeTrue();
         config.UseSandbox.Should().BeTrue();
     }
+
+    [Theory]
+    [InlineData("/etc/shadow")]
+    [InlineData("/usr/local/data")]
+    [InlineData("/bin/basalt")]
+    [InlineData("/sbin/data")]
+    [InlineData("/var/run/basalt")]
+    [InlineData("/proc/self")]
+    [InlineData("/sys/kernel")]
+    [InlineData("/boot/grub")]
+    [InlineData("/dev/null")]
+    [InlineData("/lib/basalt")]
+    public void ValidateDataDir_RejectsSystemPaths(string path)
+    {
+        var act = () => NodeConfiguration.ValidateDataDir(path);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*system directory*");
+    }
+
+    [Theory]
+    [InlineData("/tmp/basalt")]
+    [InlineData("/data/basalt")]
+    [InlineData("/home/user/basalt")]
+    public void ValidateDataDir_AllowsSafePaths(string path)
+    {
+        var result = NodeConfiguration.ValidateDataDir(path);
+        result.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void ValidateDataDir_ResolvesRelativePaths()
+    {
+        // Relative paths should be resolved to absolute paths
+        var result = NodeConfiguration.ValidateDataDir("./data/basalt");
+        result.Should().StartWith("/");
+        result.Should().EndWith("data/basalt");
+    }
 }
