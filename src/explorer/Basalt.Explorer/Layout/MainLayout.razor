@@ -111,7 +111,7 @@
         _isDark = !_isDark;
         var theme = _isDark ? "dark" : "light";
         await JS.InvokeVoidAsync("localStorage.setItem", "theme", theme);
-        await JS.InvokeVoidAsync("eval", $"document.documentElement.setAttribute('data-theme','{theme}')");
+        await JS.InvokeVoidAsync("basaltSetTheme", theme);
     }
 
     private void ToggleMenu() => _menuOpen = !_menuOpen;
