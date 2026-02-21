@@ -282,14 +282,15 @@ public class GraphQLQueryTests
         AddBlock(chainManager, 2);
         var query = new Query();
 
-        // Act — request 50 but only 2 non-genesis blocks exist
-        // (GetBlocks iterates from latest.Number down to >0, so it skips genesis)
+        // Act — request 50 but only 3 blocks exist (including genesis)
+        // M-6: GetBlocks now includes genesis block
         var results = query.GetBlocks(50, chainManager);
 
-        // Assert
-        results.Should().HaveCount(2);
+        // Assert — all 3 blocks returned (descending: 2, 1, 0)
+        results.Should().HaveCount(3);
         results[0].Number.Should().Be(2);
         results[1].Number.Should().Be(1);
+        results[2].Number.Should().Be(0);
     }
 
     [Fact]
@@ -316,11 +317,11 @@ public class GraphQLQueryTests
 
         var query = new Query();
 
-        // Request 200 (capped to 100, but only 5 non-genesis blocks exist)
+        // Request 200 (capped to 100, but only 6 blocks exist including genesis)
         var results = query.GetBlocks(200, chainManager);
 
-        // Should get all 5, because we only have 5 non-genesis blocks
-        results.Should().HaveCount(5);
+        // Should get all 6 (genesis + 5 blocks)
+        results.Should().HaveCount(6);
     }
 
     [Fact]

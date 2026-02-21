@@ -206,9 +206,10 @@ public class Query
         if (latest == null) return results;
 
         var count = Math.Clamp(last, 1, 100);
-        for (ulong i = latest.Number; i > 0 && results.Count < count; i--)
+        // Include genesis block (i >= 0) — use long to avoid ulong underflow
+        for (long i = (long)latest.Number; i >= 0 && results.Count < count; i--)
         {
-            var block = chainManager.GetBlockByNumber(i);
+            var block = chainManager.GetBlockByNumber((ulong)i);
             if (block != null)
                 results.Add(BlockResult.FromBlock(block));
         }
