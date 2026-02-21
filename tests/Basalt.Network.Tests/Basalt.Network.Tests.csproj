@@ -5,8 +5,10 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
     <ProjectReference Include="../../src/network/Basalt.Network/Basalt.Network.csproj" />
     <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/execution/Basalt.Execution/Basalt.Execution.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

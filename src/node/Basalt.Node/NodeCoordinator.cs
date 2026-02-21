@@ -694,7 +694,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (result.SharedSecret != null)
             {
                 var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
-                CryptographicOperations.ZeroMemory(result.SharedSecret);
+                result.ZeroSharedSecret(); // M-2: Wipe shared secret after key derivation
                 connection.EnableEncryption(enc);
                 _logger.LogDebug("Transport encryption enabled for inbound peer {PeerId}", result.PeerId);
             }
@@ -1282,7 +1282,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (result.SharedSecret != null)
                 {
                     var enc = new Basalt.Network.Transport.TransportEncryption(result.SharedSecret, result.IsInitiator);
-                    CryptographicOperations.ZeroMemory(result.SharedSecret);
+                    result.ZeroSharedSecret(); // M-2: Wipe shared secret after key derivation
                     connection.EnableEncryption(enc);
                     _logger.LogDebug("Transport encryption enabled for outbound peer {PeerId}", result.PeerId);
                 }
