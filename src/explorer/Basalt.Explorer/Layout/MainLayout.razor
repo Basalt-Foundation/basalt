@@ -174,11 +174,16 @@
         DoSearch();
     }
 
+    // M-4: Wrap async void handler in try-catch to prevent unobserved exceptions
     private async void HandleSearchBlur()
     {
-        await Task.Delay(200);
-        _searchFocused = false;
-        StateHasChanged();
+        try
+        {
+            await Task.Delay(200);
+            _searchFocused = false;
+            StateHasChanged();
+        }
+        catch (ObjectDisposedException) { /* component disposed during delay */ }
     }
 
     private record SearchSuggestion(string Label, string Value);
