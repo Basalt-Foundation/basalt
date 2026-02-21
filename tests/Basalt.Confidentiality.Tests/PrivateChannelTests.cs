@@ -275,8 +275,11 @@ public class PrivateChannelTests
             ChannelId = channelId,
             PartyAPublicKey = aliceX25519Public,
             PartyBPublicKey = bobX25519Public,
-            Status = ChannelStatus.Closing,
         };
+
+        // Transition through valid lifecycle: Open → Active → Closing
+        channel.Status = ChannelStatus.Active;
+        channel.Status = ChannelStatus.Closing;
 
         var act = () => channel.CreateMessage(
             new byte[32],
@@ -299,8 +302,12 @@ public class PrivateChannelTests
             ChannelId = channelId,
             PartyAPublicKey = aliceX25519Public,
             PartyBPublicKey = bobX25519Public,
-            Status = ChannelStatus.Closed,
         };
+
+        // Transition through valid lifecycle: Open → Active → Closing → Closed
+        channel.Status = ChannelStatus.Active;
+        channel.Status = ChannelStatus.Closing;
+        channel.Status = ChannelStatus.Closed;
 
         var act = () => channel.CreateMessage(
             new byte[32],
@@ -560,6 +567,85 @@ public class PrivateChannelTests
 
         channel.Status = ChannelStatus.Closed;
         channel.Status.Should().Be(ChannelStatus.Closed);
+    }
+
+    // ── H-04: Status lifecycle validation ───────────────────────────────────
+
+    [Fact]
+    public void H04_StatusTransition_OpenToClosing_Throws()
+    {
+        var (_, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+        };
+
+        // Open → Closing is invalid (must go through Active)
+        var act = () => channel.Status = ChannelStatus.Closing;
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void H04_StatusTransition_OpenToClosed_Throws()
+    {
+        var (_, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+        };
+
+        var act = () => channel.Status = ChannelStatus.Closed;
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void H04_StatusTransition_ActiveToOpen_Throws()
+    {
+        var (_, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Cannot go backwards
+        var act = () => channel.Status = ChannelStatus.Open;
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void H04_StatusTransition_SameStatus_IsNoOp()
+    {
+        var (_, aliceX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var (_, bobX25519Public) = X25519KeyExchange.GenerateKeyPair();
+        var channelId = PrivateChannel.DeriveChannelId(aliceX25519Public, bobX25519Public);
+
+        var channel = new PrivateChannel
+        {
+            ChannelId = channelId,
+            PartyAPublicKey = aliceX25519Public,
+            PartyBPublicKey = bobX25519Public,
+            Status = ChannelStatus.Active,
+        };
+
+        // Same-status assignment should not throw
+        var act = () => channel.Status = ChannelStatus.Active;
+        act.Should().NotThrow();
     }
 
     // ── F-01: Directional Encryption Keys ───────────────────────────────────

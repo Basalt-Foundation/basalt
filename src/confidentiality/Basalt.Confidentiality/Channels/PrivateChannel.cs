@@ -47,11 +47,45 @@ public sealed class PrivateChannel
     /// <summary>X25519 public key of party B (32 bytes).</summary>
     public required byte[] PartyBPublicKey { get; init; }
 
+    /// <summary>
+    /// H-03: Lock object for thread-safe access to Nonce and _lastReceivedNonce.
+    /// </summary>
+    private readonly object _lock = new();
+
     /// <summary>Current message sequence number (incremented per message).</summary>
     public ulong Nonce { get; private set; }
 
     /// <summary>Current channel status.</summary>
-    public ChannelStatus Status { get; set; } = ChannelStatus.Open;
+    private ChannelStatus _status = ChannelStatus.Open;
+
+    /// <summary>
+    /// H-04: Get or set the channel status with lifecycle validation.
+    /// Valid transitions: Open → Active → Closing → Closed.
+    /// Setting the status to the current value is a no-op.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">If the transition is invalid.</exception>
+    public ChannelStatus Status
+    {
+        get
+        {
+            lock (_lock) return _status;
+        }
+        set
+        {
+            lock (_lock)
+            {
+                if (value == _status)
+                    return;
+
+                if (!IsValidTransition(_status, value))
+                    throw new InvalidOperationException(
+                        $"Invalid channel status transition: {_status} → {value}. " +
+                        "Valid transitions: Open → Active → Closing → Closed.");
+
+                _status = value;
+            }
+        }
+    }
 
     /// <summary>
     /// F-05: Last received nonce for replay protection.
@@ -138,10 +172,7 @@ public sealed class PrivateChannel
     public ChannelMessage CreateMessage(byte[] sharedSecret, byte[] payload, byte[] senderPrivateKey,
         byte[] senderX25519PublicKey)
     {
-        if (Status != ChannelStatus.Active)
-            throw new InvalidOperationException($"Cannot send messages on a channel with status {Status}.");
-
-        // F-18: Enforce maximum payload size
+        // F-18: Enforce maximum payload size (check outside lock — no side effects)
         if (payload.Length > MaxPayloadSize)
             throw new ArgumentException($"F-18: Payload exceeds maximum size of {MaxPayloadSize} bytes.");
 
@@ -149,15 +180,24 @@ public sealed class PrivateChannel
         var (senderPub, receiverPub) = ResolveSenderReceiver(senderX25519PublicKey);
         var directionalKey = DeriveDirectionalKey(sharedSecret, senderPub, receiverPub);
 
-        var currentNonce = Nonce;
+        ulong currentNonce;
+
+        // H-03: Synchronize access to Status and Nonce
+        lock (_lock)
+        {
+            if (_status != ChannelStatus.Active)
+                throw new InvalidOperationException($"Cannot send messages on a channel with status {_status}.");
+
+            currentNonce = Nonce;
+            Nonce = currentNonce + 1;
+        }
+
         var nonce = ChannelEncryption.BuildNonce(currentNonce);
         var encrypted = ChannelEncryption.Encrypt(directionalKey, nonce, payload);
 
         // Sign: ChannelId || Nonce (8 bytes BE) || EncryptedPayload
         var signData = BuildSignData(ChannelId, currentNonce, encrypted);
         var signature = Ed25519Signer.Sign(senderPrivateKey, signData);
-
-        Nonce = currentNonce + 1;
 
         return new ChannelMessage
         {
@@ -201,10 +241,14 @@ public sealed class PrivateChannel
         if (!Ed25519Signer.Verify(senderPublicKey, signData, message.SenderSignature))
             throw new InvalidOperationException("Message signature verification failed.");
 
-        // F-05: Nonce replay protection — enforce strictly increasing nonces
-        if (_lastReceivedNonce != ulong.MaxValue && message.Nonce <= _lastReceivedNonce)
-            throw new InvalidOperationException("F-05: Message nonce is not strictly increasing (replay detected).");
-        _lastReceivedNonce = message.Nonce;
+        // H-03: Synchronize access to _lastReceivedNonce
+        lock (_lock)
+        {
+            // F-05: Nonce replay protection — enforce strictly increasing nonces
+            if (_lastReceivedNonce != ulong.MaxValue && message.Nonce <= _lastReceivedNonce)
+                throw new InvalidOperationException("F-05: Message nonce is not strictly increasing (replay detected).");
+            _lastReceivedNonce = message.Nonce;
+        }
 
         // F-01: Derive directional key (sender→receiver direction)
         var (senderPub, receiverPub) = ResolveSenderReceiver(senderX25519PublicKey);
@@ -244,6 +288,19 @@ public sealed class PrivateChannel
             currentKey, derived, salt, "basalt-ratchet-v1"u8);
         return derived;
     }
+
+    /// <summary>
+    /// H-04: Validate channel status transitions.
+    /// Valid transitions: Open → Active, Active → Closing, Closing → Closed.
+    /// </summary>
+    private static bool IsValidTransition(ChannelStatus from, ChannelStatus to) =>
+        (from, to) switch
+        {
+            (ChannelStatus.Open, ChannelStatus.Active) => true,
+            (ChannelStatus.Active, ChannelStatus.Closing) => true,
+            (ChannelStatus.Closing, ChannelStatus.Closed) => true,
+            _ => false,
+        };
 
     /// <summary>
     /// Build the data buffer that is signed for a channel message:
