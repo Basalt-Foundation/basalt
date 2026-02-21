@@ -220,6 +220,19 @@ public sealed class PipelinedConsensus
         if (round.State == ConsensusState.Finalized)
             return null;
 
+        // M-01: Reject conflicting proposals for the same block
+        // If round already has a different block hash at the same or lower view, this is
+        // either equivocation (same view) or a stale proposal (lower view). Only accept
+        // proposals from a strictly higher view (view change rotated the leader).
+        if (round.BlockHash != Hash256.Zero && round.BlockHash != proposal.BlockHash
+            && proposal.ViewNumber <= round.View)
+        {
+            _logger.LogWarning(
+                "Rejecting conflicting proposal for block {Block}: existing view {ExistingView} hash {ExistingHash}, proposed view {ProposedView} hash {ProposedHash}",
+                proposal.BlockNumber, round.View, round.BlockHash, proposal.ViewNumber, proposal.BlockHash);
+            return null;
+        }
+
         // Verify leader
         var leader = _validatorSet.GetLeader(proposal.ViewNumber);
         if (proposal.SenderId != leader.PeerId)
@@ -231,6 +244,7 @@ public sealed class PipelinedConsensus
         if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
             return null;
 
+        round.View = proposal.ViewNumber;
         round.BlockHash = proposal.BlockHash;
         round.BlockData = proposal.BlockData;
         round.State = ConsensusState.Preparing;
@@ -685,7 +699,7 @@ public sealed class PipelinedConsensus
     private sealed class ConsensusRound
     {
         public ulong BlockNumber { get; init; }
-        public ulong View { get; init; }
+        public ulong View { get; set; }
         public ConsensusState State { get; set; }
         public Hash256 BlockHash { get; set; }
         public byte[]? BlockData { get; set; }
