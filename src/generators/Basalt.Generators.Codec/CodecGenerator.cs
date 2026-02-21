@@ -240,7 +240,7 @@ public sealed class CodecGenerator : IIncrementalGenerator
             }
             else
             {
-                // Variable-size: use 64 as estimate.
+                // M-01: Variable-size — compute actual runtime length instead of arbitrary estimate
                 variableParts.Add(m.Name);
             }
         }
@@ -254,7 +254,15 @@ public sealed class CodecGenerator : IIncrementalGenerator
             sb.Append("        int size = ").Append(fixedTotal).AppendLine(";");
             foreach (var name in variableParts)
             {
-                sb.Append("        size += 64; // estimate for ").AppendLine(name);
+                // M-01: Compute actual length at runtime (4 bytes length prefix + data)
+                var member = type.Members.AsImmutableArray().First(m => m.Name == name);
+                var normalized = NormalizeType(member.TypeFullName);
+                if (normalized == "string")
+                    sb.Append("        size += 4 + System.Text.Encoding.UTF8.GetByteCount(").Append(name).AppendLine(" ?? \"\");");
+                else if (normalized == "byte[]")
+                    sb.Append("        size += 4 + (").Append(name).AppendLine("?.Length ?? 0);");
+                else
+                    sb.Append("        size += 64; // estimate for ").AppendLine(name);
             }
             sb.AppendLine("        return size;");
         }

@@ -77,7 +77,10 @@ public sealed class ReentrancyAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        // Report storage writes that occur after any external call
+        // M-04: Report storage writes that occur after any external call.
+        // NOTE: This uses positional heuristic (SpanStart comparison) — it does not
+        // perform control-flow analysis, so mutually exclusive branches (if/else) may
+        // produce false positives, and storage writes in helper methods are not detected.
         for (int i = 0; i < storageWriteNodes.Count; i++)
         {
             var storageWrite = storageWriteNodes[i];
