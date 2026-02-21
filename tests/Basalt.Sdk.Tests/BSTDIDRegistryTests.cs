@@ -77,17 +77,17 @@ public class BSTDIDRegistryTests : IDisposable
     }
 
     [Fact]
-    public void AddAttestation_By_Issuer()
+    public void AddAttestation_By_Issuer_Reverts()
     {
         _host.SetCaller(_controller);
         var did = _host.Call(() => _registry.RegisterDID(_controller));
 
-        // Issuer can add attestation if their hex matches the issuer param
+        // H-9: Only controller can add attestations (issuer param is informational only)
         _host.SetCaller(_issuer);
         _host.SetBlockHeight(100);
-        _host.Call(() => _registry.AddAttestation(did, "AML", Convert.ToHexString(_issuer), 9999, new byte[] { 4, 5 }));
-
-        _host.Call(() => _registry.HasValidAttestation(did, "AML")).Should().BeTrue();
+        var msg = _host.ExpectRevert(() =>
+            _registry.AddAttestation(did, "AML", Convert.ToHexString(_issuer), 9999, new byte[] { 4, 5 }));
+        msg.Should().Contain("not controller");
     }
 
     [Fact]
@@ -96,10 +96,11 @@ public class BSTDIDRegistryTests : IDisposable
         _host.SetCaller(_controller);
         var did = _host.Call(() => _registry.RegisterDID(_controller));
 
+        // H-9: Non-controller callers are rejected
         _host.SetCaller(_otherUser);
         var msg = _host.ExpectRevert(() =>
             _registry.AddAttestation(did, "KYC", Convert.ToHexString(_issuer), 9999, new byte[] { 1 }));
-        msg.Should().Contain("not authorized");
+        msg.Should().Contain("not controller");
     }
 
     [Fact]
@@ -112,7 +113,7 @@ public class BSTDIDRegistryTests : IDisposable
         _host.Call(() => _registry.AddAttestation(did, "KYC", Convert.ToHexString(_issuer), 9999, new byte[] { 1 }));
         _host.Call(() => _registry.HasValidAttestation(did, "KYC")).Should().BeTrue();
 
-        var attId = "KYC:100"; // credentialType:blockHeight
+        var attId = "KYC:0"; // M-13: credentialType:attestationIndex (monotonic counter)
         _host.Call(() => _registry.RevokeAttestation(did, attId));
 
         _host.Call(() => _registry.HasValidAttestation(did, "KYC")).Should().BeFalse();
@@ -128,7 +129,7 @@ public class BSTDIDRegistryTests : IDisposable
         _host.Call(() => _registry.AddAttestation(did, "KYC", Convert.ToHexString(_issuer), 9999, new byte[] { 1 }));
 
         _host.SetCaller(_otherUser);
-        var msg = _host.ExpectRevert(() => _registry.RevokeAttestation(did, "KYC:100"));
+        var msg = _host.ExpectRevert(() => _registry.RevokeAttestation(did, "KYC:0"));
         msg.Should().Contain("not controller");
     }
 
@@ -211,7 +212,7 @@ public class BSTDIDRegistryTests : IDisposable
         var events = _host.GetEvents<AttestationAddedEvent>().ToList();
         events.Should().HaveCount(1);
         events[0].CredentialType.Should().Be("KYC");
-        events[0].AttestationId.Should().Be("KYC:42");
+        events[0].AttestationId.Should().Be("KYC:0");
     }
 
     public void Dispose() => _host.Dispose();
