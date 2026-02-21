@@ -282,6 +282,12 @@ public sealed class FlatStateDb : IStateDatabase
     /// Load previously persisted flat state into the cache.
     /// Call on startup for warm restart.
     /// </summary>
+    /// <remarks>
+    /// <para><b>L-07:</b> Uses <c>TryAdd</c> (first-writer-wins semantics). If a key already
+    /// exists in the cache from runtime operations, the persisted value is silently ignored.
+    /// This is correct for warm restart where runtime state is fresher, but this method
+    /// must be called <b>before</b> any runtime modifications to avoid stale reads.</para>
+    /// </remarks>
     public void LoadFromPersistence()
     {
         if (_persistence == null) return;

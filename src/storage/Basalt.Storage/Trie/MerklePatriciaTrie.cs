@@ -59,6 +59,11 @@ public sealed class MerklePatriciaTrie
     /// <summary>
     /// Delete a key from the trie.
     /// </summary>
+    /// <remarks>
+    /// <para><b>L-08:</b> The private <c>Delete(Hash256, NibblePath)</c> method uses a sentinel
+    /// return convention: <c>null</c> = child entirely deleted, same hash as input = key not found,
+    /// different hash = child modified. The public method translates these into a simple bool.</para>
+    /// </remarks>
     public bool Delete(byte[] key)
     {
         if (_rootHash == null || _rootHash == Hash256.Zero)

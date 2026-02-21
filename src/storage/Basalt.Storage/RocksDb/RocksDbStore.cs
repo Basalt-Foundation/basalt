@@ -62,6 +62,10 @@ public sealed class RocksDbStore : IDisposable
         return _db.Get(key, _columnFamilies[columnFamily]);
     }
 
+    /// <remarks>
+    /// L-09: The span is copied to <c>byte[]</c> via <c>ToArray()</c> because the RocksDbSharp
+    /// bindings do not support <c>ReadOnlySpan&lt;byte&gt;</c> keys natively.
+    /// </remarks>
     public byte[]? Get(string columnFamily, ReadOnlySpan<byte> key)
     {
         return _db.Get(key.ToArray(), _columnFamilies[columnFamily]);
