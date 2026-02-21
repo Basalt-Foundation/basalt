@@ -31,27 +31,26 @@ public sealed class RocksDbStore : IDisposable
             .SetCreateIfMissing(true)
             .SetCreateMissingColumnFamilies(true);
 
-        var cfNames = new[]
-        {
-            "default",
-            CF.State,
-            CF.Blocks,
-            CF.Receipts,
-            CF.Metadata,
-            CF.TrieNodes,
-            CF.BlockIndex,
-        };
+        // M-01: Per-CF options tuned for each access pattern.
+        // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
+        var defaultOptions = new ColumnFamilyOptions();
 
-        var cfOptions = new ColumnFamilyOptions();
+        var pointLookupOptions = new ColumnFamilyOptions()
+            .SetBloomLocality(1);
+
         var cfs = new RocksDbSharp.ColumnFamilies();
-        foreach (var name in cfNames)
-        {
-            cfs.Add(name, cfOptions);
-        }
+        cfs.Add("default", defaultOptions);
+        cfs.Add(CF.State, pointLookupOptions);        // prefix scans (0x01/0x02) + point lookups
+        cfs.Add(CF.Blocks, pointLookupOptions);        // point lookups by hash, raw block reads
+        cfs.Add(CF.Receipts, pointLookupOptions);      // point lookups by tx hash
+        cfs.Add(CF.Metadata, defaultOptions);           // very few keys, no bloom needed
+        cfs.Add(CF.TrieNodes, pointLookupOptions);     // write-heavy, point lookups by hash
+        cfs.Add(CF.BlockIndex, defaultOptions);         // sequential scans by block number
 
         _db = RocksDbSharp.RocksDb.Open(options, path, cfs);
         _columnFamilies = new Dictionary<string, ColumnFamilyHandle>();
 
+        var cfNames = new[] { "default", CF.State, CF.Blocks, CF.Receipts, CF.Metadata, CF.TrieNodes, CF.BlockIndex };
         foreach (var name in cfNames)
         {
             _columnFamilies[name] = _db.GetColumnFamily(name);
