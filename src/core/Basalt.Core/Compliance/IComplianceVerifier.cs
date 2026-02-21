@@ -25,7 +25,17 @@ public interface IComplianceVerifier
     ProofRequirement[] GetRequirements(Address contractAddress);
 
     /// <summary>
-    /// Reset the nullifier set. Called at block boundaries to bound memory usage.
+    /// Check traditional (non-ZK) compliance rules for a transfer.
+    /// Includes KYC, sanctions, geo-restrictions, holding limits, lockup, and travel rule.
+    /// Returns Success if no compliance policy exists for the token address.
+    /// </summary>
+    ComplianceCheckOutcome CheckTransferCompliance(
+        byte[] tokenAddress, byte[] sender, byte[] receiver,
+        ulong amount, long currentTimestamp, ulong receiverCurrentBalance);
+
+    /// <summary>
+    /// Reset the nullifier set. Called at block boundaries to bound memory usage
+    /// and allow cross-block proof reuse (COMPL-07).
     /// </summary>
     /// <remarks>
     /// SECURITY NOTE: Nullifiers are per-block only. An attacker could replay a proof

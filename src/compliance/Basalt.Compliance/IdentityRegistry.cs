@@ -9,12 +9,19 @@ namespace Basalt.Compliance;
 /// </summary>
 public sealed class IdentityRegistry
 {
+    /// <summary>Maximum audit log entries before oldest are evicted (M-05).</summary>
+    public const int MaxAuditLogSize = 100_000;
+
     private readonly Dictionary<string, IdentityAttestation> _attestations = new();
     private readonly HashSet<string> _approvedProviders = new();
     private readonly List<ComplianceEvent> _auditLog = new();
     private readonly object _lock = new();
     private readonly string? _governanceAddress;
 
+    /// <summary>
+    /// M-01: Parameterless constructor — for testing only.
+    /// In production, use the governance-aware constructor to enforce access control.
+    /// </summary>
     public IdentityRegistry() { }
 
     /// <summary>
@@ -38,7 +45,7 @@ public sealed class IdentityRegistry
                 return false;
 
             _approvedProviders.Add(ToHex(providerAddress));
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.ProviderApproved,
                 Subject = providerAddress,
@@ -62,7 +69,7 @@ public sealed class IdentityRegistry
                 return false;
 
             _approvedProviders.Remove(ToHex(providerAddress));
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.ProviderRevoked,
                 Subject = providerAddress,
@@ -97,7 +104,7 @@ public sealed class IdentityRegistry
             var subjectHex = ToHex(attestation.Subject);
             _attestations[subjectHex] = attestation;
 
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.AttestationIssued,
                 Subject = attestation.Subject,
@@ -127,7 +134,7 @@ public sealed class IdentityRegistry
 
             att.Revoked = true;
 
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.AttestationRevoked,
                 Subject = subject,
@@ -174,15 +181,20 @@ public sealed class IdentityRegistry
     }
 
     /// <summary>
-    /// Get the country code for an address (0 if no attestation).
+    /// Get the country code for an address (0 if no attestation or attestation expired/revoked).
+    /// M-02: Now checks attestation expiry in addition to revocation status.
     /// </summary>
-    public ushort GetCountryCode(byte[] subject)
+    public ushort GetCountryCode(byte[] subject, long currentTimestamp = 0)
     {
         lock (_lock)
         {
-            if (_attestations.TryGetValue(ToHex(subject), out var att) && !att.Revoked)
-                return att.CountryCode;
-            return 0;
+            if (!_attestations.TryGetValue(ToHex(subject), out var att))
+                return 0;
+            if (att.Revoked)
+                return 0;
+            if (currentTimestamp > 0 && att.ExpiresAt > 0 && att.ExpiresAt < currentTimestamp)
+                return 0;
+            return att.CountryCode;
         }
     }
 
@@ -202,6 +214,13 @@ public sealed class IdentityRegistry
     {
         lock (_lock)
             return _auditLog.Where(e => e.EventType == eventType).ToList();
+    }
+
+    private void AddAuditEvent(ComplianceEvent evt)
+    {
+        if (_auditLog.Count >= MaxAuditLogSize)
+            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
+        _auditLog.Add(evt);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);

@@ -42,6 +42,15 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     public ProofRequirement[] GetRequirements(Address contractAddress) => [];
 
     /// <summary>
+    /// ZK verifier does not perform traditional compliance checks.
+    /// Use ComplianceEngine for KYC/sanctions/geo checks.
+    /// </summary>
+    public ComplianceCheckOutcome CheckTransferCompliance(
+        byte[] tokenAddress, byte[] sender, byte[] receiver,
+        ulong amount, long currentTimestamp, ulong receiverCurrentBalance)
+        => ComplianceCheckOutcome.Success;
+
+    /// <summary>
     /// Verify all compliance proofs against the given requirements.
     /// Each requirement must be satisfied by exactly one proof matching its schema ID.
     /// </summary>
@@ -61,6 +70,12 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         // Match each requirement to a proof by schema ID
         foreach (var requirement in requirements)
         {
+            // L-05: Validate MinIssuerTier is set (tier 0 = self-attested, not suitable for compliance)
+            if (requirement.MinIssuerTier == 0)
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Schema {requirement.SchemaId.ToHexString()} requires MinIssuerTier > 0");
+
             var proof = FindProofForSchema(proofs, requirement.SchemaId);
             if (proof == null)
                 return ComplianceCheckOutcome.Fail(
@@ -102,10 +117,10 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Invalid public inputs: must be non-empty and a multiple of 32 bytes");
 
-        // 2. Check nullifier uniqueness (prevent proof replay within a block)
+        // 2. Check nullifier not already consumed (reject replays)
         lock (_lock)
         {
-            if (!_usedNullifiers.Add(proof.Nullifier))
+            if (_usedNullifiers.Contains(proof.Nullifier))
                 return ComplianceCheckOutcome.Fail(
                     BasaltErrorCode.ComplianceProofInvalid,
                     "Duplicate nullifier: proof has already been used");
@@ -147,6 +162,12 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Groth16 proof verification failed");
+
+        // 7. M-03: Only consume nullifier AFTER successful verification
+        lock (_lock)
+        {
+            _usedNullifiers.Add(proof.Nullifier);
+        }
 
         return ComplianceCheckOutcome.Success;
     }

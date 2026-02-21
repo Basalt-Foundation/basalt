@@ -20,8 +20,8 @@ public sealed class CompliancePolicy
     /// <summary>Minimum KYC level required for receiver.</summary>
     public KycLevel RequiredReceiverKycLevel { get; init; } = KycLevel.None;
 
-    /// <summary>Whether sanctions list checking is enabled.</summary>
-    public bool SanctionsCheckEnabled { get; init; } = true;
+    /// <summary>Whether sanctions list checking is enabled (L-04: opt-in, defaults to false).</summary>
+    public bool SanctionsCheckEnabled { get; init; }
 
     /// <summary>Set of blocked ISO 3166-1 country codes (geographic restrictions).</summary>
     public HashSet<ushort> BlockedCountries { get; init; } = [];

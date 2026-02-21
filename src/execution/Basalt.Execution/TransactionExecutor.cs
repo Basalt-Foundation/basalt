@@ -75,6 +75,22 @@ public sealed class TransactionExecutor
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
+        // H-02: Traditional compliance check (KYC, sanctions, geo, holding limits)
+        if (_complianceVerifier != null)
+        {
+            var recipientBalance = (stateDb.GetAccount(tx.To) ?? AccountState.Empty).Balance;
+            // Truncate to ulong for compliance policy checks (policies use ulong amounts)
+            var amountForCompliance = recipientBalance.Hi == 0 && (ulong)(recipientBalance.Lo >> 64) == 0
+                ? (ulong)recipientBalance.Lo : ulong.MaxValue;
+            var txAmountForCompliance = tx.Value.Hi == 0 && (ulong)(tx.Value.Lo >> 64) == 0
+                ? (ulong)tx.Value.Lo : ulong.MaxValue;
+            var outcome = _complianceVerifier.CheckTransferCompliance(
+                tx.To.ToArray(), tx.Sender.ToArray(), tx.To.ToArray(),
+                txAmountForCompliance, blockHeader.Timestamp, amountForCompliance);
+            if (!outcome.Allowed)
+                return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);
+        }
+
         // C-2: Always charge gas + increment nonce, even on failure
         var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
         var totalDebit = UInt256.CheckedAdd(tx.Value, gasFee);
