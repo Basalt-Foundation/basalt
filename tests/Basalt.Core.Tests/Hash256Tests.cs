@@ -104,4 +104,41 @@ public class Hash256Tests
         higher.CompareTo(lower).Should().BeGreaterThan(0);
         lower.CompareTo(lower).Should().Be(0);
     }
+
+    // ===== AUDIT L-01: TryFromHexString without exceptions =====
+
+    [Fact]
+    public void TryFromHexString_ValidHex_ReturnsTrue()
+    {
+        var bytes = new byte[32];
+        bytes[0] = 0xAB;
+        bytes[31] = 0xCD;
+        var expected = new Hash256(bytes);
+        var hex = expected.ToHexString();
+
+        Hash256.TryFromHexString(hex, out var result).Should().BeTrue();
+        result.Should().Be(expected);
+    }
+
+    [Fact]
+    public void TryFromHexString_Null_ReturnsFalse()
+    {
+        Hash256.TryFromHexString(null, out var result).Should().BeFalse();
+        result.Should().Be(Hash256.Zero);
+    }
+
+    [Fact]
+    public void TryFromHexString_WrongLength_ReturnsFalse()
+    {
+        Hash256.TryFromHexString("0xabcd", out var result).Should().BeFalse();
+        result.Should().Be(Hash256.Zero);
+    }
+
+    [Fact]
+    public void TryFromHexString_InvalidChars_ReturnsFalse()
+    {
+        // 64 hex chars but with invalid 'Z' characters
+        Hash256.TryFromHexString("0x" + "ZZ" + new string('0', 62), out var result).Should().BeFalse();
+        result.Should().Be(Hash256.Zero);
+    }
 }

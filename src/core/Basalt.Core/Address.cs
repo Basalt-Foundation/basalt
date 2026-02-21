@@ -92,18 +92,31 @@ public readonly struct Address : IEquatable<Address>, IComparable<Address>
         return new Address(bytes);
     }
 
-    public static bool TryFromHexString(string hex, out Address result)
+    public static bool TryFromHexString(string? hex, out Address result)
     {
-        try
+        result = Zero;
+        if (string.IsNullOrEmpty(hex)) return false;
+
+        if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            hex = hex[2..];
+
+        if (hex.Length != Size * 2) return false;
+
+        if (!IsValidHex(hex)) return false;
+
+        Span<byte> bytes = stackalloc byte[Size];
+        Convert.FromHexString(hex, bytes, out _, out _);
+        result = new Address(bytes);
+        return true;
+    }
+
+    private static bool IsValidHex(string hex)
+    {
+        foreach (var c in hex)
         {
-            result = FromHexString(hex);
-            return true;
+            if (!char.IsAsciiHexDigit(c)) return false;
         }
-        catch
-        {
-            result = Zero;
-            return false;
-        }
+        return true;
     }
 
     /// <summary>

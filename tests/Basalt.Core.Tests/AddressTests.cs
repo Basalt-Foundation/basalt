@@ -50,4 +50,42 @@ public class AddressTests
         var b = new Address(bytes);
         (a == b).Should().BeTrue();
     }
+
+    // ===== AUDIT L-01: TryFromHexString without exceptions =====
+
+    [Fact]
+    public void TryFromHexString_ValidHex_ReturnsTrue()
+    {
+        var hex = "0xabcdef0123456789abcdef0123456789abcdef01";
+        Address.TryFromHexString(hex, out var result).Should().BeTrue();
+        result.ToHexString().Should().Be(hex);
+    }
+
+    [Fact]
+    public void TryFromHexString_Null_ReturnsFalse()
+    {
+        Address.TryFromHexString(null, out var result).Should().BeFalse();
+        result.Should().Be(Address.Zero);
+    }
+
+    [Fact]
+    public void TryFromHexString_Empty_ReturnsFalse()
+    {
+        Address.TryFromHexString("", out var result).Should().BeFalse();
+        result.Should().Be(Address.Zero);
+    }
+
+    [Fact]
+    public void TryFromHexString_WrongLength_ReturnsFalse()
+    {
+        Address.TryFromHexString("0xabcd", out var result).Should().BeFalse();
+        result.Should().Be(Address.Zero);
+    }
+
+    [Fact]
+    public void TryFromHexString_InvalidChars_ReturnsFalse()
+    {
+        Address.TryFromHexString("0xGGGGGG0123456789abcdef0123456789abcdef01", out var result).Should().BeFalse();
+        result.Should().Be(Address.Zero);
+    }
 }
