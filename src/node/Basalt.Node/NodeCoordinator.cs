@@ -91,6 +91,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-09: Atomic sync guard — use int + Interlocked.CompareExchange instead of bool
     private int _isSyncing;
     private TaskCompletionSource<bool>? _syncBatchTcs;
+    private ulong _syncBatchSeqNo;
     private const int SyncBatchSize = 50;
 
     // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
@@ -176,7 +177,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         };
 
         // 8. Start consensus loop
-        _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _chainParams.BlockTimeMs;
+        Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _chainParams.BlockTimeMs);
         _consensusLoop = RunConsensusLoop(_cts.Token);
 
         // 9. Start peer reconnection loop
@@ -485,7 +486,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
                 _ = _wsHandler.BroadcastNewBlock(block);
 
-                _lastBlockFinalizedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
                 // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
                 // This preserves recent evidence for double-sign detection while preventing unbounded growth.
@@ -590,7 +591,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         // Block time pacing: don't propose until BlockTimeMs has elapsed since last finalization
-        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastBlockFinalizedAtMs;
+        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
             return;
 
@@ -616,7 +617,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void TryProposeBlockPipelined()
     {
         // Block time pacing
-        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastBlockFinalizedAtMs;
+        var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
             return;
 
@@ -1142,11 +1143,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
         else if (applied > 0)
         {
-            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — discarding forked state", applied, blocksToApply.Count);
+            // HIGH-04: Partial sync — blocks were added to ChainManager but state was not
+            // adopted. Roll back ChainManager to the last consistent block to prevent
+            // chain/state divergence. The next sync attempt will re-fetch these blocks.
+            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — rolling back chain to consistent state",
+                applied, blocksToApply.Count);
         }
 
-        // Signal the sync loop: true = progress made, false = stalled (no blocks applied)
-        _syncBatchTcs?.TrySetResult(applied > 0);
+        // Signal the sync loop under lock to prevent stale responses completing wrong TCS
+        lock (this)
+        {
+            _syncBatchTcs?.TrySetResult(applied > 0);
+        }
     }
 
     private void HandleConsensusProposal(PeerId sender, ConsensusProposalMessage proposal)
@@ -1473,7 +1481,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 var batchCount = (int)Math.Min(SyncBatchSize, peerHeight - currentBlock + 1);
 
-                _syncBatchTcs = new TaskCompletionSource<bool>();
+                var tcs = new TaskCompletionSource<bool>();
+                lock (this)
+                {
+                    _syncBatchSeqNo++;
+                    _syncBatchTcs = tcs;
+                }
+
                 var request = new SyncRequestMessage
                 {
                     SenderId = _localPeerId,
@@ -1485,17 +1499,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Wait for response with timeout
                 var completed = await Task.WhenAny(
-                    _syncBatchTcs.Task,
+                    tcs.Task,
                     Task.Delay(TimeSpan.FromSeconds(10), ct));
 
-                if (completed != _syncBatchTcs.Task)
+                if (completed != tcs.Task)
                 {
                     _logger.LogWarning("Sync batch timed out at block #{Block}", currentBlock);
                     break;
                 }
 
                 // Check if the batch made progress (applied at least 1 block)
-                var madeProgress = await _syncBatchTcs.Task;
+                var madeProgress = await tcs.Task;
                 if (!madeProgress)
                 {
                     _logger.LogWarning(
