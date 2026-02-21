@@ -41,11 +41,26 @@ public sealed class MultisigRelayer
             _relayers[Convert.ToHexString(publicKey)] = publicKey;
     }
 
-    /// <summary>Remove a relayer.</summary>
+    /// <summary>
+    /// Remove a relayer.
+    /// LOW-05: Prevents removal if it would make the threshold unreachable.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">If removal would leave fewer relayers than the threshold.</exception>
     public void RemoveRelayer(byte[] publicKey)
     {
         lock (_lock)
-            _relayers.Remove(Convert.ToHexString(publicKey));
+        {
+            var key = Convert.ToHexString(publicKey);
+            if (!_relayers.ContainsKey(key))
+                return;
+
+            // LOW-05: prevent threshold from becoming unreachable
+            if (_relayers.Count - 1 < _threshold)
+                throw new InvalidOperationException(
+                    $"Cannot remove relayer: would leave {_relayers.Count - 1} relayers, below threshold {_threshold}.");
+
+            _relayers.Remove(key);
+        }
     }
 
     /// <summary>Check if a public key is a registered relayer.</summary>
@@ -70,12 +85,17 @@ public sealed class MultisigRelayer
 
     /// <summary>
     /// Verify that a message has sufficient valid relayer signatures.
+    /// HIGH-03: Enforces that threshold represents a strict majority (M &gt; N/2).
     /// </summary>
     public bool VerifyMessage(byte[] messageHash, IReadOnlyList<RelayerSignature> signatures)
     {
         lock (_lock)
         {
             if (signatures.Count < _threshold)
+                return false;
+
+            // HIGH-03: Enforce minimum quorum — threshold must be strict majority
+            if (_relayers.Count > 0 && _threshold * 2 <= _relayers.Count)
                 return false;
 
             var validCount = 0;
