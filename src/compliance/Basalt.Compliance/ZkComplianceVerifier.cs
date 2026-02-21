@@ -70,6 +70,12 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         // Match each requirement to a proof by schema ID
         foreach (var requirement in requirements)
         {
+            // L-05: Validate MinIssuerTier is set (tier 0 = self-attested, not suitable for compliance)
+            if (requirement.MinIssuerTier == 0)
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Schema {requirement.SchemaId.ToHexString()} requires MinIssuerTier > 0");
+
             var proof = FindProofForSchema(proofs, requirement.SchemaId);
             if (proof == null)
                 return ComplianceCheckOutcome.Fail(

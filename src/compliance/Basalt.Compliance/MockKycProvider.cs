@@ -4,6 +4,11 @@ namespace Basalt.Compliance;
 /// Mock KYC provider for testnet/development use.
 /// Auto-approves all attestation requests at the specified level.
 /// NOT for production use.
+/// <para>
+/// WARNING (L-03): Constructor self-approves the provider address without
+/// governance authorization. In production, providers must be approved
+/// through the governance-aware IdentityRegistry constructor.
+/// </para>
 /// </summary>
 public sealed class MockKycProvider : IKycProvider
 {
