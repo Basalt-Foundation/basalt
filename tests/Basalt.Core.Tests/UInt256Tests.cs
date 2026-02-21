@@ -374,6 +374,123 @@ public class UInt256Tests
         UInt256.TrySub(UInt256.Zero, UInt256.One, out _).Should().BeFalse();
     }
 
+    // ===== AUDIT C-01: TryAdd overflow edge cases =====
+
+    [Fact]
+    public void TryAdd_CarryWithMaxHi_DetectsOverflow()
+    {
+        // a.Lo = max -> carry will be 1 when added with b.Lo = 1
+        // b.Hi = max -> hiSum = 0 + max = max, hi = max + 1 = overflow
+        var a = new UInt256(UInt128.MaxValue, 0);
+        var b = new UInt256(1, UInt128.MaxValue);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CheckedAdd_CarryWithMaxHi_Throws()
+    {
+        var a = new UInt256(UInt128.MaxValue, 0);
+        var b = new UInt256(1, UInt128.MaxValue);
+        var act = () => UInt256.CheckedAdd(a, b);
+        act.Should().Throw<OverflowException>();
+    }
+
+    [Fact]
+    public void TryAdd_HiOverflowWithoutCarry_DetectsOverflow()
+    {
+        var a = new UInt256(0, UInt128.MaxValue);
+        var b = new UInt256(0, 1);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryAdd_JustBelowOverflow_Succeeds()
+    {
+        UInt256.TryAdd(UInt256.MaxValue, UInt256.Zero, out var result).Should().BeTrue();
+        result.Should().Be(UInt256.MaxValue);
+    }
+
+    [Fact]
+    public void TryAdd_BothMaxHi_DetectsOverflow()
+    {
+        var a = new UInt256(0, UInt128.MaxValue);
+        var b = new UInt256(0, UInt128.MaxValue);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    // ===== AUDIT M-01: ToString consistency =====
+
+    [Fact]
+    public void ToString_LargeValue_ReturnsDecimal()
+    {
+        var v = new UInt256(0, 1); // 2^128
+        v.ToString().Should().NotStartWith("0x");
+        UInt256.Parse(v.ToString()).Should().Be(v);
+    }
+
+    [Fact]
+    public void ToString_RoundTrip_AllSizes()
+    {
+        var small = new UInt256(42);
+        UInt256.Parse(small.ToString()).Should().Be(small);
+
+        var medium = new UInt256(ulong.MaxValue);
+        UInt256.Parse(medium.ToString()).Should().Be(medium);
+
+        var large = new UInt256(UInt128.MaxValue, 1);
+        UInt256.Parse(large.ToString()).Should().Be(large);
+    }
+
+    // ===== AUDIT M-02: ToHexString zero =====
+
+    [Fact]
+    public void ToHexString_Zero_ReturnsZero()
+    {
+        UInt256.Zero.ToHexString().Should().Be("0");
+    }
+
+    // ===== AUDIT M-03: TryParse =====
+
+    [Fact]
+    public void TryParse_ValidDecimal_ReturnsTrue()
+    {
+        UInt256.TryParse("12345", out var result).Should().BeTrue();
+        ((ulong)result).Should().Be(12345UL);
+    }
+
+    [Fact]
+    public void TryParse_ValidHex_ReturnsTrue()
+    {
+        UInt256.TryParse("0xff", out var result).Should().BeTrue();
+        ((ulong)result).Should().Be(255UL);
+    }
+
+    [Fact]
+    public void TryParse_Invalid_ReturnsFalse()
+    {
+        UInt256.TryParse("not_a_number", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Null_ReturnsFalse()
+    {
+        UInt256.TryParse(null, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Empty_ReturnsFalse()
+    {
+        UInt256.TryParse("", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Overflow_ReturnsFalse()
+    {
+        // A value that exceeds 2^256
+        var huge = "115792089237316195423570985008687907853269984665640564039457584007913129639936"; // 2^256
+        UInt256.TryParse(huge, out _).Should().BeFalse();
+    }
+
     // ===== CORE-06: ChainParameters tests =====
 
     [Fact]
