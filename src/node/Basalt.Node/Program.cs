@@ -207,19 +207,33 @@ try
     MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
 
     // N-19: Health endpoint with meaningful status info (AOT-safe string formatting)
+    ulong lastHealthCheckBlock = 0;
+    long lastHealthCheckTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
     app.MapGet("/v1/health", (HttpContext ctx) =>
     {
         var lastBlock = chainManager.LatestBlock;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var blockAge = lastBlock != null
-            ? (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastBlock.Header.Timestamp) / 1000.0
+            ? (now - lastBlock.Header.Timestamp) / 1000.0
             : -1;
-        var healthy = blockAge >= 0 && blockAge < 60;
+
+        // MED-04: Supplement clock-based health with block height progress check.
+        // If block number has increased since last health check, the node is making progress
+        // regardless of clock skew.
+        var currentBlockNumber = lastBlock?.Header.Number ?? 0;
+        var makingProgress = currentBlockNumber > lastHealthCheckBlock;
+        lastHealthCheckBlock = currentBlockNumber;
+        lastHealthCheckTime = now;
+
+        var healthy = makingProgress || (blockAge >= 0 && blockAge < 60);
         ctx.Response.StatusCode = healthy ? 200 : 503;
         ctx.Response.ContentType = "application/json";
         return ctx.Response.WriteAsync(
             "{\"status\":\"" + (healthy ? "healthy" : "degraded") +
-            "\",\"lastBlockNumber\":" + (lastBlock?.Header.Number ?? 0) +
+            "\",\"lastBlockNumber\":" + currentBlockNumber +
             ",\"lastBlockAgeSeconds\":" + blockAge.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) +
+            ",\"makingProgress\":" + (makingProgress ? "true" : "false") +
             ",\"chainId\":" + chainParams.ChainId + "}");
     });
 

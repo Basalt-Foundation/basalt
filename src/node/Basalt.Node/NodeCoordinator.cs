@@ -100,6 +100,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // N-14: Cap block request count to prevent resource exhaustion
     private const int MaxBlockRequestCount = 100;
 
+    // MED-03: Per-peer sync request rate limiting (max 1 per second per peer)
+    private readonly ConcurrentDictionary<PeerId, long> _lastSyncRequestTime = new();
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -1023,6 +1026,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleSyncRequest(PeerId sender, SyncRequestMessage request)
     {
+        // MED-03: Rate limit sync requests — max 1 per second per peer
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var lastTime = _lastSyncRequestTime.GetOrAdd(sender, 0L);
+        if (now - lastTime < 1000)
+        {
+            _logger.LogDebug("Rate-limiting sync request from {PeerId}", sender);
+            return;
+        }
+        _lastSyncRequestTime[sender] = now;
+
         // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
         var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);
         var blockDataList = new List<byte[]>();
@@ -1159,6 +1172,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleConsensusProposal(PeerId sender, ConsensusProposalMessage proposal)
     {
+        // MED-06: Early reject proposals from unknown validators to avoid unnecessary processing
+        if (_validatorSet?.GetByPeerId(sender) == null)
+        {
+            _logger.LogDebug("Ignoring proposal from unknown peer {PeerId}", sender);
+            return;
+        }
+
         // Double-sign detection: only for proposals matching the current block number.
         // View numbers are reused across blocks (StartRound sets view = blockNumber),
         // so delayed proposals from previous blocks can arrive after _proposalsByView
@@ -1233,7 +1253,22 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var parts = peerEndpoint.Split(':');
             var host = parts[0];
-            var port = parts.Length > 1 && int.TryParse(parts[1], out var p) ? p : 30303;
+
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                _logger.LogWarning("Skipping peer with empty hostname: '{Endpoint}'", peerEndpoint);
+                continue;
+            }
+
+            var port = 30303;
+            if (parts.Length > 1)
+            {
+                if (!int.TryParse(parts[1], out port) || port < 1 || port > 65535)
+                {
+                    _logger.LogWarning("Skipping peer with invalid port: '{Endpoint}'", peerEndpoint);
+                    continue;
+                }
+            }
 
             try
             {

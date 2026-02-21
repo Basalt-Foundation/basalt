@@ -79,13 +79,32 @@ public sealed class NodeConfiguration
     public static string ValidateDataDir(string dataDir)
     {
         var resolved = Path.GetFullPath(dataDir);
+
+        // Use case-insensitive comparison on macOS (HFS+) and Windows
+        var comparison = OperatingSystem.IsLinux()
+            ? StringComparison.Ordinal
+            : StringComparison.OrdinalIgnoreCase;
+
         // Reject paths that resolve to system directories
-        string[] dangerous = ["/etc", "/usr", "/bin", "/sbin", "/var/run", "/proc", "/sys"];
+        string[] dangerous = ["/etc", "/usr", "/bin", "/sbin", "/var/run", "/proc", "/sys",
+                              "/boot", "/dev", "/lib"];
         foreach (var d in dangerous)
         {
-            if (resolved.StartsWith(d, StringComparison.Ordinal))
+            if (resolved.StartsWith(d, comparison))
                 throw new InvalidOperationException($"DataDir '{resolved}' resolves to a system directory");
         }
+
+        // Windows system paths
+        if (OperatingSystem.IsWindows())
+        {
+            string[] windowsDangerous = [@"C:\Windows", @"C:\Program Files", @"C:\Program Files (x86)"];
+            foreach (var d in windowsDangerous)
+            {
+                if (resolved.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"DataDir '{resolved}' resolves to a system directory");
+            }
+        }
+
         return resolved;
     }
 }
