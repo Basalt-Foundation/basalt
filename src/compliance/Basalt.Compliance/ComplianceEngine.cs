@@ -117,10 +117,12 @@ public sealed class ComplianceEngine : IComplianceVerifier
     {
         lock (_lock)
         {
-            // COMPL-05: If a policy already exists, verify the caller is the original issuer
-            if (caller != null && _policies.TryGetValue(ToHex(tokenAddress), out var existing)
-                && existing.Issuer != null && ToHex(existing.Issuer) != ToHex(caller))
-                return false;
+            // M-04 + COMPL-05: If a policy already exists with an issuer, require caller match
+            if (_policies.TryGetValue(ToHex(tokenAddress), out var existing) && existing.Issuer != null)
+            {
+                if (caller == null || ToHex(existing.Issuer) != ToHex(caller))
+                    return false;
+            }
 
             policy.Issuer ??= caller;
             _policies[ToHex(tokenAddress)] = policy;
@@ -138,13 +140,29 @@ public sealed class ComplianceEngine : IComplianceVerifier
 
     /// <summary>
     /// Get the compliance policy for a token.
+    /// Returns a defensive copy to prevent unauthorized mutation (H-03).
     /// </summary>
     public CompliancePolicy? GetPolicy(byte[] tokenAddress)
     {
         lock (_lock)
         {
-            _policies.TryGetValue(ToHex(tokenAddress), out var policy);
-            return policy;
+            if (!_policies.TryGetValue(ToHex(tokenAddress), out var policy))
+                return null;
+
+            return new CompliancePolicy
+            {
+                TokenAddress = policy.TokenAddress,
+                RequiredSenderKycLevel = policy.RequiredSenderKycLevel,
+                RequiredReceiverKycLevel = policy.RequiredReceiverKycLevel,
+                SanctionsCheckEnabled = policy.SanctionsCheckEnabled,
+                BlockedCountries = [..policy.BlockedCountries],
+                MaxHoldingAmount = policy.MaxHoldingAmount,
+                LockupEndTimestamp = policy.LockupEndTimestamp,
+                TravelRuleThreshold = policy.TravelRuleThreshold,
+                Paused = policy.Paused,
+                Issuer = policy.Issuer,
+                RequiredProofs = [..policy.RequiredProofs],
+            };
         }
     }
 

@@ -368,6 +368,68 @@ public class ComplianceEngineTests
         _engine.GetPolicy(Addr(99)).Should().BeNull();
     }
 
+    // --- GetPolicy defensive copy (H-03) ---
+
+    [Fact]
+    public void GetPolicy_Returns_Defensive_Copy()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            Paused = false,
+        });
+
+        var policy = _engine.GetPolicy(_tokenAddr)!;
+        policy.Paused = true; // Mutate the copy
+
+        // Original should be unaffected
+        var original = _engine.GetPolicy(_tokenAddr)!;
+        original.Paused.Should().BeFalse();
+    }
+
+    // --- SetPolicy null caller bypass (M-04) ---
+
+    [Fact]
+    public void SetPolicy_NullCaller_Cannot_Override_Existing_With_Issuer()
+    {
+        // First caller sets the policy with an issuer
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        }, caller: _sender);
+
+        // Null caller tries to override — should fail
+        var result = _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 9999,
+        }, caller: null);
+        result.Should().BeFalse();
+
+        // Original policy should be unchanged
+        _engine.GetPolicy(_tokenAddr)!.MaxHoldingAmount.Should().Be(1000);
+    }
+
+    [Fact]
+    public void SetPolicy_OriginalIssuer_Can_Update()
+    {
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        }, caller: _sender);
+
+        var result = _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 2000,
+        }, caller: _sender);
+        result.Should().BeTrue();
+
+        _engine.GetPolicy(_tokenAddr)!.MaxHoldingAmount.Should().Be(2000);
+    }
+
     // --- CheckTransferCompliance (H-02: IComplianceVerifier integration) ---
 
     [Fact]
