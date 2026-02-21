@@ -116,7 +116,7 @@ public class ComplianceBridgeTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         var sig0 = MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray());
         var sig2 = MultisigRelayer.Sign(msgHash, k2.PrivateKey, k2.PublicKey.ToArray());
         withdrawal.Signatures.Add(sig0);

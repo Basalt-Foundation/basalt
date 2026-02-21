@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Basalt.Core;
 using Basalt.Crypto;
 
@@ -369,16 +370,16 @@ public partial class BridgeETH
         data[offset] = 0x02;
         offset += 1;
 
-        // Chain ID (BRIDGE-01)
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), Context.ChainId);
+        // Chain ID (BRIDGE-01) — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), Context.ChainId);
         offset += 4;
 
         // Contract address (BRIDGE-01)
         Context.Self.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
-        // Nonce
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), nonce);
+        // Nonce — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), nonce);
         offset += 8;
 
         // Recipient (fixed 20 bytes)

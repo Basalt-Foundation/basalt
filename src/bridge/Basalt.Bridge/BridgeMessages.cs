@@ -51,8 +51,8 @@ public sealed class BridgeDeposit
     /// <summary>Destination chain ID.</summary>
     public uint DestinationChainId { get; init; }
 
-    /// <summary>Block height at which the deposit was made.</summary>
-    public ulong BlockHeight { get; init; }
+    /// <summary>Block height at which the deposit was confirmed.</summary>
+    public ulong BlockHeight { get; set; }
 
     /// <summary>Timestamp of the deposit.</summary>
     public long Timestamp { get; init; }

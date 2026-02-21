@@ -108,6 +108,7 @@ public sealed class BridgeState
     /// <summary>
     /// Mark a deposit as confirmed (included in a finalized block).
     /// BRIDGE-05: Only transitions from Pending to Confirmed.
+    /// HIGH-04: Stores the block height at which the deposit was confirmed.
     /// </summary>
     public bool ConfirmDeposit(ulong nonce, ulong blockHeight)
     {
@@ -121,6 +122,7 @@ public sealed class BridgeState
                 return false;
 
             deposit.Status = BridgeTransferStatus.Confirmed;
+            deposit.BlockHeight = blockHeight; // HIGH-04: store confirmation block height
             return true;
         }
     }
@@ -210,7 +212,8 @@ public sealed class BridgeState
     /// BRIDGE-03: enforces fixed-length recipient (20 bytes) and stateRoot (32 bytes).
     /// BRIDGE-12: prepends version byte (0x02).
     /// </summary>
-    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal, uint chainId = 1, byte[]? contractAddress = null)
+    /// <summary>HIGH-01: chainId is now required — callers must pass the actual chain ID.</summary>
+    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal, uint chainId, byte[]? contractAddress = null)
     {
         var contractAddr = contractAddress ?? new byte[20];
 
@@ -230,16 +233,16 @@ public sealed class BridgeState
         data[offset] = 0x02;
         offset += 1;
 
-        // Chain ID (BRIDGE-01)
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), chainId);
+        // Chain ID (BRIDGE-01) — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), chainId);
         offset += 4;
 
         // Contract address (BRIDGE-01)
         contractAddr.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
-        // Nonce
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), withdrawal.DepositNonce);
+        // Nonce — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), withdrawal.DepositNonce);
         offset += 8;
 
         // Recipient (fixed 20 bytes)

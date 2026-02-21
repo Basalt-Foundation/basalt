@@ -188,6 +188,15 @@ public class BridgeStateTests
     }
 
     [Fact]
+    public void ConfirmDeposit_Stores_BlockHeight()
+    {
+        // HIGH-04: ConfirmDeposit must store blockHeight
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        _bridge.ConfirmDeposit(0, 42).Should().BeTrue();
+        _bridge.GetDeposit(0)!.BlockHeight.Should().Be(42);
+    }
+
+    [Fact]
     public void ConfirmDeposit_AlreadyConfirmed_Returns_False()
     {
         // BRIDGE-05: re-confirm is no longer allowed
@@ -319,7 +328,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         var sig = MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray());
         withdrawal.Signatures.Add(sig);
 
@@ -341,7 +350,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
@@ -365,7 +374,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, k0.PrivateKey, k0.PublicKey.ToArray()));
 
         // Only 1 of 2 required signatures
@@ -413,7 +422,7 @@ public class BridgeStateTests
                 StateRoot = new byte[32],
             };
 
-            var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+            var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
             withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
             _bridge.Unlock(withdrawal, relayer).Should().BeTrue($"withdrawal nonce {i} should succeed");
@@ -448,7 +457,7 @@ public class BridgeStateTests
             Proof = proof,
         };
 
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
@@ -551,7 +560,7 @@ public class BridgeStateTests
             Amount = 100,
             StateRoot = new byte[32],
         };
-        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
 
         _bridge.Unlock(withdrawal, relayer);
@@ -579,8 +588,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var hash1 = BridgeState.ComputeWithdrawalHash(withdrawal);
-        var hash2 = BridgeState.ComputeWithdrawalHash(withdrawal);
+        var hash1 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        var hash2 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
 
         hash1.Should().BeEquivalentTo(hash2);
     }
@@ -603,8 +612,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        var h1 = BridgeState.ComputeWithdrawalHash(w1);
-        var h2 = BridgeState.ComputeWithdrawalHash(w2);
+        var h1 = BridgeState.ComputeWithdrawalHash(w1, 1);
+        var h2 = BridgeState.ComputeWithdrawalHash(w2, 1);
 
         h1.Should().NotBeEquivalentTo(h2);
     }
@@ -627,8 +636,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
     }
 
     [Fact]
@@ -649,8 +658,8 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
     }
 
     [Fact]
@@ -674,8 +683,26 @@ public class BridgeStateTests
             StateRoot = root2,
         };
 
-        BridgeState.ComputeWithdrawalHash(w1).Should().NotBeEquivalentTo(
-            BridgeState.ComputeWithdrawalHash(w2));
+        BridgeState.ComputeWithdrawalHash(w1, 1).Should().NotBeEquivalentTo(
+            BridgeState.ComputeWithdrawalHash(w2, 1));
+    }
+
+    [Fact]
+    public void ComputeWithdrawalHash_Different_ChainIds_Produce_Different_Hashes()
+    {
+        // HIGH-01: chain ID is now required — different chains produce different hashes
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = new byte[32],
+        };
+
+        var h1 = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        var h2 = BridgeState.ComputeWithdrawalHash(withdrawal, 42);
+
+        h1.Should().NotBeEquivalentTo(h2);
     }
 
     [Fact]
@@ -689,7 +716,7 @@ public class BridgeStateTests
             StateRoot = new byte[32],
         };
 
-        BridgeState.ComputeWithdrawalHash(withdrawal).Should().HaveCount(32);
+        BridgeState.ComputeWithdrawalHash(withdrawal, 1).Should().HaveCount(32);
     }
 
     // ── Chain ID configuration ───────────────────────────────────────────
