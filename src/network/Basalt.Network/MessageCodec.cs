@@ -465,12 +465,17 @@ public static class MessageCodec
 
     private static BlockRequestMessage ReadBlockRequest(ref BasaltReader reader, PeerId senderId, long timestamp)
     {
+        var startNumber = reader.ReadUInt64();
+        var count = reader.ReadInt32();
+        // Validate Count is positive and bounded (consistent with SyncRequest validation)
+        if (count <= 0 || count > MaxSyncBlocks)
+            throw new InvalidOperationException($"Invalid BlockRequest.Count: {count} (must be 1-{MaxSyncBlocks})");
         return new BlockRequestMessage
         {
             SenderId = senderId,
             Timestamp = timestamp,
-            StartNumber = reader.ReadUInt64(),
-            Count = reader.ReadInt32(),
+            StartNumber = startNumber,
+            Count = count,
         };
     }
 

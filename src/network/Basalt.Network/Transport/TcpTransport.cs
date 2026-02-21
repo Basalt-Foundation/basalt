@@ -96,6 +96,17 @@ public sealed class TcpTransport : IAsyncDisposable
     /// </summary>
     public async Task<PeerConnection> ConnectAsync(string host, int port, TimeSpan? timeout = null)
     {
+        // NET-H01: Enforce total connection limit for outbound connections (same as inbound)
+        if (_connections.Count >= MaxTotalConnections)
+            throw new InvalidOperationException(
+                $"Total connection limit ({MaxTotalConnections}) reached; cannot create outbound connection.");
+
+        // NET-H01: Enforce per-IP connection limit for outbound connections
+        var currentIpCount = _connectionsPerIp.GetOrAdd(host, 0);
+        if (currentIpCount >= MaxConnectionsPerIp)
+            throw new InvalidOperationException(
+                $"Per-IP connection limit ({MaxConnectionsPerIp}) reached for {host}; cannot create outbound connection.");
+
         var client = new TcpClient();
 
         try
@@ -110,6 +121,7 @@ public sealed class TcpTransport : IAsyncDisposable
             throw;
         }
 
+        var remoteIp = (client.Client.RemoteEndPoint as System.Net.IPEndPoint)?.Address.ToString() ?? host;
         var endpoint = client.Client.RemoteEndPoint?.ToString() ?? $"{host}:{port}";
         var tempId = CreateTempPeerId(endpoint);
 
@@ -121,6 +133,10 @@ public sealed class TcpTransport : IAsyncDisposable
             throw new InvalidOperationException(
                 $"A connection with temporary peer ID {tempId} already exists.");
         }
+
+        // NET-H01: Track per-IP counter and mapping for outbound connections (same as inbound)
+        _connectionsPerIp.AddOrUpdate(remoteIp, 1, (_, count) => count + 1);
+        _peerIpMap[tempId] = remoteIp;
 
         _logger.LogInformation("Outbound connection established to {Endpoint} as {PeerId}", endpoint, tempId);
 
