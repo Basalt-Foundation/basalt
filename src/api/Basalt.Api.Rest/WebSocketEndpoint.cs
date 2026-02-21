@@ -169,7 +169,9 @@ public sealed class WebSocketHandler : IDisposable
 
         var json = JsonSerializer.Serialize(message, WsJsonContext.Default.WebSocketBlockMessage);
         var bytes = Encoding.UTF8.GetBytes(json);
-        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
+        // M-5: Apply send timeout to initial message to prevent slow-client stalls
+        using var cts = new CancellationTokenSource(BroadcastTimeout);
+        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, cts.Token);
     }
 
     public void Dispose()
