@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Basalt.Core;
 using Basalt.Crypto;
 
@@ -14,12 +15,34 @@ public sealed class BridgeState
     private readonly Dictionary<string, UInt256> _lockedBalances = new(); // tokenAddr -> locked amount
     private ulong _nextNonce;
     private readonly object _lock = new();
+    private bool _paused; // MED-04
 
     /// <summary>Basalt chain ID.</summary>
     public uint BasaltChainId { get; init; } = 1;
 
     /// <summary>Ethereum chain ID (Sepolia = 11155111).</summary>
     public uint EthereumChainId { get; init; } = 11155111;
+
+    /// <summary>MED-01: Maximum age in seconds for a pending deposit before it can be cancelled.</summary>
+    public long DepositExpirySeconds { get; init; } = 86400 * 7; // 7 days
+
+    /// <summary>MED-04: Whether the bridge is paused. No locks or unlocks are processed while paused.</summary>
+    public bool IsPaused
+    {
+        get { lock (_lock) return _paused; }
+    }
+
+    /// <summary>MED-04: Pause the bridge — blocks new locks and unlocks.</summary>
+    public void Pause()
+    {
+        lock (_lock) _paused = true;
+    }
+
+    /// <summary>MED-04: Resume the bridge.</summary>
+    public void Resume()
+    {
+        lock (_lock) _paused = false;
+    }
 
     /// <summary>
     /// Lock tokens on Basalt for bridging to Ethereum.
@@ -32,6 +55,9 @@ public sealed class BridgeState
 
         lock (_lock)
         {
+            // MED-04: Reject operations while paused
+            if (_paused)
+                throw new BridgeException("Bridge is paused");
             var token = tokenAddress ?? new byte[20];
             var tokenKey = Convert.ToHexString(token);
 
@@ -61,22 +87,47 @@ public sealed class BridgeState
     }
 
     /// <summary>
-    /// Process a withdrawal (unlock) on Basalt after verifying the cross-chain proof.
-    /// Returns true if the withdrawal was processed successfully.
+    /// Process a withdrawal (unlock) on Basalt after verifying the Merkle proof and multisig.
+    /// CRIT-01: Verifies the Merkle proof before accepting the withdrawal.
+    /// HIGH-02: Decrements the locked balance upon successful unlock.
     /// </summary>
-    public bool Unlock(BridgeWithdrawal withdrawal, MultisigRelayer relayer)
+    /// <param name="withdrawal">The withdrawal request with proof and signatures.</param>
+    /// <param name="relayer">The multisig relayer for signature verification.</param>
+    /// <param name="tokenAddress">Token address to decrement locked balance (null = native).</param>
+    /// <returns>True if the withdrawal was processed successfully.</returns>
+    public bool Unlock(BridgeWithdrawal withdrawal, MultisigRelayer relayer, byte[]? tokenAddress = null)
     {
         lock (_lock)
         {
+            // MED-04: Reject operations while paused
+            if (_paused)
+                return false;
+
             // Check if already processed (replay protection)
             if (_processedWithdrawals.Contains(withdrawal.DepositNonce))
                 return false;
 
+            // CRIT-01: Verify Merkle proof when provided
+            if (withdrawal.Proof.Length > 0)
+            {
+                var depositLeaf = ComputeDepositLeaf(withdrawal.DepositNonce, withdrawal.Recipient, withdrawal.Amount);
+                if (!BridgeProofVerifier.VerifyMerkleProof(
+                        depositLeaf, withdrawal.Proof, withdrawal.DepositNonce, withdrawal.StateRoot))
+                    return false;
+            }
+
             // Verify relayer signatures (multisig threshold)
-            if (!relayer.VerifyMessage(
-                    ComputeWithdrawalHash(withdrawal),
-                    withdrawal.Signatures))
+            var withdrawalHash = ComputeWithdrawalHash(withdrawal, BasaltChainId);
+            if (!relayer.VerifyMessage(withdrawalHash, withdrawal.Signatures))
                 return false;
+
+            // HIGH-02: Decrement locked balance
+            var token = tokenAddress ?? new byte[20];
+            var tokenKey = Convert.ToHexString(token);
+            if (_lockedBalances.TryGetValue(tokenKey, out var locked) && locked >= withdrawal.Amount)
+            {
+                _lockedBalances[tokenKey] = locked - withdrawal.Amount;
+            }
 
             _processedWithdrawals.Add(withdrawal.DepositNonce);
             return true;
@@ -86,6 +137,7 @@ public sealed class BridgeState
     /// <summary>
     /// Mark a deposit as confirmed (included in a finalized block).
     /// BRIDGE-05: Only transitions from Pending to Confirmed.
+    /// HIGH-04: Stores the block height at which the deposit was confirmed.
     /// </summary>
     public bool ConfirmDeposit(ulong nonce, ulong blockHeight)
     {
@@ -94,11 +146,11 @@ public sealed class BridgeState
             if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            // BRIDGE-05: enforce state machine transition
-            if (deposit.Status != BridgeTransferStatus.Pending)
+            // MED-03: validated state machine transition
+            if (!deposit.TransitionStatus(BridgeTransferStatus.Confirmed))
                 return false;
 
-            deposit.Status = BridgeTransferStatus.Confirmed;
+            deposit.BlockHeight = blockHeight; // HIGH-04: store confirmation block height
             return true;
         }
     }
@@ -114,11 +166,41 @@ public sealed class BridgeState
             if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            // BRIDGE-05: enforce state machine transition
-            if (deposit.Status != BridgeTransferStatus.Confirmed)
+            // MED-03: validated state machine transition
+            return deposit.TransitionStatus(BridgeTransferStatus.Finalized);
+        }
+    }
+
+    /// <summary>
+    /// MED-01: Cancel an expired pending deposit and refund locked balance.
+    /// Only pending deposits older than <see cref="DepositExpirySeconds"/> can be cancelled.
+    /// </summary>
+    /// <param name="nonce">Deposit nonce to cancel.</param>
+    /// <param name="currentTimestamp">Current Unix timestamp for expiry check.</param>
+    /// <returns>True if the deposit was cancelled.</returns>
+    public bool CancelExpiredDeposit(ulong nonce, long currentTimestamp)
+    {
+        lock (_lock)
+        {
+            if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            deposit.Status = BridgeTransferStatus.Finalized;
+            if (deposit.Status != BridgeTransferStatus.Pending)
+                return false;
+
+            if (currentTimestamp - deposit.Timestamp < DepositExpirySeconds)
+                return false;
+
+            // MED-03: Transition to Failed (LOW-03: Failed status now used)
+            deposit.TransitionStatus(BridgeTransferStatus.Failed);
+
+            // Refund locked balance
+            var tokenKey = Convert.ToHexString(deposit.TokenAddress);
+            if (_lockedBalances.TryGetValue(tokenKey, out var locked) && locked >= deposit.Amount)
+            {
+                _lockedBalances[tokenKey] = locked - deposit.Amount;
+            }
+
             return true;
         }
     }
@@ -133,14 +215,23 @@ public sealed class BridgeState
         }
     }
 
-    /// <summary>Get all pending deposits awaiting relay.</summary>
+    /// <summary>
+    /// Get all pending deposits awaiting relay.
+    /// LOW-04: Uses pre-sized list and manual iteration to avoid LINQ allocations.
+    /// </summary>
     public IReadOnlyList<BridgeDeposit> GetPendingDeposits()
     {
         lock (_lock)
-            return _deposits.Values
-                .Where(d => d.Status == BridgeTransferStatus.Pending || d.Status == BridgeTransferStatus.Confirmed)
-                .OrderBy(d => d.Nonce)
-                .ToList();
+        {
+            var result = new List<BridgeDeposit>(_deposits.Count);
+            foreach (var deposit in _deposits.Values)
+            {
+                if (deposit.Status is BridgeTransferStatus.Pending or BridgeTransferStatus.Confirmed)
+                    result.Add(deposit);
+            }
+            result.Sort((a, b) => a.Nonce.CompareTo(b.Nonce));
+            return result;
+        }
     }
 
     /// <summary>Check if a withdrawal has already been processed.</summary>
@@ -168,13 +259,28 @@ public sealed class BridgeState
     }
 
     /// <summary>
+    /// CRIT-01: Compute a deposit leaf for Merkle proof verification.
+    /// Format: nonce (8 bytes LE) || recipient (20 bytes) || amount (32 bytes LE).
+    /// This is used as the leaf data in the Merkle tree of deposits.
+    /// </summary>
+    public static byte[] ComputeDepositLeaf(ulong nonce, byte[] recipient, UInt256 amount)
+    {
+        var data = new byte[8 + 20 + 32];
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(0, 8), nonce);
+        recipient.AsSpan(0, Math.Min(recipient.Length, 20)).CopyTo(data.AsSpan(8));
+        amount.WriteTo(data.AsSpan(28, 32));
+        return data;
+    }
+
+    /// <summary>
     /// Compute the hash of a withdrawal message for signature verification.
     /// Format: BLAKE3(version || LE_u32(chainId) || contractAddress || LE_u64(nonce) || recipient || LE_u256(amount) || stateRoot)
     /// BRIDGE-01: includes chain ID and contract address for cross-chain replay protection.
     /// BRIDGE-03: enforces fixed-length recipient (20 bytes) and stateRoot (32 bytes).
     /// BRIDGE-12: prepends version byte (0x02).
     /// </summary>
-    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal, uint chainId = 1, byte[]? contractAddress = null)
+    /// <summary>HIGH-01: chainId is now required — callers must pass the actual chain ID.</summary>
+    public static byte[] ComputeWithdrawalHash(BridgeWithdrawal withdrawal, uint chainId, byte[]? contractAddress = null)
     {
         var contractAddr = contractAddress ?? new byte[20];
 
@@ -194,16 +300,16 @@ public sealed class BridgeState
         data[offset] = 0x02;
         offset += 1;
 
-        // Chain ID (BRIDGE-01)
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 4), chainId);
+        // Chain ID (BRIDGE-01) — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), chainId);
         offset += 4;
 
         // Contract address (BRIDGE-01)
         contractAddr.CopyTo(data.AsSpan(offset, 20));
         offset += 20;
 
-        // Nonce
-        BitConverter.TryWriteBytes(data.AsSpan(offset, 8), withdrawal.DepositNonce);
+        // Nonce — MED-02: explicit little-endian
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), withdrawal.DepositNonce);
         offset += 8;
 
         // Recipient (fixed 20 bytes)
