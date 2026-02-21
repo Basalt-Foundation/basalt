@@ -8,15 +8,30 @@ namespace Basalt.Execution.VM;
 /// <summary>
 /// Bridges the SDK's static Context and ContractStorage to a VmExecutionContext.
 /// Call Setup() before executing an SDK contract; dispose the returned scope to restore.
+///
+/// C-5: THREAD SAFETY WARNING — The SDK Context class uses static mutable fields.
+/// Contract execution MUST be single-threaded. Concurrent execution will cause
+/// cross-contract state corruption, unauthorized fund transfers, and data loss.
+/// A runtime guard enforces this invariant via Interlocked.CompareExchange.
 /// </summary>
 public static class ContractBridge
 {
+    // C-5: Concurrency guard — only one contract execution at a time
+    private static int _executionLock;
+
     /// <summary>
     /// Wire SDK Context and ContractStorage from the given execution context.
     /// Returns an IDisposable that restores previous state on dispose.
+    /// C-5: Throws if another contract execution is already in progress.
     /// </summary>
     public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
     {
+        // C-5: Enforce single-threaded execution of SDK contracts
+        if (Interlocked.CompareExchange(ref _executionLock, 1, 0) != 0)
+            throw new InvalidOperationException(
+                "Concurrent SDK contract execution detected. " +
+                "Contract execution must be single-threaded due to static Context/ContractStorage.");
+
         var scope = new BridgeScope();
 
         // Save previous state
@@ -120,6 +135,9 @@ public static class ContractBridge
             Context.EventEmitted = PreviousEventEmitted;
             Context.NativeTransferHandler = PreviousNativeTransferHandler;
             ContractStorage.SetProvider(PreviousProvider);
+
+            // C-5: Release the execution lock
+            Interlocked.Exchange(ref _executionLock, 0);
         }
     }
 }

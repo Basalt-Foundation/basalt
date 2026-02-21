@@ -117,6 +117,16 @@ public sealed class SandboxedContractRuntime : IContractRuntime
 
     public ContractCallResult Execute(byte[] code, byte[] callData, VmExecutionContext ctx)
     {
+        // C-6: Enforce maximum call depth to prevent stack overflow attacks
+        if (ctx.CallDepth >= VmExecutionContext.MaxCallDepth)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = $"Maximum call depth ({VmExecutionContext.MaxCallDepth}) exceeded.",
+            };
+        }
+
         if (code == null || code.Length == 0)
         {
             return new ContractCallResult

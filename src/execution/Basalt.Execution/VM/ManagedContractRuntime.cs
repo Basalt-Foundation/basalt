@@ -93,6 +93,16 @@ public sealed class ManagedContractRuntime : IContractRuntime
 
     public ContractCallResult Execute(byte[] code, byte[] callData, VmExecutionContext ctx)
     {
+        // C-6: Enforce maximum call depth to prevent stack overflow attacks
+        if (ctx.CallDepth >= VmExecutionContext.MaxCallDepth)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = $"Maximum call depth ({VmExecutionContext.MaxCallDepth}) exceeded.",
+            };
+        }
+
         var host = new HostInterface(ctx);
 
         try
