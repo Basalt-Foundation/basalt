@@ -14,20 +14,19 @@ public static class GovernanceCommands
     {
         var description = Helpers.PromptString("Proposal description");
         var votingPeriod = Helpers.PromptUInt64("Voting period (blocks)");
-        var totalStake = Helpers.PromptUInt64("Total stake snapshot");
 
         // Dry-run to get the proposal ID that will be assigned
         var contract = GetContract(provider);
         ulong? proposalId = null;
         var dryRun = await contract.ReadSdkAsync(
             "CreateProposal", gasLimit: 200_000,
-            args: [SdkContractEncoder.EncodeString(description), SdkContractEncoder.EncodeUInt64(votingPeriod), SdkContractEncoder.EncodeUInt64(totalStake)]);
+            args: [SdkContractEncoder.EncodeString(description), SdkContractEncoder.EncodeUInt64(votingPeriod)]);
         if (dryRun.Success && dryRun.ReturnData is { Length: > 0 })
             proposalId = SdkContractEncoder.DecodeUInt64(Convert.FromHexString(dryRun.ReturnData));
 
         var result = await contract.CallSdkAsync(
             account, "CreateProposal", gasLimit: 200_000,
-            args: [SdkContractEncoder.EncodeString(description), SdkContractEncoder.EncodeUInt64(votingPeriod), SdkContractEncoder.EncodeUInt64(totalStake)]);
+            args: [SdkContractEncoder.EncodeString(description), SdkContractEncoder.EncodeUInt64(votingPeriod)]);
         var txInfo = await Helpers.SubmitAndTrackAsync(provider, result, "Create Proposal");
 
         if (txInfo?.BlockNumber is not null)
