@@ -249,11 +249,13 @@ public sealed class KademliaTable : IDisposable
     }
 
     /// <summary>
-    /// NET-H10: Extract the /24 subnet from an IP address.
-    /// For IPv4 addresses, returns the first 3 octets (e.g., "192.168.1").
-    /// For non-IPv4 addresses (hostnames, IPv6), returns the full string.
+    /// NET-H10: Extract the subnet prefix from an IP address.
+    /// For IPv4 addresses, returns the /24 prefix (first 3 octets, e.g., "192.168.1").
+    /// For IPv6 addresses, returns the /48 prefix (first 3 hextets, e.g., "2001:db8:1").
+    /// L-7: IPv6 addresses now extract /48 instead of returning the full address,
+    /// which would treat every IPv6 address as a unique "subnet".
     /// </summary>
-    private static string GetSubnet24(string host)
+    internal static string GetSubnet24(string host)
     {
         if (string.IsNullOrEmpty(host))
             return host;
@@ -276,7 +278,16 @@ public sealed class KademliaTable : IDisposable
                 return string.Concat(parts[0], ".", parts[1], ".", parts[2]);
         }
 
-        // Non-IPv4 (hostname, IPv6, etc.) — use full string as subnet key
+        // L-7: IPv6 /48 prefix — extract first 3 colon-separated groups.
+        // This covers both full and abbreviated IPv6 notation.
+        if (host.Contains(':'))
+        {
+            var colonParts = host.Split(':');
+            if (colonParts.Length >= 3)
+                return string.Concat(colonParts[0], ":", colonParts[1], ":", colonParts[2]);
+        }
+
+        // Hostname — use full string as subnet key
         return host;
     }
 

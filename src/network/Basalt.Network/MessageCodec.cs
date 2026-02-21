@@ -576,12 +576,24 @@ public static class MessageCodec
         var peers = new PeerNodeInfo[count];
         for (int i = 0; i < count; i++)
         {
+            var id = new PeerId(reader.ReadHash256());
+            var host = reader.ReadString();
+            var port = reader.ReadInt32();
+            var publicKey = reader.ReadPublicKey();
+
+            // L-5: Basic host validation — reject empty hosts and unreasonable lengths.
+            // Full DNS/IP validation is deferred to the connection layer.
+            if (string.IsNullOrWhiteSpace(host) || host.Length > 253)
+                throw new InvalidOperationException($"Invalid host in FindNodeResponse: '{host}'");
+            if (port <= 0 || port > 65535)
+                throw new InvalidOperationException($"Invalid port in FindNodeResponse: {port}");
+
             peers[i] = new PeerNodeInfo
             {
-                Id = new PeerId(reader.ReadHash256()),
-                Host = reader.ReadString(),
-                Port = reader.ReadInt32(),
-                PublicKey = reader.ReadPublicKey(),
+                Id = id,
+                Host = host,
+                Port = port,
+                PublicKey = publicKey,
             };
         }
 

@@ -19,7 +19,11 @@ public sealed class GossipService
     // NET-M14: Maximum number of peers to fan out to per broadcast
     private const int MaxFanOut = 8;
 
-    // Track recently seen messages to avoid rebroadcast
+    // Track recently seen messages to avoid rebroadcast.
+    // L-3: GossipService and EpisubService each maintain independent seen-message caches
+    // with different TTLs (60s vs 120s) and capacities (100K vs 200K). Sharing a single
+    // cache would couple their lifecycles and complicate independent tuning. The memory
+    // overhead of separate caches is acceptable for the isolation benefit.
     private readonly ConcurrentDictionary<Hash256, long> _seenMessages = new();
     private const int MaxSeenMessages = 100_000;
     private const long SeenMessageTtlMs = 60_000; // 1 minute

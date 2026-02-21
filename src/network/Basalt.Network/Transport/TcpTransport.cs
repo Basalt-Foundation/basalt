@@ -178,6 +178,12 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>
     /// Broadcasts data to all connected peers, optionally excluding one.
     /// NET-M07: Snapshots connections before iteration to avoid concurrent modification.
+    /// <para>
+    /// L-1: Sends are sequential to limit burst fan-out and preserve back-pressure.
+    /// Parallel fan-out (Task.WhenAll) would reduce latency at the cost of burst
+    /// bandwidth and harder failure isolation. Sequential is acceptable given the
+    /// typical peer count (&lt;50) and sub-millisecond per-peer send overhead on LAN.
+    /// </para>
     /// </summary>
     public async Task BroadcastAsync(byte[] data, PeerId? exclude = null)
     {

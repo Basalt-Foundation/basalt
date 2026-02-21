@@ -34,6 +34,11 @@ public sealed class NodeLookup
     /// <summary>
     /// Perform an iterative lookup for the K closest nodes to target.
     /// NET-H12: Bounded to MaxLookupRounds iterations with capped candidate set.
+    /// <para>
+    /// L-4: Peer queries within each round are sequential. The alpha peers per round
+    /// could be queried concurrently (Task.WhenAll) for lower lookup latency. Current
+    /// synchronous approach is simpler and sufficient for the typical alpha=3 fan-out.
+    /// </para>
     /// </summary>
     public List<PeerInfo> Lookup(PeerId target)
     {
