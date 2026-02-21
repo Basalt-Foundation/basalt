@@ -230,6 +230,8 @@ public sealed class WebSocketBlockData
     [JsonPropertyName("transactionCount")] public int TransactionCount { get; set; }
 }
 
+// L-5: Register all WebSocket message types for AOT-safe serialization
 [JsonSerializable(typeof(WebSocketBlockMessage))]
 [JsonSerializable(typeof(WebSocketBlockData))]
+[JsonSerializable(typeof(WebSocketBlockMessage[]))]
 public partial class WsJsonContext : JsonSerializerContext;
