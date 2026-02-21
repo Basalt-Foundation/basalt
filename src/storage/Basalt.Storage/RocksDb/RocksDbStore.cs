@@ -15,6 +15,12 @@ public sealed class RocksDbStore : IDisposable
     /// <summary>
     /// Column family names.
     /// </summary>
+    /// <remarks>
+    /// <b>M-07:</b> Future CFs to consider for query efficiency:
+    /// <c>tx_index</c> (tx hash → block hash + index) for O(1) transaction-by-hash lookups,
+    /// and <c>logs</c> (contract + event signature + topic → receipt) for efficient event log queries.
+    /// Currently, tx lookups scan blocks and log queries deserialize full receipts.
+    /// </remarks>
     public static class CF
     {
         public const string State = "state";
@@ -86,6 +92,15 @@ public sealed class RocksDbStore : IDisposable
         _db.Remove(key, _columnFamilies[columnFamily]);
     }
 
+    /// <summary>
+    /// Check if a key exists in the given column family.
+    /// </summary>
+    /// <remarks>
+    /// <b>M-02:</b> This performs a full value read because the RocksDbSharp bindings
+    /// do not expose RocksDB's <c>KeyMayExist</c> or zero-copy existence check.
+    /// For large values (e.g., raw blocks), this incurs unnecessary I/O and allocation.
+    /// Consider upgrading RocksDbSharp or using a native interop call if this becomes a bottleneck.
+    /// </remarks>
     public bool HasKey(string columnFamily, byte[] key)
     {
         return _db.Get(key, _columnFamilies[columnFamily]) != null;

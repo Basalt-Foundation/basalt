@@ -217,6 +217,11 @@ public sealed class BlockData
     public byte[] ExtraData { get; init; } = [];
     public Hash256[] TransactionHashes { get; init; } = [];
 
+    /// <remarks>
+    /// <para><b>L-05:</b> The size calculation assumes <see cref="Basalt.Codec.BasaltWriter.WriteBytes"/>
+    /// uses a 4-byte fixed-length prefix (matching <c>WriteUInt32</c> + raw bytes). If the codec
+    /// switches to varint length encoding, the pre-allocated buffer size must be updated.</para>
+    /// </remarks>
     public byte[] Encode()
     {
         int size = 8 + Hash256.Size * 6 + 8 + Address.Size + 4 + 8 + 8 + 32 + 4 +
