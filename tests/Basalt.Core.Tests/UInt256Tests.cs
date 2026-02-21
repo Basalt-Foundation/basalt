@@ -569,4 +569,81 @@ public class UInt256Tests
         var addr = new Address(bytes);
         addr.IsSystemContract.Should().BeFalse();
     }
+
+    // ===== AUDIT C-03: Unaligned memory access roundtrip tests =====
+
+    [Fact]
+    public void Signature_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[Signature.Size + 3];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(3, Signature.Size);
+        var sig = new Signature(span);
+        sig.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void PublicKey_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[PublicKey.Size + 3];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(3, PublicKey.Size);
+        var key = new PublicKey(span);
+        key.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void BlsSignature_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[BlsSignature.Size + 5];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(5, BlsSignature.Size);
+        var sig = new BlsSignature(span);
+        sig.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void BlsPublicKey_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[BlsPublicKey.Size + 7];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(7, BlsPublicKey.Size);
+        var key = new BlsPublicKey(span);
+        key.ToArray().Should().Equal(span.ToArray());
+    }
+
+    // ===== AUDIT H-09: GetHashCode distribution tests =====
+
+    [Fact]
+    public void Signature_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[Signature.Size];
+        var bytes2 = new byte[Signature.Size];
+        bytes1[56] = 0x01; // differs only in _v7
+        var sig1 = new Signature(bytes1);
+        var sig2 = new Signature(bytes2);
+        sig1.GetHashCode().Should().NotBe(sig2.GetHashCode());
+    }
+
+    [Fact]
+    public void BlsSignature_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[BlsSignature.Size];
+        var bytes2 = new byte[BlsSignature.Size];
+        bytes1[88] = 0x01; // differs only in _v11
+        var sig1 = new BlsSignature(bytes1);
+        var sig2 = new BlsSignature(bytes2);
+        sig1.GetHashCode().Should().NotBe(sig2.GetHashCode());
+    }
+
+    [Fact]
+    public void BlsPublicKey_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[BlsPublicKey.Size];
+        var bytes2 = new byte[BlsPublicKey.Size];
+        bytes1[40] = 0x01; // differs only in _v5
+        var key1 = new BlsPublicKey(bytes1);
+        var key2 = new BlsPublicKey(bytes2);
+        key1.GetHashCode().Should().NotBe(key2.GetHashCode());
+    }
 }

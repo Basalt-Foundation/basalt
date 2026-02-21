@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Basalt.Core;
@@ -20,9 +21,15 @@ public readonly struct Signature : IEquatable<Signature>
         if (bytes.Length != Size)
             throw new ArgumentException($"Signature requires exactly {Size} bytes, got {bytes.Length}.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(bytes);
-        _v0 = ulongs[0]; _v1 = ulongs[1]; _v2 = ulongs[2]; _v3 = ulongs[3];
-        _v4 = ulongs[4]; _v5 = ulongs[5]; _v6 = ulongs[6]; _v7 = ulongs[7];
+        ref byte src = ref MemoryMarshal.GetReference(bytes);
+        _v0 = Unsafe.ReadUnaligned<ulong>(ref src);
+        _v1 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 8));
+        _v2 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 16));
+        _v3 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 24));
+        _v4 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 32));
+        _v5 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 40));
+        _v6 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 48));
+        _v7 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 56));
     }
 
     public bool IsEmpty => _v0 == 0 && _v1 == 0 && _v2 == 0 && _v3 == 0 &&
@@ -33,9 +40,15 @@ public readonly struct Signature : IEquatable<Signature>
         if (destination.Length < Size)
             throw new ArgumentException($"Destination must be at least {Size} bytes.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(destination);
-        ulongs[0] = _v0; ulongs[1] = _v1; ulongs[2] = _v2; ulongs[3] = _v3;
-        ulongs[4] = _v4; ulongs[5] = _v5; ulongs[6] = _v6; ulongs[7] = _v7;
+        ref byte dst = ref MemoryMarshal.GetReference(destination);
+        Unsafe.WriteUnaligned(ref dst, _v0);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 8), _v1);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 16), _v2);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 24), _v3);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 32), _v4);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 40), _v5);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 48), _v6);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 56), _v7);
     }
 
     public byte[] ToArray()
@@ -52,8 +65,12 @@ public readonly struct Signature : IEquatable<Signature>
     public override bool Equals([NotNullWhen(true)] object? obj) =>
         obj is Signature other && Equals(other);
 
-    public override int GetHashCode() =>
-        HashCode.Combine(_v0, _v1, _v2, _v3);
+    public override int GetHashCode()
+    {
+        var h1 = HashCode.Combine(_v0, _v1, _v2, _v3);
+        var h2 = HashCode.Combine(_v4, _v5, _v6, _v7);
+        return HashCode.Combine(h1, h2);
+    }
 
     public static bool operator ==(Signature left, Signature right) => left.Equals(right);
     public static bool operator !=(Signature left, Signature right) => !left.Equals(right);
@@ -83,8 +100,11 @@ public readonly struct PublicKey : IEquatable<PublicKey>
         if (bytes.Length != Size)
             throw new ArgumentException($"PublicKey requires exactly {Size} bytes, got {bytes.Length}.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(bytes);
-        _v0 = ulongs[0]; _v1 = ulongs[1]; _v2 = ulongs[2]; _v3 = ulongs[3];
+        ref byte src = ref MemoryMarshal.GetReference(bytes);
+        _v0 = Unsafe.ReadUnaligned<ulong>(ref src);
+        _v1 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 8));
+        _v2 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 16));
+        _v3 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 24));
     }
 
     public bool IsEmpty => _v0 == 0 && _v1 == 0 && _v2 == 0 && _v3 == 0;
@@ -94,8 +114,11 @@ public readonly struct PublicKey : IEquatable<PublicKey>
         if (destination.Length < Size)
             throw new ArgumentException($"Destination must be at least {Size} bytes.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(destination);
-        ulongs[0] = _v0; ulongs[1] = _v1; ulongs[2] = _v2; ulongs[3] = _v3;
+        ref byte dst = ref MemoryMarshal.GetReference(destination);
+        Unsafe.WriteUnaligned(ref dst, _v0);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 8), _v1);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 16), _v2);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 24), _v3);
     }
 
     public byte[] ToArray()
@@ -142,10 +165,19 @@ public readonly struct BlsSignature : IEquatable<BlsSignature>
         if (bytes.Length != Size)
             throw new ArgumentException($"BlsSignature requires exactly {Size} bytes, got {bytes.Length}.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(bytes);
-        _v0 = ulongs[0]; _v1 = ulongs[1]; _v2 = ulongs[2]; _v3 = ulongs[3];
-        _v4 = ulongs[4]; _v5 = ulongs[5]; _v6 = ulongs[6]; _v7 = ulongs[7];
-        _v8 = ulongs[8]; _v9 = ulongs[9]; _v10 = ulongs[10]; _v11 = ulongs[11];
+        ref byte src = ref MemoryMarshal.GetReference(bytes);
+        _v0 = Unsafe.ReadUnaligned<ulong>(ref src);
+        _v1 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 8));
+        _v2 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 16));
+        _v3 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 24));
+        _v4 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 32));
+        _v5 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 40));
+        _v6 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 48));
+        _v7 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 56));
+        _v8 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 64));
+        _v9 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 72));
+        _v10 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 80));
+        _v11 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 88));
     }
 
     public bool IsEmpty => _v0 == 0 && _v1 == 0 && _v2 == 0 && _v3 == 0 &&
@@ -157,10 +189,19 @@ public readonly struct BlsSignature : IEquatable<BlsSignature>
         if (destination.Length < Size)
             throw new ArgumentException($"Destination must be at least {Size} bytes.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(destination);
-        ulongs[0] = _v0; ulongs[1] = _v1; ulongs[2] = _v2; ulongs[3] = _v3;
-        ulongs[4] = _v4; ulongs[5] = _v5; ulongs[6] = _v6; ulongs[7] = _v7;
-        ulongs[8] = _v8; ulongs[9] = _v9; ulongs[10] = _v10; ulongs[11] = _v11;
+        ref byte dst = ref MemoryMarshal.GetReference(destination);
+        Unsafe.WriteUnaligned(ref dst, _v0);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 8), _v1);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 16), _v2);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 24), _v3);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 32), _v4);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 40), _v5);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 48), _v6);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 56), _v7);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 64), _v8);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 72), _v9);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 80), _v10);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 88), _v11);
     }
 
     public byte[] ToArray()
@@ -178,8 +219,13 @@ public readonly struct BlsSignature : IEquatable<BlsSignature>
     public override bool Equals([NotNullWhen(true)] object? obj) =>
         obj is BlsSignature other && Equals(other);
 
-    public override int GetHashCode() =>
-        HashCode.Combine(_v0, _v1, _v2, _v3);
+    public override int GetHashCode()
+    {
+        var h1 = HashCode.Combine(_v0, _v1, _v2, _v3);
+        var h2 = HashCode.Combine(_v4, _v5, _v6, _v7);
+        var h3 = HashCode.Combine(_v8, _v9, _v10, _v11);
+        return HashCode.Combine(h1, h2, h3);
+    }
 
     public static bool operator ==(BlsSignature left, BlsSignature right) => left.Equals(right);
     public static bool operator !=(BlsSignature left, BlsSignature right) => !left.Equals(right);
@@ -209,9 +255,13 @@ public readonly struct BlsPublicKey : IEquatable<BlsPublicKey>
         if (bytes.Length != Size)
             throw new ArgumentException($"BlsPublicKey requires exactly {Size} bytes, got {bytes.Length}.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(bytes);
-        _v0 = ulongs[0]; _v1 = ulongs[1]; _v2 = ulongs[2];
-        _v3 = ulongs[3]; _v4 = ulongs[4]; _v5 = ulongs[5];
+        ref byte src = ref MemoryMarshal.GetReference(bytes);
+        _v0 = Unsafe.ReadUnaligned<ulong>(ref src);
+        _v1 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 8));
+        _v2 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 16));
+        _v3 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 24));
+        _v4 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 32));
+        _v5 = Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref src, 40));
     }
 
     public bool IsEmpty => _v0 == 0 && _v1 == 0 && _v2 == 0 &&
@@ -222,9 +272,13 @@ public readonly struct BlsPublicKey : IEquatable<BlsPublicKey>
         if (destination.Length < Size)
             throw new ArgumentException($"Destination must be at least {Size} bytes.");
 
-        var ulongs = MemoryMarshal.Cast<byte, ulong>(destination);
-        ulongs[0] = _v0; ulongs[1] = _v1; ulongs[2] = _v2;
-        ulongs[3] = _v3; ulongs[4] = _v4; ulongs[5] = _v5;
+        ref byte dst = ref MemoryMarshal.GetReference(destination);
+        Unsafe.WriteUnaligned(ref dst, _v0);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 8), _v1);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 16), _v2);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 24), _v3);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 32), _v4);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref dst, 40), _v5);
     }
 
     public byte[] ToArray()
@@ -241,8 +295,12 @@ public readonly struct BlsPublicKey : IEquatable<BlsPublicKey>
     public override bool Equals([NotNullWhen(true)] object? obj) =>
         obj is BlsPublicKey other && Equals(other);
 
-    public override int GetHashCode() =>
-        HashCode.Combine(_v0, _v1, _v2);
+    public override int GetHashCode()
+    {
+        var h1 = HashCode.Combine(_v0, _v1, _v2, _v3);
+        var h2 = HashCode.Combine(_v4, _v5);
+        return HashCode.Combine(h1, h2);
+    }
 
     public static bool operator ==(BlsPublicKey left, BlsPublicKey right) => left.Equals(right);
     public static bool operator !=(BlsPublicKey left, BlsPublicKey right) => !left.Equals(right);
