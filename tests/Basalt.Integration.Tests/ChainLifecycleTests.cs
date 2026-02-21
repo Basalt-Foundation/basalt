@@ -95,13 +95,15 @@ public class ChainLifecycleTests
     {
         var genesis = _chainManager.CreateGenesisBlock(_params);
 
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
         var block1 = new Block
         {
             Header = new BlockHeader
             {
                 Number = 1,
                 ParentHash = genesis.Hash,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Timestamp = now + 1,
                 ChainId = _params.ChainId,
                 GasLimit = _params.BlockGasLimit,
             },
@@ -117,7 +119,7 @@ public class ChainLifecycleTests
             {
                 Number = 2,
                 ParentHash = block1.Hash,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Timestamp = now + 2,
                 ChainId = _params.ChainId,
                 GasLimit = _params.BlockGasLimit,
             },
