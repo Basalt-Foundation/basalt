@@ -6,11 +6,18 @@ namespace Basalt.Compliance;
 /// </summary>
 public sealed class SanctionsList
 {
+    /// <summary>Maximum audit log entries before oldest are evicted (M-05).</summary>
+    public const int MaxAuditLogSize = 100_000;
+
     private readonly HashSet<string> _sanctioned = new();
     private readonly List<ComplianceEvent> _auditLog = new();
     private readonly object _lock = new();
     private readonly string? _governanceAddress;
 
+    /// <summary>
+    /// M-01: Parameterless constructor — for testing only.
+    /// In production, use the governance-aware constructor to enforce access control.
+    /// </summary>
     public SanctionsList() { }
 
     /// <summary>
@@ -34,7 +41,7 @@ public sealed class SanctionsList
                 return false;
 
             _sanctioned.Add(ToHex(address));
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.AddressBlocked,
                 Subject = address,
@@ -58,7 +65,7 @@ public sealed class SanctionsList
                 return false;
 
             _sanctioned.Remove(ToHex(address));
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.AddressUnblocked,
                 Subject = address,
@@ -86,6 +93,13 @@ public sealed class SanctionsList
     {
         lock (_lock)
             return _auditLog.ToList();
+    }
+
+    private void AddAuditEvent(ComplianceEvent evt)
+    {
+        if (_auditLog.Count >= MaxAuditLogSize)
+            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
+        _auditLog.Add(evt);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);

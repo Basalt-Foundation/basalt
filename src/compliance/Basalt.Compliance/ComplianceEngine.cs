@@ -14,6 +14,9 @@ namespace Basalt.Compliance;
 /// </summary>
 public sealed class ComplianceEngine : IComplianceVerifier
 {
+    /// <summary>Maximum audit log entries before oldest are evicted (M-05).</summary>
+    public const int MaxAuditLogSize = 100_000;
+
     private readonly IdentityRegistry _identityRegistry;
     private readonly SanctionsList _sanctionsList;
     private readonly ZkComplianceVerifier? _zkVerifier;
@@ -126,7 +129,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
 
             policy.Issuer ??= caller;
             _policies[ToHex(tokenAddress)] = policy;
-            _auditLog.Add(new ComplianceEvent
+            AddAuditEvent(new ComplianceEvent
             {
                 EventType = ComplianceEventType.PolicyChanged,
                 Subject = tokenAddress,
@@ -187,7 +190,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
             // Step 0: Paused check
             if (policy.Paused)
             {
-                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TOKEN_PAUSED");
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TOKEN_PAUSED", currentTimestamp);
                 return ComplianceCheckResult.Fail(ComplianceErrorCode.Paused, "Token transfers are paused", "PAUSED");
             }
 
@@ -196,7 +199,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
             {
                 if (!_identityRegistry.HasValidAttestation(sender, policy.RequiredSenderKycLevel, currentTimestamp))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SENDER_KYC");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SENDER_KYC", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.KycMissing,
                         $"Sender lacks required KYC level {policy.RequiredSenderKycLevel}", "KYC_SENDER");
                 }
@@ -207,7 +210,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
             {
                 if (!_identityRegistry.HasValidAttestation(receiver, policy.RequiredReceiverKycLevel, currentTimestamp))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "RECEIVER_KYC");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "RECEIVER_KYC", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.KycMissing,
                         $"Receiver lacks required KYC level {policy.RequiredReceiverKycLevel}", "KYC_RECEIVER");
                 }
@@ -218,14 +221,14 @@ public sealed class ComplianceEngine : IComplianceVerifier
             {
                 if (_sanctionsList.IsSanctioned(sender))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_SENDER");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_SENDER", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.Sanctioned,
                         "Sender is on sanctions list", "SANCTIONS_SENDER");
                 }
 
                 if (_sanctionsList.IsSanctioned(receiver))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_RECEIVER");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "SANCTIONS_RECEIVER", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.Sanctioned,
                         "Receiver is on sanctions list", "SANCTIONS_RECEIVER");
                 }
@@ -237,7 +240,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
                 var senderCountry = _identityRegistry.GetCountryCode(sender, currentTimestamp);
                 if (senderCountry > 0 && policy.BlockedCountries.Contains(senderCountry))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_SENDER");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_SENDER", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.GeoRestricted,
                         $"Sender country {senderCountry} is geo-restricted", "GEO_SENDER");
                 }
@@ -245,7 +248,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
                 var receiverCountry = _identityRegistry.GetCountryCode(receiver, currentTimestamp);
                 if (receiverCountry > 0 && policy.BlockedCountries.Contains(receiverCountry))
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_RECEIVER");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_RECEIVER", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.GeoRestricted,
                         $"Receiver country {receiverCountry} is geo-restricted", "GEO_RECEIVER");
                 }
@@ -257,7 +260,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
                 if (receiverCurrentBalance > policy.MaxHoldingAmount
                     || amount > policy.MaxHoldingAmount - receiverCurrentBalance)
                 {
-                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "HOLDING_LIMIT");
+                    LogCheckResult(tokenAddress, sender, receiver, amount, false, "HOLDING_LIMIT", currentTimestamp);
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.HoldingLimit,
                         $"Transfer would exceed holding limit of {policy.MaxHoldingAmount}", "HOLDING_LIMIT");
                 }
@@ -266,7 +269,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
             // Step 6: Lock-up check
             if (policy.LockupEndTimestamp > 0 && currentTimestamp < policy.LockupEndTimestamp)
             {
-                LogCheckResult(tokenAddress, sender, receiver, amount, false, "LOCKUP");
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "LOCKUP", currentTimestamp);
                 return ComplianceCheckResult.Fail(ComplianceErrorCode.Lockup,
                     $"Tokens locked until {policy.LockupEndTimestamp}", "LOCKUP");
             }
@@ -274,13 +277,13 @@ public sealed class ComplianceEngine : IComplianceVerifier
             // Step 7: Travel Rule
             if (policy.TravelRuleThreshold > 0 && amount >= policy.TravelRuleThreshold && !hasTravelRuleData)
             {
-                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TRAVEL_RULE");
+                LogCheckResult(tokenAddress, sender, receiver, amount, false, "TRAVEL_RULE", currentTimestamp);
                 return ComplianceCheckResult.Fail(ComplianceErrorCode.TravelRuleMissing,
                     $"Travel Rule data required for transfers >= {policy.TravelRuleThreshold}", "TRAVEL_RULE");
             }
 
             // All checks passed
-            LogCheckResult(tokenAddress, sender, receiver, amount, true, "PASS");
+            LogCheckResult(tokenAddress, sender, receiver, amount, true, "PASS", currentTimestamp);
             return ComplianceCheckResult.Success;
         }
     }
@@ -303,18 +306,26 @@ public sealed class ComplianceEngine : IComplianceVerifier
             return _auditLog.Where(e => e.EventType == eventType).ToList();
     }
 
-    private void LogCheckResult(byte[] tokenAddress, byte[] sender, byte[] receiver, ulong amount, bool passed, string ruleId)
+    private void LogCheckResult(byte[] tokenAddress, byte[] sender, byte[] receiver, ulong amount, bool passed, string ruleId, long timestamp)
     {
-        _auditLog.Add(new ComplianceEvent
+        AddAuditEvent(new ComplianceEvent
         {
             EventType = passed ? ComplianceEventType.TransferApproved : ComplianceEventType.TransferBlocked,
             Subject = sender,
             Receiver = receiver,
             TokenAddress = tokenAddress,
             Amount = amount,
-            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            Timestamp = timestamp,
             Details = $"Rule={ruleId}, Amount={amount}",
         });
+    }
+
+    /// <summary>M-05: Evicts oldest entries when audit log exceeds MaxAuditLogSize.</summary>
+    private void AddAuditEvent(ComplianceEvent evt)
+    {
+        if (_auditLog.Count >= MaxAuditLogSize)
+            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
+        _auditLog.Add(evt);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);
