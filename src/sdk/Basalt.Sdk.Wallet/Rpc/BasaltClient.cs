@@ -136,9 +136,13 @@ public sealed class BasaltClient : IBasaltClient
             Value = signedTx.Value.ToString(),
             GasLimit = signedTx.GasLimit,
             GasPrice = signedTx.GasPrice.ToString(),
+            MaxFeePerGas = signedTx.MaxFeePerGas.ToString(),
+            MaxPriorityFeePerGas = signedTx.MaxPriorityFeePerGas.ToString(),
             Data = signedTx.Data.Length > 0
                 ? "0x" + Convert.ToHexString(signedTx.Data).ToLowerInvariant()
                 : "",
+            // Note: ComplianceProofs require specialized serialization (ComplianceProof[])
+            // and are passed through transaction binary encoding, not the REST DTO.
             Priority = signedTx.Priority,
             ChainId = signedTx.ChainId,
             Signature = signedTx.Signature.ToString(),

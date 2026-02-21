@@ -16,11 +16,12 @@ public class BST721TokenTests : IDisposable
 
     public BST721TokenTests()
     {
-        _token = new BST721Token("TestNFT", "TNFT");
         _owner = BasaltTestHost.CreateAddress(1);
         _alice = BasaltTestHost.CreateAddress(2);
         _bob = BasaltTestHost.CreateAddress(3);
         _host.SetCaller(_owner);
+        // Token must be created AFTER SetCaller so _contractAdmin captures the owner
+        _token = new BST721Token("TestNFT", "TNFT");
     }
 
     [Fact]

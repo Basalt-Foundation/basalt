@@ -56,6 +56,13 @@ public sealed class InMemoryStorageProvider : IStorageProvider
 /// Delegates to an IStorageProvider. Default: InMemoryStorageProvider.
 /// Call SetProvider() to wire production (on-chain) or custom storage.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread safety (C-2):</b> The _provider field is a single shared mutable slot.
+/// The execution layer serializes all contract execution under a Monitor lock
+/// (TransactionExecutor), and ContractBridge.Setup() swaps the provider per execution
+/// scope. If parallel execution is introduced, this must be migrated to AsyncLocal
+/// or a scoped pattern.</para>
+/// </remarks>
 public static class ContractStorage
 {
     private static readonly InMemoryStorageProvider DefaultProvider = new();
@@ -164,7 +171,13 @@ public sealed class StorageList<T> where T : struct
 
     public int Count => ContractStorage.Get<int>(CountKey);
 
-    public T Get(int index) => ContractStorage.Get<T>(ItemKey(index));
+    // M-2: Bounds-checked access
+    public T Get(int index)
+    {
+        if (index < 0 || index >= Count)
+            throw new ContractRevertException("StorageList: index out of bounds");
+        return ContractStorage.Get<T>(ItemKey(index));
+    }
 
     public void Add(T value)
     {
@@ -173,5 +186,11 @@ public sealed class StorageList<T> where T : struct
         ContractStorage.Set(CountKey, count + 1);
     }
 
-    public void Set(int index, T value) => ContractStorage.Set(ItemKey(index), value);
+    // M-2: Bounds-checked set
+    public void Set(int index, T value)
+    {
+        if (index < 0 || index >= Count)
+            throw new ContractRevertException("StorageList: index out of bounds");
+        ContractStorage.Set(ItemKey(index), value);
+    }
 }

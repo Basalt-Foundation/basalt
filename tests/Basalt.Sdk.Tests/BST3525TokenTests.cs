@@ -16,10 +16,12 @@ public class BST3525TokenTests : IDisposable
 
     public BST3525TokenTests()
     {
-        _token = new BST3525Token("SemiFungible", "SFT", 18);
         _alice = BasaltTestHost.CreateAddress(1);
         _bob = BasaltTestHost.CreateAddress(2);
         _charlie = BasaltTestHost.CreateAddress(3);
+        // Set caller before token creation so _alice becomes the contract owner
+        _host.SetCaller(_alice);
+        _token = new BST3525Token("SemiFungible", "SFT", 18);
     }
 
     // --- 1. Constructor: Name, Symbol, ValueDecimals ---

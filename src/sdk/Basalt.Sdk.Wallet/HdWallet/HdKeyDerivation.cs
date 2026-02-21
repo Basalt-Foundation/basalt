@@ -59,14 +59,26 @@ public static class HdKeyDerivation
     /// <param name="seed">64-byte BIP-39 seed.</param>
     /// <param name="path">Derivation path (all levels must be hardened).</param>
     /// <returns>32-byte Ed25519 private key.</returns>
+    /// <remarks>
+    /// H-15: Intermediate key and chain code arrays are zeroed after each derivation step
+    /// to minimize the window for memory forensics extraction.
+    /// </remarks>
     public static byte[] DerivePath(ReadOnlySpan<byte> seed, DerivationPath path)
     {
         var (key, chainCode) = DeriveMasterKey(seed);
 
         foreach (var index in path.Indices)
         {
+            var previousKey = key;
+            var previousChainCode = chainCode;
             (key, chainCode) = DeriveChild(key, chainCode, index);
+            // H-15: Zero previous intermediate key material
+            CryptographicOperations.ZeroMemory(previousKey);
+            CryptographicOperations.ZeroMemory(previousChainCode);
         }
+
+        // Zero the final chain code — caller only needs the key
+        CryptographicOperations.ZeroMemory(chainCode);
 
         return key;
     }

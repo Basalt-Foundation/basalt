@@ -69,6 +69,18 @@ public sealed class TransactionRequest
     public uint ChainId { get; set; }
 
     /// <summary>
+    /// The maximum fee per gas (EIP-1559) as a decimal string (UInt256).
+    /// </summary>
+    [JsonPropertyName("maxFeePerGas")]
+    public string MaxFeePerGas { get; set; } = "0";
+
+    /// <summary>
+    /// The maximum priority fee per gas (EIP-1559) as a decimal string (UInt256).
+    /// </summary>
+    [JsonPropertyName("maxPriorityFeePerGas")]
+    public string MaxPriorityFeePerGas { get; set; } = "0";
+
+    /// <summary>
     /// The Ed25519 signature in "0x..." hex format.
     /// </summary>
     [JsonPropertyName("signature")]

@@ -6,15 +6,19 @@ namespace Basalt.Sdk.Wallet.Rpc;
 /// Tracks and manages transaction nonces for one or more accounts.
 /// Fetches the on-chain nonce on first use and then tracks locally,
 /// avoiding redundant RPC calls for rapid sequential transactions.
+/// Thread-safe for concurrent access per address via per-address locking. (H-14)
 /// </summary>
 public sealed class NonceManager
 {
     private readonly ConcurrentDictionary<string, ulong> _nonces = new(StringComparer.OrdinalIgnoreCase);
+    // H-14: Per-address locks to prevent race conditions on concurrent GetNextNonceAsync calls
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Gets the next nonce to use for the given address.
     /// On first call for an address, fetches the current nonce from the chain.
     /// Subsequent calls return the locally tracked (incremented) value.
+    /// Thread-safe: concurrent calls for the same address are serialized. (H-14)
     /// </summary>
     /// <param name="address">The account address in "0x..." hex format.</param>
     /// <param name="client">The Basalt client used to query the on-chain nonce.</param>
@@ -22,14 +26,23 @@ public sealed class NonceManager
     /// <returns>The nonce to use for the next transaction from this address.</returns>
     public async Task<ulong> GetNextNonceAsync(string address, IBasaltClient client, CancellationToken ct = default)
     {
-        if (_nonces.TryGetValue(address, out var localNonce))
-            return localNonce;
+        var semaphore = _locks.GetOrAdd(address, static _ => new SemaphoreSlim(1, 1));
+        await semaphore.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_nonces.TryGetValue(address, out var localNonce))
+                return localNonce;
 
-        // Fetch from chain — store the value we return; IncrementNonce will advance it after submission
-        var account = await client.GetAccountAsync(address, ct).ConfigureAwait(false);
-        var chainNonce = account?.Nonce ?? 0;
-        _nonces[address] = chainNonce;
-        return chainNonce;
+            // Fetch from chain — store the value we return; IncrementNonce will advance it after submission
+            var account = await client.GetAccountAsync(address, ct).ConfigureAwait(false);
+            var chainNonce = account?.Nonce ?? 0;
+            _nonces[address] = chainNonce;
+            return chainNonce;
+        }
+        finally
+        {
+            semaphore.Release();
+        }
     }
 
     /// <summary>

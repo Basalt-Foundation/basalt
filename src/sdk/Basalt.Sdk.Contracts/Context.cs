@@ -6,6 +6,13 @@ namespace Basalt.Sdk.Contracts;
 /// Provides access to blockchain context within a smart contract.
 /// These properties are populated by the runtime before contract execution.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread safety (C-1):</b> All properties are plain static fields with no thread isolation.
+/// The execution layer serializes all contract execution under a Monitor lock
+/// (TransactionExecutor), ensuring only one contract executes at a time.
+/// If parallel execution is introduced in the future, these fields must be migrated
+/// to AsyncLocal&lt;T&gt; or a scoped context object.</para>
+/// </remarks>
 public static class Context
 {
     /// <summary>
@@ -124,28 +131,40 @@ public static class Context
         Require(!ReentrancyGuard.Contains(targetKey), "Reentrancy detected");
         Require(CrossContractCallHandler != null, "Cross-contract calls not available");
 
-        // Save caller context
+        // H-3: Save full caller context (not just Caller/Self/CallDepth)
         var previousCaller = Caller;
         var previousSelf = Self;
         var previousDepth = CallDepth;
+        var previousTxValue = TxValue;
+        var previousEventEmitted = EventEmitted;
+        var previousNativeTransferHandler = NativeTransferHandler;
 
         try
         {
+            // H-2: Guard the calling contract's own address against re-entry
+            var selfKey = Convert.ToHexString(Self);
+            ReentrancyGuard.Add(selfKey);
             ReentrancyGuard.Add(targetKey);
             CallDepth++;
             Caller = Self; // The calling contract becomes the caller
             Self = targetAddress;
+            TxValue = UInt256.Zero; // Cross-contract calls don't forward value by default
 
             var result = CrossContractCallHandler!(targetAddress, methodName, args);
             return result is T typed ? typed : default!;
         }
         finally
         {
-            // Restore caller context
+            // H-3: Restore full caller context
             ReentrancyGuard.Remove(targetKey);
+            var selfKey = Convert.ToHexString(previousSelf);
+            ReentrancyGuard.Remove(selfKey);
             CallDepth = previousDepth;
             Caller = previousCaller;
             Self = previousSelf;
+            TxValue = previousTxValue;
+            EventEmitted = previousEventEmitted;
+            NativeTransferHandler = previousNativeTransferHandler;
         }
     }
 

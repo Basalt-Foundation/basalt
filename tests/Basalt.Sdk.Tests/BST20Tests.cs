@@ -129,16 +129,15 @@ public class BST20Tests : IDisposable
     }
 
     [Fact]
-    public void Transfer_ZeroAmount_Succeeds()
+    public void Transfer_ZeroAmount_Reverts()
     {
         _host.SetCaller(_owner);
         _host.Call(() => _token.MintPublic(_alice, 100));
 
         _host.SetCaller(_alice);
-        _host.Call(() => _token.Transfer(_bob, 0)).Should().BeTrue();
-
-        _host.Call(() => _token.BalanceOf(_alice)).Should().Be(100);
-        _host.Call(() => _token.BalanceOf(_bob)).Should().Be(0);
+        // L-1: Zero-amount transfers are now rejected
+        var msg = _host.ExpectRevert(() => _token.Transfer(_bob, 0));
+        msg.Should().Contain("zero amount");
     }
 
     [Fact]

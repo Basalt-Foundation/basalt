@@ -88,12 +88,12 @@ public partial class Governance
     /// Create a text-only (signaling) proposal.
     /// </summary>
     [BasaltEntrypoint]
-    public ulong CreateProposal(string description, ulong votingPeriodBlocks, UInt256 totalStake)
+    public ulong CreateProposal(string description, ulong votingPeriodBlocks)
     {
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
         Context.Require(votingPeriodBlocks > 0, "GOV: voting period must be > 0");
 
-        return CreateProposalInternal(description, votingPeriodBlocks, totalStake, "text", [], "");
+        return CreateProposalInternal(description, votingPeriodBlocks, "text", [], "");
     }
 
     /// <summary>
@@ -101,7 +101,7 @@ public partial class Governance
     /// </summary>
     [BasaltEntrypoint]
     public ulong CreateExecutableProposal(
-        string description, ulong votingPeriodBlocks, UInt256 totalStake,
+        string description, ulong votingPeriodBlocks,
         byte[] targetContract, string methodName)
     {
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
@@ -109,7 +109,7 @@ public partial class Governance
         Context.Require(targetContract.Length > 0, "GOV: target required");
         Context.Require(!string.IsNullOrEmpty(methodName), "GOV: method required");
 
-        return CreateProposalInternal(description, votingPeriodBlocks, totalStake, "executable", targetContract, methodName);
+        return CreateProposalInternal(description, votingPeriodBlocks, "executable", targetContract, methodName);
     }
 
     /// <summary>
@@ -166,6 +166,10 @@ public partial class Governance
         var callerHex = Convert.ToHexString(Context.Caller);
         var delegateeHex = Convert.ToHexString(delegatee);
         Context.Require(callerHex != delegateeHex, "GOV: cannot delegate to self");
+
+        // H-11: Enforce single-hop delegation — delegatee must not have delegated themselves
+        var delegateeDelegatee = _delegates.Get(delegateeHex);
+        Context.Require(string.IsNullOrEmpty(delegateeDelegatee), "GOV: delegatee has already delegated (no multi-hop)");
 
         // Remove existing delegation if any
         UndelegateInternal(callerHex);
@@ -340,9 +344,21 @@ public partial class Governance
     // --- Internal helpers ---
 
     private ulong CreateProposalInternal(
-        string description, ulong votingPeriodBlocks, UInt256 totalStake,
+        string description, ulong votingPeriodBlocks,
         string proposalType, byte[] targetContract, string methodName)
     {
+        // C-8: Enforce proposal threshold — proposer must have sufficient stake
+        var threshold = _proposalThreshold.Get();
+        if (!threshold.IsZero)
+        {
+            // Query proposer's total stake from all pools (use pool 0 as primary)
+            var proposerStake = Context.CallContract<UInt256>(_stakingPoolAddress, "GetDelegation", (ulong)0, Context.Caller);
+            Context.Require(proposerStake >= threshold, "GOV: proposer stake below threshold");
+        }
+
+        // C-7: Read totalStake from StakingPool instead of accepting caller-supplied value
+        var totalStake = Context.CallContract<UInt256>(_stakingPoolAddress, "GetPoolStake", (ulong)0);
+
         var id = _nextProposalId.Get();
         _nextProposalId.Set(id + 1);
 
