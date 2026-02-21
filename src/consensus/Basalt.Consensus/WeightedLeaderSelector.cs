@@ -7,6 +7,14 @@ namespace Basalt.Consensus;
 /// Weighted leader selection based on snapshotted validator stakes.
 /// Uses a deterministic pseudo-random selection weighted by ValidatorInfo.Stake,
 /// which is captured at epoch boundaries for consistency across all nodes.
+/// <para>
+/// <b>Determinism assumptions (L-05):</b>
+/// All nodes must observe the same ValidatorSet (same order, same stakes) for a given epoch.
+/// Stakes are snapshotted at epoch boundaries via <see cref="EpochManager"/>, so mid-epoch
+/// staking changes do not affect leader selection until the next epoch.
+/// The BLAKE3 seed computation is deterministic given the same view number.
+/// Validator ordering must be consistent (sorted by address ascending at epoch build time).
+/// </para>
 /// </summary>
 public sealed class WeightedLeaderSelector
 {

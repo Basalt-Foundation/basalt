@@ -55,14 +55,16 @@ public class ViewChangeTests
 
     /// <summary>
     /// Create a properly BLS-signed ViewChangeMessage for a validator.
-    /// Payload format: [0xFF || proposedView LE 8 bytes]
+    /// Payload format: [4-byte chainId LE || 0xFF || proposedView LE 8 bytes]
+    /// chainId=0 for tests (matches default constructor parameter).
     /// </summary>
     private ViewChangeMessage CreateSignedViewChange(int validatorIndex, ulong proposedView, ulong currentView = 0)
     {
         var v = _validators[validatorIndex];
-        Span<byte> payload = stackalloc byte[9];
-        payload[0] = 0xFF;
-        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], proposedView);
+        Span<byte> payload = stackalloc byte[13];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, 0); // chainId = 0
+        payload[4] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[5..], proposedView);
         var signature = _blsSigner.Sign(v.PrivateKey, payload);
         var publicKey = _blsSigner.GetPublicKey(v.PrivateKey);
         return new ViewChangeMessage
@@ -105,9 +107,10 @@ public class ViewChangeTests
         bft.StartRound(1);
 
         // Sign with validator 2's key but claim to be validator 1
-        Span<byte> payload = stackalloc byte[9];
-        payload[0] = 0xFF;
-        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], 2UL);
+        Span<byte> payload = stackalloc byte[13];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, 0);
+        payload[4] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[5..], 2UL);
         var wrongSig = _blsSigner.Sign(_validators[2].PrivateKey, payload);
 
         var vc = new ViewChangeMessage
@@ -140,9 +143,10 @@ public class ViewChangeTests
         var fakePeerId = PeerId.FromPublicKey(fakePublicKey);
 
         // Properly sign it — but the sender is not a validator
-        Span<byte> payload = stackalloc byte[9];
-        payload[0] = 0xFF;
-        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], 2UL);
+        Span<byte> payload = stackalloc byte[13];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, 0);
+        payload[4] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[5..], 2UL);
         var sig = _blsSigner.Sign(fakePrivateKey, payload);
         var blsPub = _blsSigner.GetPublicKey(fakePrivateKey);
 

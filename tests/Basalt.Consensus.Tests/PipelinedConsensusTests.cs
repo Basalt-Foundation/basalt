@@ -39,15 +39,17 @@ public class PipelinedConsensusTests
 
     /// <summary>
     /// Create a properly BLS-signed ViewChangeMessage.
-    /// Payload format: [0xFF || proposedView LE 8 bytes]
+    /// Payload format: [4-byte chainId LE || 0xFF || proposedView LE 8 bytes]
+    /// chainId=0 for tests (matches default constructor parameter).
     /// </summary>
     private static ViewChangeMessage CreateSignedViewChange(
         (PeerId Id, byte[] PrivateKey, PublicKey PublicKey) validator,
         ulong proposedView, ulong currentView = 0)
     {
-        Span<byte> payload = stackalloc byte[9];
-        payload[0] = 0xFF;
-        BinaryPrimitives.WriteUInt64LittleEndian(payload[1..], proposedView);
+        Span<byte> payload = stackalloc byte[13];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, 0); // chainId = 0
+        payload[4] = 0xFF;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload[5..], proposedView);
         var signature = _blsSigner.Sign(validator.PrivateKey, payload);
         var publicKey = _blsSigner.GetPublicKey(validator.PrivateKey);
         return new ViewChangeMessage

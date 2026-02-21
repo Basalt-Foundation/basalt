@@ -142,6 +142,14 @@ public sealed class ValidatorSet
     /// Copy PeerId, PublicKey, and BlsPublicKey from a previous ValidatorSet
     /// for validators that exist in both sets (matched by Address).
     /// Rebuilds the _byPeerId dictionary after transfer.
+    /// <para>
+    /// <b>Ordering constraint (L-06):</b> Must be called before the new ValidatorSet is used
+    /// for consensus, as validators start with placeholder identities. Callers (typically
+    /// <see cref="EpochManager"/>) must ensure this completes before <c>BasaltBft.UpdateValidatorSet</c>
+    /// or <c>PipelinedConsensus.UpdateValidatorSet</c> atomically swap in the new set.
+    /// If a validator in the new set was not in the previous set, it retains its placeholder
+    /// identity until a P2P handshake updates it via <see cref="UpdateValidatorIdentity"/>.
+    /// </para>
     /// </summary>
     public void TransferIdentities(ValidatorSet? previous)
     {
