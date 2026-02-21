@@ -131,28 +131,40 @@ public static class Context
         Require(!ReentrancyGuard.Contains(targetKey), "Reentrancy detected");
         Require(CrossContractCallHandler != null, "Cross-contract calls not available");
 
-        // Save caller context
+        // H-3: Save full caller context (not just Caller/Self/CallDepth)
         var previousCaller = Caller;
         var previousSelf = Self;
         var previousDepth = CallDepth;
+        var previousTxValue = TxValue;
+        var previousEventEmitted = EventEmitted;
+        var previousNativeTransferHandler = NativeTransferHandler;
 
         try
         {
+            // H-2: Guard the calling contract's own address against re-entry
+            var selfKey = Convert.ToHexString(Self);
+            ReentrancyGuard.Add(selfKey);
             ReentrancyGuard.Add(targetKey);
             CallDepth++;
             Caller = Self; // The calling contract becomes the caller
             Self = targetAddress;
+            TxValue = UInt256.Zero; // Cross-contract calls don't forward value by default
 
             var result = CrossContractCallHandler!(targetAddress, methodName, args);
             return result is T typed ? typed : default!;
         }
         finally
         {
-            // Restore caller context
+            // H-3: Restore full caller context
             ReentrancyGuard.Remove(targetKey);
+            var selfKey = Convert.ToHexString(previousSelf);
+            ReentrancyGuard.Remove(selfKey);
             CallDepth = previousDepth;
             Caller = previousCaller;
             Self = previousSelf;
+            TxValue = previousTxValue;
+            EventEmitted = previousEventEmitted;
+            NativeTransferHandler = previousNativeTransferHandler;
         }
     }
 

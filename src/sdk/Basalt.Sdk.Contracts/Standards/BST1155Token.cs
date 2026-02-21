@@ -12,6 +12,7 @@ public partial class BST1155Token : IBST1155
     private readonly StorageMap<string, string> _approvals;      // "owner:operator" -> "1"/"0"
     private readonly StorageMap<string, string> _tokenURIs;      // tokenId -> uri
     private readonly StorageValue<ulong> _nextTokenId;
+    private readonly StorageMap<string, string> _contractAdmin;
     private readonly string _baseUri;
 
     public BST1155Token(string baseUri)
@@ -21,6 +22,8 @@ public partial class BST1155Token : IBST1155
         _approvals = new StorageMap<string, string>("m_approvals");
         _tokenURIs = new StorageMap<string, string>("m_uris");
         _nextTokenId = new StorageValue<ulong>("m_next_id");
+        _contractAdmin = new StorageMap<string, string>("m_admin");
+        _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
 
     [BasaltView]
@@ -122,11 +125,12 @@ public partial class BST1155Token : IBST1155
     }
 
     /// <summary>
-    /// Mint tokens of a specific ID.
+    /// Mint tokens of a specific ID. Only callable by the contract owner (H-6).
     /// </summary>
     [BasaltEntrypoint]
     public void Mint(byte[] to, ulong tokenId, UInt256 amount, string uri)
     {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "BST1155: not owner");
         var balance = _balances.Get(BalanceKey(to, tokenId));
         _balances.Set(BalanceKey(to, tokenId), balance + amount);
 
@@ -144,11 +148,12 @@ public partial class BST1155Token : IBST1155
     }
 
     /// <summary>
-    /// Create a new token type and mint initial supply.
+    /// Create a new token type and mint initial supply. Only callable by the contract owner (H-6).
     /// </summary>
     [BasaltEntrypoint]
     public ulong Create(byte[] to, UInt256 initialSupply, string uri)
     {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "BST1155: not owner");
         var tokenId = _nextTokenId.Get();
         _nextTokenId.Set(tokenId + 1);
 

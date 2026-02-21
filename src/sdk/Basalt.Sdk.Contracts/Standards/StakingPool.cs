@@ -15,6 +15,12 @@ public partial class StakingPool
     private readonly StorageMap<string, UInt256> _poolTotalRewards;    // poolId -> accumulated rewards
     private readonly StorageMap<string, UInt256> _delegations;         // "poolId:delegator" -> amount
     private readonly StorageMap<string, UInt256> _claimedRewards;      // "poolId:delegator" -> claimed
+    private readonly StorageMap<string, long> _delegationTimestamps;  // H-12: "poolId:delegator" -> block timestamp of last delegation
+
+    /// <summary>
+    /// Minimum number of seconds a delegation must be held before undelegation or reward claim. (H-12)
+    /// </summary>
+    public const long MinDelegationPeriodSeconds = 86400; // 24 hours
 
     public StakingPool()
     {
@@ -24,6 +30,7 @@ public partial class StakingPool
         _poolTotalRewards = new StorageMap<string, UInt256>("sp_rewards");
         _delegations = new StorageMap<string, UInt256>("sp_del");
         _claimedRewards = new StorageMap<string, UInt256>("sp_claimed");
+        _delegationTimestamps = new StorageMap<string, long>("sp_del_ts");
     }
 
     /// <summary>
@@ -59,6 +66,8 @@ public partial class StakingPool
         var delegatorKey = key + ":" + Convert.ToHexString(Context.Caller);
         var current = _delegations.Get(delegatorKey);
         _delegations.Set(delegatorKey, current + Context.TxValue);
+        // H-12: Record delegation timestamp (reset on each new delegation to prevent gaming)
+        _delegationTimestamps.Set(delegatorKey, Context.BlockTimestamp);
 
         var total = _poolTotalStake.Get(key);
         _poolTotalStake.Set(key, total + Context.TxValue);
@@ -80,6 +89,12 @@ public partial class StakingPool
         Context.Require(!amount.IsZero, "POOL: amount must be > 0");
         var key = poolId.ToString();
         var delegatorKey = key + ":" + Convert.ToHexString(Context.Caller);
+
+        // H-12: Enforce minimum delegation period to prevent flash-staking
+        var delegatedAt = _delegationTimestamps.Get(delegatorKey);
+        Context.Require(
+            Context.BlockTimestamp >= delegatedAt + MinDelegationPeriodSeconds,
+            "POOL: minimum delegation period not elapsed");
 
         var current = _delegations.Get(delegatorKey);
         Context.Require(current >= amount, "POOL: insufficient delegation");
@@ -123,6 +138,12 @@ public partial class StakingPool
 
         var delegation = _delegations.Get(delegatorKey);
         Context.Require(!delegation.IsZero, "POOL: no delegation");
+
+        // H-12: Enforce minimum delegation period before rewards can be claimed
+        var delegatedAt = _delegationTimestamps.Get(delegatorKey);
+        Context.Require(
+            Context.BlockTimestamp >= delegatedAt + MinDelegationPeriodSeconds,
+            "POOL: minimum delegation period not elapsed");
 
         var totalStake = _poolTotalStake.Get(key);
         var totalRewards = _poolTotalRewards.Get(key);
