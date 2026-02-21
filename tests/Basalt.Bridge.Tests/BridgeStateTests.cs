@@ -420,6 +420,119 @@ public class BridgeStateTests
         }
     }
 
+    [Fact]
+    public void Unlock_With_Valid_MerkleProof_Succeeds()
+    {
+        // CRIT-01: Merkle proof must be verified during unlock
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        // Lock tokens first
+        _bridge.Lock(Addr(1), Addr(2), 1000);
+
+        // Build a valid Merkle tree from deposit leaves
+        var depositLeaf = BridgeState.ComputeDepositLeaf(0, Addr(2), 1000);
+        var otherLeaf1 = BridgeState.ComputeDepositLeaf(1, Addr(3), 2000);
+        var otherLeaf2 = BridgeState.ComputeDepositLeaf(2, Addr(4), 3000);
+        var otherLeaf3 = BridgeState.ComputeDepositLeaf(3, Addr(5), 4000);
+        var leaves = new[] { depositLeaf, otherLeaf1, otherLeaf2, otherLeaf3 };
+        var (root, proof) = BridgeProofVerifier.BuildMerkleProof(leaves, 0);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 1000,
+            StateRoot = root,
+            Proof = proof,
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal);
+        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Unlock_With_Invalid_MerkleProof_Fails()
+    {
+        // CRIT-01: Invalid Merkle proof must cause unlock to fail
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var fakeRoot = new byte[32];
+        fakeRoot[0] = 0xFF;
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = fakeRoot,
+            Proof = [new byte[32]], // Invalid proof
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Unlock_Decrements_Locked_Balance()
+    {
+        // HIGH-02: Unlock must decrement locked balance
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        _bridge.Lock(Addr(1), Addr(2), 5000);
+        _bridge.GetLockedBalance().Should().Be(5000);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 3000,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer).Should().BeTrue();
+        _bridge.GetLockedBalance().Should().Be(2000); // 5000 - 3000
+    }
+
+    [Fact]
+    public void Unlock_Per_Token_Balance_Decremented()
+    {
+        // HIGH-02: Per-token locked balance decremented correctly
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var token = new byte[20]; token[0] = 0xAA;
+        _bridge.Lock(Addr(1), Addr(2), 10000, token);
+        _bridge.GetLockedBalance(token).Should().Be(10000);
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 4000,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Unlock(withdrawal, relayer, token).Should().BeTrue();
+        _bridge.GetLockedBalance(token).Should().Be(6000); // 10000 - 4000
+    }
+
     // ── IsWithdrawalProcessed ────────────────────────────────────────────
 
     [Fact]
