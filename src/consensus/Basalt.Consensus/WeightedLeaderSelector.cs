@@ -69,22 +69,26 @@ public sealed class WeightedLeaderSelector
 
     /// <summary>
     /// Convert a UInt256 stake to a proportional ulong weight.
-    /// Uses the top 8 bytes to get a meaningful weight.
+    /// UInt256.WriteTo is LE, so the low 64 bits are in bytes 0-7.
+    /// For stakes that don't fit in 64 bits, uses the highest non-zero 8-byte word.
     /// </summary>
     private static ulong StakeToWeight(UInt256 stake)
     {
-        // Normalize to a reasonable range by dividing by 10^18 (1 token worth)
-        // For simplicity, convert to ulong representation
         var bytes = new byte[32];
         stake.WriteTo(bytes);
 
-        // Take bytes 0-7 (most significant after normalization) for weight
-        // If stake fits in ulong (< 2^64), use it directly
-        ulong weight = 0;
-        for (int i = 24; i < 32; i++)
-            weight = (weight << 8) | bytes[i];
+        // Read from the most significant 8-byte word down; return the first non-zero chunk.
+        // For typical stakes (< 2^64), bytes 8-31 are zero and the value is in bytes 0-7.
+        // For very large stakes, the highest non-zero word preserves proportionality.
+        for (int offset = 24; offset >= 0; offset -= 8)
+        {
+            ulong chunk = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(
+                bytes.AsSpan(offset, 8));
+            if (chunk != 0)
+                return chunk;
+        }
 
-        return weight == 0 ? 1 : weight; // Minimum weight of 1
+        return 1; // Minimum weight of 1
     }
 
     /// <summary>
