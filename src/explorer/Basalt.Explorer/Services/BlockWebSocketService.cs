@@ -36,6 +36,9 @@ public sealed class BlockWebSocketService : IAsyncDisposable
         }
     }
 
+    /// <summary>Maximum assembled message size (256 KB) to prevent memory exhaustion.</summary>
+    private const int MaxMessageSize = 256 * 1024;
+
     private async Task ReceiveLoop(CancellationToken ct)
     {
         var buffer = new byte[4096];
@@ -43,11 +46,23 @@ public sealed class BlockWebSocketService : IAsyncDisposable
         {
             try
             {
-                var result = await _ws.ReceiveAsync(buffer, ct);
+                // H-2: Accumulate multi-frame messages until EndOfMessage
+                using var ms = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _ws.ReceiveAsync(buffer, ct);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                    if (ms.Length + result.Count > MaxMessageSize) break;
+                    ms.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
+
                 if (result.MessageType == WebSocketMessageType.Close) break;
+                if (ms.Length > MaxMessageSize) continue; // discard oversized messages
+
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    var json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
                     var envelope = JsonSerializer.Deserialize(json, ExplorerJsonContext.Default.WebSocketEnvelopeDto);
                     if (envelope?.Type == "new_block" && envelope.Block != null)
                     {

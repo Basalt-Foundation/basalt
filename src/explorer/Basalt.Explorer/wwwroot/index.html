@@ -3,6 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:;" />
     <title>Basalt Explorer</title>
     <base href="/" />
     <link rel="stylesheet" href="css/app.css" />
@@ -11,6 +12,8 @@
     <div id="app">Loading...</div>
     <script>
         (function(){var t=localStorage.getItem('theme');if(!t)t=window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark';document.documentElement.setAttribute('data-theme',t)})();
+        // H-1: Dedicated function for theme switching (avoids eval() in Blazor interop)
+        window.basaltSetTheme = function(theme) { document.documentElement.setAttribute('data-theme', theme); };
     </script>
     <script src="_framework/blazor.webassembly.js"></script>
 </body>

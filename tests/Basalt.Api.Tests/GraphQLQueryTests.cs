@@ -321,7 +321,7 @@ public class GraphQLQueryTests
         // M-6: GetBlocks now includes genesis block
         var results = query.GetBlocks(200, chainManager);
 
-        // Should get all 6 (blocks 5, 4, 3, 2, 1, 0)
+        // Should get all 6 (genesis + 5 blocks)
         results.Should().HaveCount(6);
     }
 

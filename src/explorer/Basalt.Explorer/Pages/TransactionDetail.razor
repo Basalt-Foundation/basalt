@@ -276,6 +276,15 @@ else
     {
         _loading = true;
         _showFullData = false;
+
+        // M-2: Validate route parameter (expect 64 hex chars, optionally 0x-prefixed)
+        if (string.IsNullOrWhiteSpace(Hash) || Hash.Length > 66)
+        {
+            _tx = null;
+            _loading = false;
+            return;
+        }
+
         _tx = await Api.GetTransactionAsync(Hash);
         _loading = false;
     }

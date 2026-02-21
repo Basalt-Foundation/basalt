@@ -19,20 +19,26 @@
         Toasts.OnToast += HandleToast;
     }
 
+    // M-4: Wrap async void handler in try-catch to prevent unobserved exceptions
     private async void HandleToast(Services.ToastMessage msg)
     {
-        var state = new ToastState { Message = msg.Message, Type = msg.Type };
-        await InvokeAsync(() =>
+        try
         {
-            _toasts.Add(state);
-            StateHasChanged();
-        });
+            var state = new ToastState { Message = msg.Message, Type = msg.Type };
+            await InvokeAsync(() =>
+            {
+                _toasts.Add(state);
+                StateHasChanged();
+            });
 
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(msg.DurationMs);
-            await InvokeAsync(() => Remove(state));
-        });
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(msg.DurationMs);
+                try { await InvokeAsync(() => Remove(state)); }
+                catch (ObjectDisposedException) { /* component disposed */ }
+            });
+        }
+        catch (ObjectDisposedException) { /* component disposed */ }
     }
 
     private void Remove(ToastState toast)

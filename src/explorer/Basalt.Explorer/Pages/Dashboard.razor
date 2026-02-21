@@ -144,15 +144,20 @@
         }, null, 10000, 10000);
     }
 
+    // M-4: Wrap async void handler in try-catch to prevent unobserved exceptions
     private async void HandleNewBlock(WebSocketBlockEvent block)
     {
-        await InvokeAsync(async () =>
+        try
         {
-            if (_status != null)
-                _status.BlockHeight = block.Number;
-            await LoadData();
-            StateHasChanged();
-        });
+            await InvokeAsync(async () =>
+            {
+                if (_status != null)
+                    _status.BlockHeight = block.Number;
+                await LoadData();
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException) { /* component disposed */ }
     }
 
     private async Task LoadData()
@@ -185,10 +190,12 @@
 
     private void NavigateToTx(string hash) => Nav.NavigateTo("/tx/" + hash);
 
-    public async ValueTask DisposeAsync()
+    // M-5: Only unsubscribe from the shared service — do NOT dispose it,
+    // as it is a shared singleton injected by DI.
+    public ValueTask DisposeAsync()
     {
         _timer?.Dispose();
         WsService.OnNewBlock -= HandleNewBlock;
-        await WsService.DisposeAsync();
+        return ValueTask.CompletedTask;
     }
 }
