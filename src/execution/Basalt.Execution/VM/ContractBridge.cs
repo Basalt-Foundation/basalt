@@ -91,10 +91,11 @@ public static class ContractBridge
             var recipientAccount = ctx.StateDb.GetAccount(recipientAddr);
             var recipientBalance = recipientAccount?.Balance ?? UInt256.Zero;
             var ra = recipientAccount ?? AccountState.Empty;
+            // H-10: Use checked addition to prevent silent balance overflow
             ctx.StateDb.SetAccount(recipientAddr, new AccountState
             {
                 Nonce = ra.Nonce,
-                Balance = recipientBalance + amount,
+                Balance = UInt256.CheckedAdd(recipientBalance, amount),
                 StorageRoot = ra.StorageRoot,
                 CodeHash = ra.CodeHash,
                 AccountType = ra.AccountType,

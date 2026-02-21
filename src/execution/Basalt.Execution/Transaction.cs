@@ -81,21 +81,42 @@ public sealed class Transaction
 
     private Hash256 ComputeHash()
     {
+        // H-3: Use WrittenSpan to hash only the actual payload, not buffer padding
         Span<byte> buffer = stackalloc byte[GetSigningPayloadSize()];
-        WriteSigningPayload(buffer);
-        return Blake3Hasher.Hash(buffer);
+        var written = WriteSigningPayload(buffer);
+        return Blake3Hasher.Hash(written);
     }
 
     /// <summary>
-    /// Compute the payload that should be signed (everything except the signature).
+    /// Compute the maximum buffer size needed for the signing payload.
+    /// H-3: Uses correct VarInt size calculation for the Data length prefix.
     /// </summary>
     public int GetSigningPayloadSize()
     {
         // COMPL-02: +32 bytes for compliance proofs hash
-        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 32 + 32 + 4 + Data.Length + 1 + 4 + Hash256.Size;
+        // Data is length-prefixed with LEB128 varint (1-10 bytes)
+        var dataVarIntSize = VarIntSize((ulong)Data.Length);
+        return 1 + 8 + Address.Size + Address.Size + 32 + 8 + 32 + 32 + 32 + dataVarIntSize + Data.Length + 1 + 4 + Hash256.Size;
     }
 
-    public void WriteSigningPayload(Span<byte> buffer)
+    /// <summary>
+    /// Calculate the number of bytes required to encode a value as a LEB128 varint.
+    /// </summary>
+    private static int VarIntSize(ulong value)
+    {
+        int size = 1;
+        while (value >= 0x80)
+        {
+            size++;
+            value >>= 7;
+        }
+        return size;
+    }
+
+    /// <summary>
+    /// H-3: Returns the actual written span (not the full buffer) for correct hashing.
+    /// </summary>
+    public ReadOnlySpan<byte> WriteSigningPayload(Span<byte> buffer)
     {
         var writer = new BasaltWriter(buffer);
         writer.WriteByte((byte)Type);
@@ -113,6 +134,8 @@ public sealed class Transaction
 
         // COMPL-02: Include hash of compliance proofs to prevent stripping/modification
         writer.WriteHash256(ComputeComplianceProofsHash());
+
+        return writer.WrittenSpan;
     }
 
     /// <summary>
@@ -148,8 +171,8 @@ public sealed class Transaction
     /// </summary>
     public static Transaction Sign(Transaction unsignedTx, byte[] privateKey)
     {
-        Span<byte> payload = stackalloc byte[unsignedTx.GetSigningPayloadSize()];
-        unsignedTx.WriteSigningPayload(payload);
+        Span<byte> buffer = stackalloc byte[unsignedTx.GetSigningPayloadSize()];
+        var payload = unsignedTx.WriteSigningPayload(buffer);
 
         var signature = Ed25519Signer.Sign(privateKey, payload);
         var publicKey = Ed25519Signer.GetPublicKey(privateKey);
@@ -182,8 +205,9 @@ public sealed class Transaction
         if (Signature.IsEmpty || SenderPublicKey.IsEmpty)
             return false;
 
-        Span<byte> payload = stackalloc byte[GetSigningPayloadSize()];
-        WriteSigningPayload(payload);
+        // H-3: Hash only the written span (exact payload), not the full buffer
+        Span<byte> buffer = stackalloc byte[GetSigningPayloadSize()];
+        var payload = WriteSigningPayload(buffer);
 
         return Ed25519Signer.Verify(SenderPublicKey, payload, Signature);
     }
