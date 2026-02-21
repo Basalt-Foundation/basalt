@@ -8,6 +8,14 @@ namespace Basalt.Storage;
 /// instance, so when the consensus layer swaps the underlying state after sync,
 /// every reader immediately sees the new canonical state.
 /// </summary>
+/// <remarks>
+/// <para><b>Multi-read consistency (M-03):</b> While the <c>volatile</c> reference swap
+/// is atomic for a single read, callers performing multiple sequential operations
+/// (e.g., <see cref="GetAccount"/> then <see cref="GetStorage"/>) could observe state
+/// from two different databases if <see cref="Swap"/> occurs between calls.
+/// Use <see cref="Snapshot"/> to obtain a forked copy for consistent multi-read paths
+/// (API handlers, balance queries that touch multiple accounts, etc.).</para>
+/// </remarks>
 public sealed class StateDbRef : IStateDatabase
 {
     private volatile IStateDatabase _inner;
@@ -28,6 +36,13 @@ public sealed class StateDbRef : IStateDatabase
 
     /// <summary>The current underlying state database.</summary>
     public IStateDatabase Inner => _inner;
+
+    /// <summary>
+    /// Return a forked snapshot of the current state for consistent multi-read access.
+    /// The returned database is isolated from subsequent <see cref="Swap"/> calls.
+    /// Preferred over direct reads when multiple values must be read consistently.
+    /// </summary>
+    public IStateDatabase Snapshot() => _inner.Fork();
 
     // ── IStateDatabase delegation ──────────────────────────────────────
 

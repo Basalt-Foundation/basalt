@@ -89,16 +89,16 @@ public sealed class BlockStore
     /// <summary>
     /// Get the raw serialized block by number.
     /// </summary>
+    /// <remarks>
+    /// M-08: Uses <see cref="RawBlockKeyFromHashBytes"/> to avoid duplicating the raw key
+    /// construction logic from <see cref="RawBlockKey(Hash256)"/>.
+    /// </remarks>
     public byte[]? GetRawBlockByNumber(ulong number)
     {
         var hashKey = _store.Get(RocksDbStore.CF.BlockIndex, NumberToKey(number));
         if (hashKey == null)
             return null;
-        // hashKey is 32 bytes — convert to raw key
-        var rawKey = new byte[4 + hashKey.Length];
-        "raw:"u8.CopyTo(rawKey);
-        hashKey.CopyTo(rawKey, 4);
-        return _store.Get(RocksDbStore.CF.Blocks, rawKey);
+        return _store.Get(RocksDbStore.CF.Blocks, RawBlockKeyFromHashBytes(hashKey));
     }
 
     /// <summary>
@@ -171,6 +171,18 @@ public sealed class BlockStore
         var key = new byte[4 + Hash256.Size];
         "raw:"u8.CopyTo(key);
         hash.WriteTo(key.AsSpan(4));
+        return key;
+    }
+
+    /// <summary>
+    /// Build a raw block key from pre-existing hash bytes (e.g., from a BlockIndex lookup).
+    /// Shares the same "raw:" prefix format as <see cref="RawBlockKey(Hash256)"/>.
+    /// </summary>
+    private static byte[] RawBlockKeyFromHashBytes(byte[] hashBytes)
+    {
+        var key = new byte[4 + hashBytes.Length];
+        "raw:"u8.CopyTo(key);
+        hashBytes.CopyTo(key, 4);
         return key;
     }
 
