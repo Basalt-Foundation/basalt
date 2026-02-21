@@ -111,10 +111,10 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Invalid public inputs: must be non-empty and a multiple of 32 bytes");
 
-        // 2. Check nullifier uniqueness (prevent proof replay within a block)
+        // 2. Check nullifier not already consumed (reject replays)
         lock (_lock)
         {
-            if (!_usedNullifiers.Add(proof.Nullifier))
+            if (_usedNullifiers.Contains(proof.Nullifier))
                 return ComplianceCheckOutcome.Fail(
                     BasaltErrorCode.ComplianceProofInvalid,
                     "Duplicate nullifier: proof has already been used");
@@ -156,6 +156,12 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Groth16 proof verification failed");
+
+        // 7. M-03: Only consume nullifier AFTER successful verification
+        lock (_lock)
+        {
+            _usedNullifiers.Add(proof.Nullifier);
+        }
 
         return ComplianceCheckOutcome.Success;
     }

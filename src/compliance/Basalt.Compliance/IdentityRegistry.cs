@@ -174,15 +174,20 @@ public sealed class IdentityRegistry
     }
 
     /// <summary>
-    /// Get the country code for an address (0 if no attestation).
+    /// Get the country code for an address (0 if no attestation or attestation expired/revoked).
+    /// M-02: Now checks attestation expiry in addition to revocation status.
     /// </summary>
-    public ushort GetCountryCode(byte[] subject)
+    public ushort GetCountryCode(byte[] subject, long currentTimestamp = 0)
     {
         lock (_lock)
         {
-            if (_attestations.TryGetValue(ToHex(subject), out var att) && !att.Revoked)
-                return att.CountryCode;
-            return 0;
+            if (!_attestations.TryGetValue(ToHex(subject), out var att))
+                return 0;
+            if (att.Revoked)
+                return 0;
+            if (currentTimestamp > 0 && att.ExpiresAt > 0 && att.ExpiresAt < currentTimestamp)
+                return 0;
+            return att.CountryCode;
         }
     }
 

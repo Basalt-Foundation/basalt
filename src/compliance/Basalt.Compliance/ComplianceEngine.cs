@@ -234,7 +234,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
             // Step 4: Geographic restrictions
             if (policy.BlockedCountries.Count > 0)
             {
-                var senderCountry = _identityRegistry.GetCountryCode(sender);
+                var senderCountry = _identityRegistry.GetCountryCode(sender, currentTimestamp);
                 if (senderCountry > 0 && policy.BlockedCountries.Contains(senderCountry))
                 {
                     LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_SENDER");
@@ -242,7 +242,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
                         $"Sender country {senderCountry} is geo-restricted", "GEO_SENDER");
                 }
 
-                var receiverCountry = _identityRegistry.GetCountryCode(receiver);
+                var receiverCountry = _identityRegistry.GetCountryCode(receiver, currentTimestamp);
                 if (receiverCountry > 0 && policy.BlockedCountries.Contains(receiverCountry))
                 {
                     LogCheckResult(tokenAddress, sender, receiver, amount, false, "GEO_RECEIVER");
