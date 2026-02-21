@@ -131,12 +131,12 @@ public sealed class StakingState : IStakingState
     {
         lock (_lock)
         {
+            // L-01: Use partition instead of O(n²) Remove-in-loop
             var completed = _unbondingQueue
                 .Where(e => e.UnbondingCompleteBlock <= currentBlock)
                 .ToList();
 
-            foreach (var entry in completed)
-                _unbondingQueue.Remove(entry);
+            _unbondingQueue.RemoveAll(e => e.UnbondingCompleteBlock <= currentBlock);
 
             return completed;
         }

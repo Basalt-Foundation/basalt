@@ -110,9 +110,18 @@ public sealed class EpochManager
     /// Record which validators signed the commit phase for a given block.
     /// Called after each block finalization with the commit voter bitmap.
     /// All nodes record the same bitmap (from the same finalized QC), ensuring determinism.
+    /// M-05: Only records bitmaps for blocks in the current epoch to prevent stale data.
     /// </summary>
     public void RecordBlockSigners(ulong blockNumber, ulong commitBitmap)
     {
+        // Guard: only track bitmaps for the current epoch
+        if (_chainParams.EpochLength > 0)
+        {
+            var blockEpoch = ComputeEpoch(blockNumber, _chainParams.EpochLength);
+            if (blockEpoch != _currentEpoch && blockEpoch != _currentEpoch + 1)
+                return; // Stale or too-far-future block
+        }
+
         lock (_blockSignersLock)
             _blockSigners[blockNumber] = commitBitmap;
     }
