@@ -73,6 +73,50 @@ public partial class BST20Token : IBST20
         return true;
     }
 
+    /// <summary>
+    /// Atomically increase the spender's allowance, preventing approve race conditions (H-4).
+    /// </summary>
+    [BasaltEntrypoint]
+    public bool IncreaseAllowance(byte[] spender, UInt256 addedValue)
+    {
+        var owner = Context.Caller;
+        var key = AllowanceKey(owner, spender);
+        var current = _allowances.Get(key);
+        var newAllowance = UInt256.CheckedAdd(current, addedValue);
+        _allowances.Set(key, newAllowance);
+
+        Context.Emit(new ApprovalEvent
+        {
+            Owner = owner,
+            Spender = spender,
+            Amount = newAllowance,
+        });
+
+        return true;
+    }
+
+    /// <summary>
+    /// Atomically decrease the spender's allowance, preventing approve race conditions (H-4).
+    /// </summary>
+    [BasaltEntrypoint]
+    public bool DecreaseAllowance(byte[] spender, UInt256 subtractedValue)
+    {
+        var owner = Context.Caller;
+        var key = AllowanceKey(owner, spender);
+        var current = _allowances.Get(key);
+        Context.Require(current >= subtractedValue, "BST20: decreased allowance below zero");
+        _allowances.Set(key, current - subtractedValue);
+
+        Context.Emit(new ApprovalEvent
+        {
+            Owner = owner,
+            Spender = spender,
+            Amount = current - subtractedValue,
+        });
+
+        return true;
+    }
+
     [BasaltEntrypoint]
     public bool TransferFrom(byte[] from, byte[] to, UInt256 amount)
     {
@@ -92,10 +136,12 @@ public partial class BST20Token : IBST20
     protected void Mint(byte[] to, UInt256 amount)
     {
         var supply = _totalSupply.Get();
-        _totalSupply.Set(supply + amount);
+        var newSupply = UInt256.CheckedAdd(supply, amount);
+        _totalSupply.Set(newSupply);
 
         var balance = _balances.Get(ToKey(to));
-        _balances.Set(ToKey(to), balance + amount);
+        var newBalance = UInt256.CheckedAdd(balance, amount);
+        _balances.Set(ToKey(to), newBalance);
 
         Context.Emit(new TransferEvent
         {
@@ -133,7 +179,8 @@ public partial class BST20Token : IBST20
         _balances.Set(ToKey(from), fromBalance - amount);
 
         var toBalance = _balances.Get(ToKey(to));
-        _balances.Set(ToKey(to), toBalance + amount);
+        var newToBalance = UInt256.CheckedAdd(toBalance, amount);
+        _balances.Set(ToKey(to), newToBalance);
 
         Context.Emit(new TransferEvent
         {

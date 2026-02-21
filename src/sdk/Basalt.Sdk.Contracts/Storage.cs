@@ -56,6 +56,13 @@ public sealed class InMemoryStorageProvider : IStorageProvider
 /// Delegates to an IStorageProvider. Default: InMemoryStorageProvider.
 /// Call SetProvider() to wire production (on-chain) or custom storage.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread safety (C-2):</b> The _provider field is a single shared mutable slot.
+/// The execution layer serializes all contract execution under a Monitor lock
+/// (TransactionExecutor), and ContractBridge.Setup() swaps the provider per execution
+/// scope. If parallel execution is introduced, this must be migrated to AsyncLocal
+/// or a scoped pattern.</para>
+/// </remarks>
 public static class ContractStorage
 {
     private static readonly InMemoryStorageProvider DefaultProvider = new();

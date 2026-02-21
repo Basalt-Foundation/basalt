@@ -6,6 +6,13 @@ namespace Basalt.Sdk.Contracts;
 /// Provides access to blockchain context within a smart contract.
 /// These properties are populated by the runtime before contract execution.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread safety (C-1):</b> All properties are plain static fields with no thread isolation.
+/// The execution layer serializes all contract execution under a Monitor lock
+/// (TransactionExecutor), ensuring only one contract executes at a time.
+/// If parallel execution is introduced in the future, these fields must be migrated
+/// to AsyncLocal&lt;T&gt; or a scoped context object.</para>
+/// </remarks>
 public static class Context
 {
     /// <summary>

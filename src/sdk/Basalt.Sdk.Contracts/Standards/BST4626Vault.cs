@@ -16,8 +16,9 @@ public partial class BST4626Vault : BST20Token, IBST4626
     private readonly StorageMap<string, string> _admin;
 
     // Virtual offset to prevent inflation attack (EIP-4626 mitigation)
-    private static readonly UInt256 VirtualShares = UInt256.One;
-    private static readonly UInt256 VirtualAssets = UInt256.One;
+    // M-4: Offset must be large enough (10^decimals) to make donation-based inflation attacks uneconomical
+    private static readonly UInt256 VirtualShares = new UInt256(1_000_000_000_000_000_000); // 10^18
+    private static readonly UInt256 VirtualAssets = new UInt256(1_000_000_000_000_000_000); // 10^18
 
     public BST4626Vault(string name, string symbol, byte decimals, byte[] assetAddress)
         : base(name, symbol, decimals)
@@ -99,6 +100,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
         return shares;
     }
 
+    /// <remarks>
+    /// C-5: Transfer assets before burning shares to avoid loss if the external call reverts
+    /// without atomic state rollback.
+    /// </remarks>
     [BasaltEntrypoint]
     public UInt256 Withdraw(UInt256 assets)
     {
@@ -106,11 +111,12 @@ public partial class BST4626Vault : BST20Token, IBST4626
         var shares = PreviewWithdraw(assets);
         Context.Require(shares > 0, "VAULT: zero shares");
 
-        Burn(Context.Caller, shares);
-        _totalAssets.Set(TotalAssets() - assets);
-
+        // Transfer assets first, then burn shares (C-5: prevents share loss on revert)
         Context.CallContract(_assetAddress, "Transfer",
             Context.Caller, assets);
+
+        Burn(Context.Caller, shares);
+        _totalAssets.Set(TotalAssets() - assets);
 
         Context.Emit(new VaultWithdrawEvent
         {
@@ -122,6 +128,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
         return shares;
     }
 
+    /// <remarks>
+    /// C-5: Transfer assets before burning shares to avoid loss if the external call reverts
+    /// without atomic state rollback.
+    /// </remarks>
     [BasaltEntrypoint]
     public UInt256 Redeem(UInt256 shares)
     {
@@ -129,11 +139,12 @@ public partial class BST4626Vault : BST20Token, IBST4626
         var assets = ConvertToAssets(shares);
         Context.Require(assets > 0, "VAULT: zero assets");
 
-        Burn(Context.Caller, shares);
-        _totalAssets.Set(TotalAssets() - assets);
-
+        // Transfer assets first, then burn shares (C-5: prevents share loss on revert)
         Context.CallContract(_assetAddress, "Transfer",
             Context.Caller, assets);
+
+        Burn(Context.Caller, shares);
+        _totalAssets.Set(TotalAssets() - assets);
 
         Context.Emit(new VaultWithdrawEvent
         {
@@ -145,6 +156,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
         return assets;
     }
 
+    /// <remarks>
+    /// C-6: Requires an actual TransferFrom of underlying assets into the vault to prevent
+    /// phantom yield injection by a compromised admin.
+    /// </remarks>
     [BasaltEntrypoint]
     public void Harvest(UInt256 yieldAmount)
     {
@@ -152,6 +167,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
         Context.Require(
             Convert.ToHexString(Context.Caller) == _admin.Get("admin"),
             "VAULT: not admin");
+
+        // C-6: Require actual asset transfer — prevents phantom yield injection
+        Context.CallContract(_assetAddress, "TransferFrom",
+            Context.Caller, Context.Self, yieldAmount);
 
         var newTotal = TotalAssets() + yieldAmount;
         _totalAssets.Set(newTotal);
