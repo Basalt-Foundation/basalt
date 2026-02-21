@@ -1049,6 +1049,7 @@ public sealed class ComplianceProofDto
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(FaucetRequest))]
 [JsonSerializable(typeof(FaucetResponse))]
+[JsonSerializable(typeof(FaucetStatusResponse))]
 [JsonSerializable(typeof(TransactionDetailResponse))]
 [JsonSerializable(typeof(TransactionDetailResponse[]))]
 [JsonSerializable(typeof(PaginatedBlocksResponse))]
