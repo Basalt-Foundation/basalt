@@ -260,16 +260,22 @@ public sealed class FlatStateDb : IStateDatabase
     /// Flush the current flat cache to persistent storage, including deletions.
     /// Call on shutdown or periodically after block finalization.
     /// </summary>
+    /// <remarks>
+    /// <para><b>M-06 fix:</b> Deletion sets are <b>not</b> cleared after flush.
+    /// Although the persisted store has the deletions applied, the underlying
+    /// <see cref="TrieStateDb"/> still contains the old data (trie nodes are never pruned).
+    /// Clearing the deletion sets would cause subsequent reads to fall through to the trie
+    /// and return stale data for entries that were deleted.</para>
+    /// </remarks>
     public void FlushToPersistence()
     {
         if (_persistence == null) return;
 
         _persistence.Flush(_accountCache, _storageCache, _deletedAccounts, _deletedStorage);
 
-        // Clear the deletion sets after successful flush — persisted deletions
-        // have been applied, so they no longer need to be tracked.
-        _deletedAccounts.Clear();
-        _deletedStorage.Clear();
+        // M-06: Do NOT clear _deletedAccounts / _deletedStorage here.
+        // The trie still contains the old nodes, so the deletion guard must remain
+        // active to prevent fallthrough reads returning stale data.
     }
 
     /// <summary>
