@@ -115,6 +115,32 @@ public class BridgeMessagesTests
     }
 
     [Fact]
+    public void BridgeDeposit_Invalid_Transition_Throws()
+    {
+        // MED-03: Pending → Finalized is invalid (must go through Confirmed)
+        var deposit = new BridgeDeposit();
+        var act = () => deposit.Status = BridgeTransferStatus.Finalized;
+        act.Should().Throw<InvalidOperationException>().WithMessage("*MED-03*");
+    }
+
+    [Fact]
+    public void BridgeDeposit_TransitionStatus_Returns_False_For_Invalid()
+    {
+        var deposit = new BridgeDeposit();
+        deposit.TransitionStatus(BridgeTransferStatus.Finalized).Should().BeFalse();
+        deposit.Status.Should().Be(BridgeTransferStatus.Pending);
+    }
+
+    [Fact]
+    public void BridgeDeposit_Any_State_Can_Transition_To_Failed()
+    {
+        // LOW-03: Failed is now reachable from any state
+        var deposit = new BridgeDeposit();
+        deposit.TransitionStatus(BridgeTransferStatus.Failed).Should().BeTrue();
+        deposit.Status.Should().Be(BridgeTransferStatus.Failed);
+    }
+
+    [Fact]
     public void BridgeDeposit_With_EthereumToBasalt_Direction()
     {
         var deposit = new BridgeDeposit

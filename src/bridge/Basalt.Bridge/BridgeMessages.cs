@@ -27,6 +27,7 @@ public enum BridgeTransferStatus
 
 /// <summary>
 /// A deposit message representing tokens locked on the source chain.
+/// MED-03: Status transitions are validated via <see cref="TransitionStatus"/>.
 /// </summary>
 public sealed class BridgeDeposit
 {
@@ -60,8 +61,48 @@ public sealed class BridgeDeposit
     /// <summary>Direction of the bridge transfer.</summary>
     public BridgeDirection Direction { get; init; }
 
-    /// <summary>Current status.</summary>
-    public BridgeTransferStatus Status { get; set; } = BridgeTransferStatus.Pending;
+    private BridgeTransferStatus _status = BridgeTransferStatus.Pending;
+
+    /// <summary>
+    /// Current status. Use <see cref="TransitionStatus"/> for validated transitions.
+    /// Direct setter is kept for backward compat with init patterns but validates transitions.
+    /// </summary>
+    public BridgeTransferStatus Status
+    {
+        get => _status;
+        set
+        {
+            if (value == _status) return;
+            if (!IsValidTransition(_status, value))
+                throw new InvalidOperationException(
+                    $"MED-03: Invalid deposit status transition from {_status} to {value}.");
+            _status = value;
+        }
+    }
+
+    /// <summary>
+    /// MED-03: Attempt a validated status transition.
+    /// Returns true if the transition was valid and applied.
+    /// </summary>
+    public bool TransitionStatus(BridgeTransferStatus newStatus)
+    {
+        if (newStatus == _status) return false;
+        if (!IsValidTransition(_status, newStatus)) return false;
+        _status = newStatus;
+        return true;
+    }
+
+    /// <summary>
+    /// MED-03: Valid transitions: Pending → Confirmed → Finalized, or any → Failed.
+    /// </summary>
+    private static bool IsValidTransition(BridgeTransferStatus from, BridgeTransferStatus to) =>
+        (from, to) switch
+        {
+            (BridgeTransferStatus.Pending, BridgeTransferStatus.Confirmed) => true,
+            (BridgeTransferStatus.Confirmed, BridgeTransferStatus.Finalized) => true,
+            (_, BridgeTransferStatus.Failed) => true, // LOW-03: Failed can be reached from any state
+            _ => false,
+        };
 }
 
 /// <summary>

@@ -15,12 +15,34 @@ public sealed class BridgeState
     private readonly Dictionary<string, UInt256> _lockedBalances = new(); // tokenAddr -> locked amount
     private ulong _nextNonce;
     private readonly object _lock = new();
+    private bool _paused; // MED-04
 
     /// <summary>Basalt chain ID.</summary>
     public uint BasaltChainId { get; init; } = 1;
 
     /// <summary>Ethereum chain ID (Sepolia = 11155111).</summary>
     public uint EthereumChainId { get; init; } = 11155111;
+
+    /// <summary>MED-01: Maximum age in seconds for a pending deposit before it can be cancelled.</summary>
+    public long DepositExpirySeconds { get; init; } = 86400 * 7; // 7 days
+
+    /// <summary>MED-04: Whether the bridge is paused. No locks or unlocks are processed while paused.</summary>
+    public bool IsPaused
+    {
+        get { lock (_lock) return _paused; }
+    }
+
+    /// <summary>MED-04: Pause the bridge — blocks new locks and unlocks.</summary>
+    public void Pause()
+    {
+        lock (_lock) _paused = true;
+    }
+
+    /// <summary>MED-04: Resume the bridge.</summary>
+    public void Resume()
+    {
+        lock (_lock) _paused = false;
+    }
 
     /// <summary>
     /// Lock tokens on Basalt for bridging to Ethereum.
@@ -33,6 +55,9 @@ public sealed class BridgeState
 
         lock (_lock)
         {
+            // MED-04: Reject operations while paused
+            if (_paused)
+                throw new BridgeException("Bridge is paused");
             var token = tokenAddress ?? new byte[20];
             var tokenKey = Convert.ToHexString(token);
 
@@ -74,6 +99,10 @@ public sealed class BridgeState
     {
         lock (_lock)
         {
+            // MED-04: Reject operations while paused
+            if (_paused)
+                return false;
+
             // Check if already processed (replay protection)
             if (_processedWithdrawals.Contains(withdrawal.DepositNonce))
                 return false;
@@ -117,11 +146,10 @@ public sealed class BridgeState
             if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            // BRIDGE-05: enforce state machine transition
-            if (deposit.Status != BridgeTransferStatus.Pending)
+            // MED-03: validated state machine transition
+            if (!deposit.TransitionStatus(BridgeTransferStatus.Confirmed))
                 return false;
 
-            deposit.Status = BridgeTransferStatus.Confirmed;
             deposit.BlockHeight = blockHeight; // HIGH-04: store confirmation block height
             return true;
         }
@@ -138,11 +166,41 @@ public sealed class BridgeState
             if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            // BRIDGE-05: enforce state machine transition
-            if (deposit.Status != BridgeTransferStatus.Confirmed)
+            // MED-03: validated state machine transition
+            return deposit.TransitionStatus(BridgeTransferStatus.Finalized);
+        }
+    }
+
+    /// <summary>
+    /// MED-01: Cancel an expired pending deposit and refund locked balance.
+    /// Only pending deposits older than <see cref="DepositExpirySeconds"/> can be cancelled.
+    /// </summary>
+    /// <param name="nonce">Deposit nonce to cancel.</param>
+    /// <param name="currentTimestamp">Current Unix timestamp for expiry check.</param>
+    /// <returns>True if the deposit was cancelled.</returns>
+    public bool CancelExpiredDeposit(ulong nonce, long currentTimestamp)
+    {
+        lock (_lock)
+        {
+            if (!_deposits.TryGetValue(nonce, out var deposit))
                 return false;
 
-            deposit.Status = BridgeTransferStatus.Finalized;
+            if (deposit.Status != BridgeTransferStatus.Pending)
+                return false;
+
+            if (currentTimestamp - deposit.Timestamp < DepositExpirySeconds)
+                return false;
+
+            // MED-03: Transition to Failed (LOW-03: Failed status now used)
+            deposit.TransitionStatus(BridgeTransferStatus.Failed);
+
+            // Refund locked balance
+            var tokenKey = Convert.ToHexString(deposit.TokenAddress);
+            if (_lockedBalances.TryGetValue(tokenKey, out var locked) && locked >= deposit.Amount)
+            {
+                _lockedBalances[tokenKey] = locked - deposit.Amount;
+            }
+
             return true;
         }
     }

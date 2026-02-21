@@ -44,6 +44,10 @@ public sealed class MultisigRelayer
     /// <summary>
     /// Remove a relayer.
     /// LOW-05: Prevents removal if it would make the threshold unreachable.
+    /// MED-05: Callers should coordinate relayer set changes with in-flight withdrawals.
+    /// Removing a relayer invalidates any pending signatures from that relayer.
+    /// Consider a grace period before activating the change to allow in-flight
+    /// transactions to finalize with the previous relayer set.
     /// </summary>
     /// <exception cref="InvalidOperationException">If removal would leave fewer relayers than the threshold.</exception>
     public void RemoveRelayer(byte[] publicKey)

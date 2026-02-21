@@ -731,6 +731,92 @@ public class BridgeStateTests
         deposit.DestinationChainId.Should().Be(5);
     }
 
+    // ── Pause (MED-04) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Lock_While_Paused_Throws()
+    {
+        _bridge.Pause();
+        var act = () => _bridge.Lock(Addr(1), Addr(2), 100);
+        act.Should().Throw<BridgeException>().WithMessage("*paused*");
+    }
+
+    [Fact]
+    public void Unlock_While_Paused_Returns_False()
+    {
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var relayer = new MultisigRelayer(1);
+        relayer.AddRelayer(pubKey.ToArray());
+
+        var withdrawal = new BridgeWithdrawal
+        {
+            DepositNonce = 0,
+            Recipient = Addr(2),
+            Amount = 100,
+            StateRoot = new byte[32],
+        };
+
+        var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
+        withdrawal.Signatures.Add(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
+
+        _bridge.Pause();
+        _bridge.Unlock(withdrawal, relayer).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Resume_After_Pause_Allows_Operations()
+    {
+        _bridge.Pause();
+        _bridge.IsPaused.Should().BeTrue();
+
+        _bridge.Resume();
+        _bridge.IsPaused.Should().BeFalse();
+
+        // Should work after resume
+        var deposit = _bridge.Lock(Addr(1), Addr(2), 100);
+        deposit.Amount.Should().Be(100);
+    }
+
+    // ── Deposit expiry/cancellation (MED-01) ─────────────────────────
+
+    [Fact]
+    public void CancelExpiredDeposit_Cancels_Old_Pending_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 100 };
+        bridge.Lock(Addr(1), Addr(2), 5000);
+        bridge.GetLockedBalance().Should().Be(5000);
+
+        // Simulate enough time passing
+        var futureTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 200;
+        bridge.CancelExpiredDeposit(0, futureTime).Should().BeTrue();
+
+        bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Failed);
+        bridge.GetLockedBalance().Should().Be(0); // Refunded
+    }
+
+    [Fact]
+    public void CancelExpiredDeposit_Rejects_NonExpired_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 86400 };
+        bridge.Lock(Addr(1), Addr(2), 1000);
+
+        // Try to cancel immediately (not expired yet)
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        bridge.CancelExpiredDeposit(0, now).Should().BeFalse();
+        bridge.GetDeposit(0)!.Status.Should().Be(BridgeTransferStatus.Pending);
+    }
+
+    [Fact]
+    public void CancelExpiredDeposit_Rejects_Confirmed_Deposit()
+    {
+        var bridge = new BridgeState { DepositExpirySeconds = 100 };
+        bridge.Lock(Addr(1), Addr(2), 1000);
+        bridge.ConfirmDeposit(0, 42);
+
+        var futureTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 200;
+        bridge.CancelExpiredDeposit(0, futureTime).Should().BeFalse();
+    }
+
     // ── Thread safety ────────────────────────────────────────────────────
 
     [Fact]
