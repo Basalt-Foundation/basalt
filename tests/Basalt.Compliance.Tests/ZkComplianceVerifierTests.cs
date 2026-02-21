@@ -283,14 +283,57 @@ public class ZkComplianceVerifierTests
         var proof = MakeProof(schema, Nullifier(11));
         var requirements = new[] { MakeRequirement(schema) };
 
+        // Requirements exist but no ZK verifier — fails with ComplianceProofMissing
         var result = engine.VerifyProofs(
             new[] { proof },
             requirements,
             blockTimestamp: 1000);
 
         result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofMissing);
+        result.Reason.Should().Contain("requirements exist");
+    }
+
+    [Fact]
+    public void Engine_WithoutZkVerifier_ProofsButNoRequirements_Fails()
+    {
+        var registry = new IdentityRegistry();
+        var sanctions = new SanctionsList();
+        var engine = new ComplianceEngine(registry, sanctions); // No ZK verifier
+
+        var schema = SchemaId(13);
+        var proof = MakeProof(schema, Nullifier(13));
+
+        // Proofs provided but no verifier to validate them
+        var result = engine.VerifyProofs(
+            new[] { proof },
+            Array.Empty<ProofRequirement>(),
+            blockTimestamp: 1000);
+
+        result.Allowed.Should().BeFalse();
         result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofInvalid);
         result.Reason.Should().Contain("ZK verification not available");
+    }
+
+    [Fact]
+    public void Engine_WithoutZkVerifier_RequirementsButNoProofs_Fails()
+    {
+        // C-01: Previously returned Success — requirements exist but no verifier and no proofs
+        var registry = new IdentityRegistry();
+        var sanctions = new SanctionsList();
+        var engine = new ComplianceEngine(registry, sanctions); // No ZK verifier
+
+        var schema = SchemaId(12);
+        var requirements = new[] { MakeRequirement(schema) };
+
+        var result = engine.VerifyProofs(
+            Array.Empty<ComplianceProof>(),
+            requirements,
+            blockTimestamp: 1000);
+
+        result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.ComplianceProofMissing);
+        result.Reason.Should().Contain("requirements exist");
     }
 
     [Fact]

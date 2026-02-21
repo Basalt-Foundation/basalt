@@ -44,8 +44,14 @@ public sealed class ComplianceEngine : IComplianceVerifier
         if (_zkVerifier != null)
             return _zkVerifier.VerifyProofs(proofs, requirements, blockTimestamp);
 
-        // No ZK verifier configured — can't verify proofs
-        if (requirements.Length > 0 && proofs.Length > 0)
+        // No ZK verifier configured — fail if requirements exist (C-01)
+        if (requirements.Length > 0)
+            return ComplianceCheckOutcome.Fail(
+                BasaltErrorCode.ComplianceProofMissing,
+                "Compliance requirements exist but ZK verification is not available");
+
+        // Proofs provided but no verifier to validate them
+        if (proofs.Length > 0)
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "ZK verification not available");
@@ -200,11 +206,11 @@ public sealed class ComplianceEngine : IComplianceVerifier
                 }
             }
 
-            // Step 5: Holding limit (concentration check)
+            // Step 5: Holding limit (concentration check, H-01: overflow-safe)
             if (policy.MaxHoldingAmount > 0)
             {
-                var newBalance = receiverCurrentBalance + amount;
-                if (newBalance > policy.MaxHoldingAmount)
+                if (receiverCurrentBalance > policy.MaxHoldingAmount
+                    || amount > policy.MaxHoldingAmount - receiverCurrentBalance)
                 {
                     LogCheckResult(tokenAddress, sender, receiver, amount, false, "HOLDING_LIMIT");
                     return ComplianceCheckResult.Fail(ComplianceErrorCode.HoldingLimit,

@@ -202,6 +202,24 @@ public class ComplianceEngineTests
     }
 
     [Fact]
+    public void HoldingLimit_Overflow_Still_Blocked()
+    {
+        // H-01: ulong overflow bypass — receiverCurrentBalance + amount wraps to small value
+        KycBoth();
+        _engine.SetPolicy(_tokenAddr, new CompliancePolicy
+        {
+            TokenAddress = _tokenAddr,
+            MaxHoldingAmount = 1000,
+        });
+
+        // ulong.MaxValue + 500 would wrap to 499, which is < 1000
+        var result = _engine.CheckTransfer(_tokenAddr, _sender, _receiver, 500, 2000,
+            receiverCurrentBalance: ulong.MaxValue);
+        result.Allowed.Should().BeFalse();
+        result.ErrorCode.Should().Be(ComplianceErrorCode.HoldingLimit);
+    }
+
+    [Fact]
     public void HoldingLimit_Allows_Under_Limit()
     {
         KycBoth();
