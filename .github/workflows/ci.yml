@@ -13,10 +13,42 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
 jobs:
-  build:
-    name: Build & Test
+  test:
+    name: "Test (shard-${{ matrix.shard }})"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            projects: >-
+              tests/Basalt.Sdk.Tests/Basalt.Sdk.Tests.csproj
+          - shard: 2
+            projects: >-
+              tests/Basalt.Confidentiality.Tests/Basalt.Confidentiality.Tests.csproj
+              tests/Basalt.Consensus.Tests/Basalt.Consensus.Tests.csproj
+              tests/Basalt.Bridge.Tests/Basalt.Bridge.Tests.csproj
+          - shard: 3
+            projects: >-
+              tests/Basalt.Storage.Tests/Basalt.Storage.Tests.csproj
+              tests/Basalt.Execution.Tests/Basalt.Execution.Tests.csproj
+              tests/Basalt.Sdk.Analyzers.Tests/Basalt.Sdk.Analyzers.Tests.csproj
+              tests/Basalt.Integration.Tests/Basalt.Integration.Tests.csproj
+          - shard: 4
+            projects: >-
+              tests/Basalt.Network.Tests/Basalt.Network.Tests.csproj
+              tests/Basalt.Sdk.Wallet.Tests/Basalt.Sdk.Wallet.Tests.csproj
+              tests/Basalt.Core.Tests/Basalt.Core.Tests.csproj
+              tests/Basalt.Codec.Tests/Basalt.Codec.Tests.csproj
+              tests/Basalt.Compliance.Tests/Basalt.Compliance.Tests.csproj
+              tests/Basalt.Crypto.Tests/Basalt.Crypto.Tests.csproj
+              tests/Basalt.Api.Tests/Basalt.Api.Tests.csproj
+              tests/Basalt.Node.Tests/Basalt.Node.Tests.csproj
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +57,14 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y librocksdb-dev
@@ -36,11 +76,36 @@ jobs:
         run: dotnet build --no-restore --warnaserror
 
       - name: Test
-        run: dotnet test --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: |
+          for project in ${{ matrix.projects }}; do
+            dotnet test "$project" --no-build --verbosity normal \
+              --logger "trx;LogFileName=$(basename "$project" .csproj).trx"
+          done
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-shard-${{ matrix.shard }}
           path: '**/TestResults/*.trx'
+
+  report:
+    name: "Build & Test"
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-shard-*
+          merge-multiple: true
+          path: test-results
+
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::One or more test shards failed"
+            exit 1
+          fi
+          echo "All test shards passed"
