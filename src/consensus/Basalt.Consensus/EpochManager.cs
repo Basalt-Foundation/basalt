@@ -162,11 +162,12 @@ public sealed class EpochManager
     public ValidatorSet BuildValidatorSetFromStaking()
     {
         var activeValidators = _stakingState.GetActiveValidators(); // sorted by TotalStake desc
-        // Cap at 64 — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
+        // Cap at MaxValidatorSetSize — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
         var configuredSize = (int)_chainParams.ValidatorSetSize;
-        var maxSize = Math.Min(configuredSize, 64);
-        if (configuredSize > 64)
-            _logger.LogWarning("ValidatorSetSize {Configured} exceeds bitmap limit of 64; effective set size capped at 64", configuredSize);
+        var maxSize = Math.Min(configuredSize, (int)ChainParameters.MaxValidatorSetSize);
+        if (configuredSize > (int)ChainParameters.MaxValidatorSetSize)
+            _logger.LogWarning("ValidatorSetSize {Configured} exceeds bitmap limit of {Max}; effective set size capped",
+                configuredSize, ChainParameters.MaxValidatorSetSize);
         var selected = activeValidators.Take(maxSize).ToList();
 
         // Sort by address ascending for deterministic index assignment across all nodes
