@@ -331,7 +331,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         // Wire transport → message processing
         _transport.OnMessageReceived += HandleRawMessage;
-        _transport.OnPeerConnected += HandleNewConnection;
+        _transport.OnPeerConnected += conn => _ = HandleNewConnectionAsync(conn);
         _transport.OnPeerDisconnected += HandlePeerDisconnected;
 
         // NET-C04: Wire peer ban → transport disconnect
@@ -659,7 +659,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _gossip!.SendToPeer(leader.PeerId, vote);
     }
 
-    private async void HandleNewConnection(PeerConnection connection)
+    private async Task HandleNewConnectionAsync(PeerConnection connection)
     {
         try
         {
