@@ -104,14 +104,16 @@ public static class TransferValidator
     }
 
     /// <summary>
-    /// Full transfer validation: checks balance preservation and optional range proof.
+    /// Full transfer validation: checks balance preservation and range proof.
     /// </summary>
     /// <param name="transfer">The confidential transfer to validate.</param>
     /// <param name="rangeProofVk">
-    /// Optional verification key for range proof validation.
+    /// M-03: The verification key for range proof validation. Required — range proofs
+    /// are mandatory for confidential transfers to prevent hidden inflation (F-02).
+    /// A null VK will cause the range proof check to fail.
     /// </param>
     /// <returns><c>true</c> if all checks pass.</returns>
-    public static bool ValidateTransfer(ConfidentialTransfer transfer, VerificationKey? rangeProofVk = null)
+    public static bool ValidateTransfer(ConfidentialTransfer transfer, VerificationKey? rangeProofVk)
     {
         if (!ValidateBalance(transfer))
             return false;

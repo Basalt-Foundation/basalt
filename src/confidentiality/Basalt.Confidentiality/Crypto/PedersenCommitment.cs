@@ -83,7 +83,10 @@ public static class PedersenCommitment
         try
         {
             byte[] recomputed = Commit(value, blindingFactor);
-            return commitment.SequenceEqual(recomputed);
+            // M-01: Use constant-time comparison to prevent timing side-channels.
+            // Variable-time SequenceEqual leaks information about matching prefix
+            // length, which could help an attacker brute-force blinding factors.
+            return CryptographicOperations.FixedTimeEquals(commitment, recomputed);
         }
         catch
         {
@@ -105,8 +108,18 @@ public static class PedersenCommitment
     {
         var blindingFactor = new byte[PairingEngine.ScalarSize];
         RandomNumberGenerator.Fill(blindingFactor);
-        var commitment = Commit(value, blindingFactor);
-        return (commitment, blindingFactor);
+        try
+        {
+            var commitment = Commit(value, blindingFactor);
+            return (commitment, blindingFactor);
+        }
+        catch
+        {
+            // L-03: Zero blinding factor if commitment fails to prevent
+            // secret material from lingering in memory.
+            CryptographicOperations.ZeroMemory(blindingFactor);
+            throw;
+        }
     }
 
     /// <summary>

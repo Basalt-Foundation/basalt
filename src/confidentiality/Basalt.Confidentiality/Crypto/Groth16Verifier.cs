@@ -91,6 +91,35 @@ public static class Groth16Verifier
             vk.DeltaG2.Length != PairingEngine.G2CompressedSize)
             return false;
 
+        // C-02: Reject identity elements in proof — a proof containing identity
+        // points is trivially forgeable and breaks Groth16 soundness.
+        if (PairingEngine.IsG1Identity(proof.A) ||
+            PairingEngine.IsG2Identity(proof.B) ||
+            PairingEngine.IsG1Identity(proof.C))
+            return false;
+
+        // C-01: Validate subgroup membership. G2 has a non-trivial cofactor,
+        // so points can be on the curve but NOT in the subgroup. Accepting
+        // such points enables small-subgroup attacks on the pairing equation.
+        // G1 cofactor is 1 so all on-curve G1 points are in the subgroup,
+        // but we validate them anyway for defense-in-depth.
+        if (!PairingEngine.IsValidG1(proof.A) ||
+            !PairingEngine.IsValidG2(proof.B) ||
+            !PairingEngine.IsValidG1(proof.C))
+            return false;
+
+        if (!PairingEngine.IsValidG1(vk.AlphaG1) ||
+            !PairingEngine.IsValidG2(vk.BetaG2) ||
+            !PairingEngine.IsValidG2(vk.GammaG2) ||
+            !PairingEngine.IsValidG2(vk.DeltaG2))
+            return false;
+
+        foreach (var ic in vk.IC)
+        {
+            if (ic == null || ic.Length != PairingEngine.G1CompressedSize || !PairingEngine.IsValidG1(ic))
+                return false;
+        }
+
         try
         {
             // Step 1: Compute vk_x = IC[0] + sum(publicInputs[i] * IC[i+1])
@@ -120,15 +149,9 @@ public static class Groth16Verifier
             // Single final exponentiation
             Bls.PT result = ml1.FinalExp();
 
-            // Check if result is the GT identity (which means the pairing equation holds).
-            // The GT identity is e(identity_G1, any_G2) = 1.
-            // We compare against e(0, G2) which is the identity in GT.
-            var identityG1 = new byte[PairingEngine.G1CompressedSize];
-            identityG1[0] = 0xC0; // compressed identity
-            Bls.PT gtIdentity = PairingEngine.ComputeMillerLoop(identityG1, vk.BetaG2);
-            gtIdentity = gtIdentity.FinalExp();
-
-            return result.IsEqual(gtIdentity);
+            // L-01: Check if result is the GT identity (1_GT) using IsOne().
+            // This avoids recomputing the GT identity via a pairing on every call.
+            return result.IsOne();
         }
         catch
         {

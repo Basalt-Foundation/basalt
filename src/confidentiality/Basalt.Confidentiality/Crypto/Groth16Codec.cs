@@ -94,7 +94,10 @@ public static class Groth16Codec
         Buffer.BlockCopy(vk.DeltaG2, 0, result, offset, PairingEngine.G2CompressedSize);
         offset += PairingEngine.G2CompressedSize;
 
-        BitConverter.TryWriteBytes(result.AsSpan(offset), vk.IC.Length);
+        // H-01: Use explicit little-endian encoding to match DecodeVerificationKey.
+        // BitConverter.TryWriteBytes uses platform-native endianness which could
+        // differ between big-endian and little-endian architectures.
+        BinaryPrimitives.WriteInt32LittleEndian(result.AsSpan(offset), vk.IC.Length);
         offset += sizeof(int);
 
         foreach (var ic in vk.IC)
@@ -132,9 +135,11 @@ public static class Groth16Codec
         int icCount = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(offset, sizeof(int)));
         offset += sizeof(int);
 
-        // F-12: Validate IC count to prevent negative values or absurd allocations.
+        // L-04: Validate IC count to prevent negative values or absurd allocations.
+        // Upper bound of 1024 is generous: a circuit with >1024 public inputs would
+        // be impractical. This prevents DoS via crafted data causing large allocations.
         if (icCount < 0 || icCount > 1024)
-            throw new ArgumentException($"Invalid IC count: {icCount}");
+            throw new ArgumentException($"Invalid IC count: {icCount}. Must be 0-1024.");
 
         int expectedRemaining = icCount * PairingEngine.G1CompressedSize;
         if (data.Length - offset < expectedRemaining)

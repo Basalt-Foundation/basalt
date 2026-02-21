@@ -74,6 +74,12 @@ public static class ChannelEncryption
     /// <summary>
     /// Build a 12-byte nonce from a 64-bit message sequence number.
     /// The first 4 bytes are zero; the last 8 bytes are the big-endian sequence number.
+    ///
+    /// L-06 Design note: The leading 4 zero bytes are an intentional design choice,
+    /// not wasted space. AES-256-GCM nonces are 96 bits (12 bytes), and our sequence
+    /// numbers are 64 bits. The zero prefix ensures the nonce is always the correct
+    /// size without requiring callers to manage padding. The 2^64 nonce space is
+    /// more than sufficient for any channel's lifetime.
     /// </summary>
     /// <param name="sequenceNumber">Monotonically increasing message counter.</param>
     /// <returns>12-byte nonce.</returns>
