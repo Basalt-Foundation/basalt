@@ -159,8 +159,12 @@
             _suggestions.Add(new("Search", q));
     }
 
+    // L-1: Cap stored search values to prevent localStorage bloat
+    private const int MaxSearchLength = 200;
+
     private async Task SaveSearch(string query)
     {
+        if (query.Length > MaxSearchLength) query = query[..MaxSearchLength];
         _recentSearches.Remove(query);
         _recentSearches.Insert(0, query);
         if (_recentSearches.Count > 10) _recentSearches.RemoveAt(10);

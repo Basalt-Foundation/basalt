@@ -28,9 +28,9 @@
                     {
                         <tr @onclick="() => NavigateToBlock(block.Number)" style="cursor: pointer">
                             <td data-label="Block">@block.Number</td>
-                            <td data-label="Hash" class="truncate hash">@TruncateHash(block.Hash)</td>
+                            <td data-label="Hash" class="truncate hash">@FormatHelper.TruncateHash(block.Hash)</td>
                             <td data-label="Time">@block.FormattedTime</td>
-                            <td data-label="Proposer" class="truncate hash">@TruncateHash(block.Proposer)</td>
+                            <td data-label="Proposer" class="truncate hash">@FormatHelper.TruncateHash(block.Proposer)</td>
                             <td data-label="Txs">@block.TransactionCount</td>
                             <td data-label="Gas Used">
                                 @block.GasUsed
@@ -87,11 +87,6 @@
     private async Task PreviousPage() { if (_page > 1) { _page--; await LoadBlocks(); } }
     private async Task NextPage() { if (_page < TotalPages) { _page++; await LoadBlocks(); } }
 
+    // L-8: Use shared FormatHelper.TruncateHash instead of duplicate local method
     private void NavigateToBlock(ulong number) => Nav.NavigateTo($"/block/{number}");
-
-    private static string TruncateHash(string hash)
-    {
-        if (hash.Length <= 16) return hash;
-        return hash[..10] + "..." + hash[^6..];
-    }
 }
