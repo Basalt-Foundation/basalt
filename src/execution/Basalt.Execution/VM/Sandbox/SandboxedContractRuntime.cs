@@ -151,18 +151,31 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             // Charge base call gas
             ctx.GasMeter.Consume(GasTable.Call);
 
-            // SDK contract path
+            // H-12: SDK contract path — now wrapped in timeout scope
             if (ContractRegistry.IsSdkContract(code))
             {
-                var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
-                using var scope = ContractBridge.Setup(ctx, host);
-                var contract = _registry.CreateInstance(typeId, ctorArgs);
+                using var sdkCts = new CancellationTokenSource(_config.ExecutionTimeout);
+                try
+                {
+                    var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
+                    using var scope = ContractBridge.Setup(ctx, host);
+                    var contract = _registry.CreateInstance(typeId, ctorArgs);
 
-                if (callData.Length < 4)
-                    return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
+                    sdkCts.Token.ThrowIfCancellationRequested();
 
-                var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
-                return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
+                    if (callData.Length < 4)
+                        return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
+
+                    var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
+
+                    sdkCts.Token.ThrowIfCancellationRequested();
+
+                    return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
+                }
+                catch (OperationCanceledException) when (sdkCts.IsCancellationRequested)
+                {
+                    throw new SandboxTimeoutException(_config.ExecutionTimeout);
+                }
             }
 
             // Short-circuit: if callData is too short for a selector, treat as fallback

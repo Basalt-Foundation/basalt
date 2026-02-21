@@ -23,6 +23,9 @@ public sealed class ChainParameters
     /// <summary>Maximum transaction data size in bytes.</summary>
     public uint MaxTransactionDataBytes { get; init; } = 128 * 1024; // 128 KB
 
+    /// <summary>H-6: Maximum extra data size in block headers (bytes).</summary>
+    public uint MaxExtraDataBytes { get; init; } = 32;
+
     /// <summary>Minimum gas price in smallest unit.</summary>
     public UInt256 MinGasPrice { get; init; } = new(1);
 

@@ -48,13 +48,21 @@ public sealed class ContractAssemblyContext : AssemblyLoadContext
 
     /// <summary>
     /// Override the default assembly resolution.
-    /// Returns null to fall through to the default <see cref="AssemblyLoadContext"/> resolution,
-    /// which will probe the trusted platform assemblies.
+    /// H-13: Actively rejects non-allowed assemblies instead of falling through to the
+    /// default context, preventing transitive resolution of disallowed dependencies
+    /// (e.g., System.IO.FileSystem, System.Net.Http, System.Diagnostics.Process).
     /// </summary>
     protected override Assembly? Load(AssemblyName assemblyName)
     {
-        // Returning null delegates resolution to the default context.
-        // Actual allow-list enforcement happens via IsAssemblyAllowed before loading.
+        // H-13: Block transitive resolution of non-allowed assemblies
+        if (!IsAssemblyAllowed(assemblyName))
+        {
+            throw new SandboxIsolationException(
+                $"Transitive resolution of assembly '{assemblyName.Name}' is blocked. " +
+                $"Only the following assemblies are permitted: {string.Join(", ", AllowedAssemblyNames)}.");
+        }
+
+        // For allowed assemblies, fall through to the default context
         return null;
     }
 

@@ -37,10 +37,21 @@ public sealed class BlockHeader
     private Hash256 ComputeHash()
     {
         var size = GetSerializedSize();
-        Span<byte> buffer = stackalloc byte[size];
-        var writer = new BasaltWriter(buffer);
-        WriteTo(ref writer);
-        return Blake3Hasher.Hash(writer.WrittenSpan);
+        // H-6: Use heap allocation for large sizes to prevent stack overflow
+        if (size > 4096)
+        {
+            var heapBuffer = new byte[size];
+            var writer = new BasaltWriter(heapBuffer);
+            WriteTo(ref writer);
+            return Blake3Hasher.Hash(writer.WrittenSpan);
+        }
+        else
+        {
+            Span<byte> buffer = stackalloc byte[size];
+            var writer = new BasaltWriter(buffer);
+            WriteTo(ref writer);
+            return Blake3Hasher.Hash(writer.WrittenSpan);
+        }
     }
 
     public int GetSerializedSize()
