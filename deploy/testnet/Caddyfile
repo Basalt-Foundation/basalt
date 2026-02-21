@@ -2,16 +2,26 @@
 # Cloudflare Tunnel terminates HTTPS. Caddy handles routing, CORS, and headers.
 # Two domains: basalt.foundation (website) and testnet.basalt.foundation (testnet).
 
-# ─── Website (basalt.foundation) ───────────────────────────────────
-:80 {
-	# Match website domain first; fall through to testnet for other hosts
-	@website host basalt.foundation
-	handle @website {
-		reverse_proxy website:80
+(security_headers) {
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
 	}
+	header Access-Control-Allow-Origin *
+	header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	header Access-Control-Allow-Headers "Content-Type"
+}
 
-	# ─── Testnet (testnet.basalt.foundation or any other host) ─────
+# ─── Website (basalt.foundation) ───────────────────────────────────
+http://basalt.foundation {
+	reverse_proxy website:80
+	import security_headers
+}
 
+# ─── Testnet (testnet.basalt.foundation or any other host) ─────────
+:80 {
 	# REST API
 	handle /v1/* {
 		reverse_proxy validator-0:5000
@@ -39,16 +49,5 @@
 		reverse_proxy explorer:80
 	}
 
-	# Security headers
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy strict-origin-when-cross-origin
-		-Server
-	}
-
-	# CORS
-	header Access-Control-Allow-Origin *
-	header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-	header Access-Control-Allow-Headers "Content-Type"
+	import security_headers
 }
