@@ -184,4 +184,13 @@ public class BlsSignerTests
 
         sig1.Should().BeEquivalentTo(sig2);
     }
+
+    // ===== AUDIT M-08: Empty aggregation =====
+
+    [Fact]
+    public void AggregateSignatures_EmptyInput_ThrowsArgumentException()
+    {
+        var act = () => _signer.AggregateSignatures(ReadOnlySpan<byte[]>.Empty);
+        act.Should().Throw<ArgumentException>();
+    }
 }
