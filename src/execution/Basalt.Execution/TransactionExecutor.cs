@@ -44,7 +44,7 @@ public sealed class TransactionExecutor
         if (_complianceVerifier != null)
         {
             // COMPL-01: Look up actual policy requirements for the target address
-            var requirements = _complianceVerifier.GetRequirements(tx.To.ToArray());
+            var requirements = _complianceVerifier.GetRequirements(tx.To);
 
             // COMPL-14: Verify ZK proofs if requirements exist or proofs are attached
             if (requirements.Length > 0 || tx.ComplianceProofs.Length > 0)

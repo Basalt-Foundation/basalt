@@ -57,11 +57,11 @@ public sealed class ComplianceEngine : IComplianceVerifier
     /// Get the proof requirements for a given contract/token address.
     /// Returns the RequiredProofs from the compliance policy, or empty if no policy.
     /// </summary>
-    public ProofRequirement[] GetRequirements(byte[] contractAddress)
+    public ProofRequirement[] GetRequirements(Address contractAddress)
     {
         lock (_lock)
         {
-            if (_policies.TryGetValue(ToHex(contractAddress), out var policy))
+            if (_policies.TryGetValue(ToHex(contractAddress.ToArray()), out var policy))
                 return policy.RequiredProofs;
             return [];
         }

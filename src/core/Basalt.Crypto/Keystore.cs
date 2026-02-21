@@ -69,9 +69,28 @@ public static class Keystore
     /// <summary>
     /// Decrypt a private key from a keystore file.
     /// </summary>
+    /// <remarks>
+    /// SECURITY: The returned byte array contains sensitive private key material.
+    /// Callers MUST zero the array using <see cref="CryptographicOperations.ZeroMemory"/>
+    /// when no longer needed.
+    /// </remarks>
     public static byte[] Decrypt(KeystoreFile keystore, string password)
     {
+        // AUDIT L-13: Validate keystore version
+        if (keystore.Version != 1)
+            throw new NotSupportedException(
+                $"Unsupported keystore version: {keystore.Version}. Only version 1 is supported.");
+
         var crypto = keystore.Crypto;
+
+        // AUDIT M-07: Validate KDF parameters before use
+        if (crypto.KdfParams.Iterations <= 0)
+            throw new ArgumentException("Invalid KDF parameter: iterations must be positive.");
+        if (crypto.KdfParams.MemoryKB <= 0)
+            throw new ArgumentException("Invalid KDF parameter: memory must be positive.");
+        if (crypto.KdfParams.Parallelism <= 0)
+            throw new ArgumentException("Invalid KDF parameter: parallelism must be positive.");
+
         var salt = Convert.FromHexString(crypto.KdfParams.Salt);
         var nonce = Convert.FromHexString(crypto.Nonce);
         var tag = Convert.FromHexString(crypto.Tag);
@@ -115,15 +134,24 @@ public static class Keystore
         int memoryKB = Argon2MemoryKB,
         int parallelism = Argon2Parallelism)
     {
-        var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password))
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        try
         {
-            Salt = salt,
-            DegreeOfParallelism = parallelism,
-            MemorySize = memoryKB,
-            Iterations = iterations,
-        };
-
-        return argon2.GetBytes(KeySize);
+            // AUDIT M-05: Dispose Argon2id instance
+            using var argon2 = new Argon2id(passwordBytes)
+            {
+                Salt = salt,
+                DegreeOfParallelism = parallelism,
+                MemorySize = memoryKB,
+                Iterations = iterations,
+            };
+            return argon2.GetBytes(KeySize);
+        }
+        finally
+        {
+            // AUDIT M-06: Zero password byte array
+            CryptographicOperations.ZeroMemory(passwordBytes);
+        }
     }
 }
 

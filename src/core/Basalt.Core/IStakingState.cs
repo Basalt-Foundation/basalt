@@ -30,13 +30,16 @@ public readonly struct StakingOperationResult
 {
     public bool IsSuccess { get; }
     public string? ErrorMessage { get; }
+    public BasaltErrorCode? ErrorCode { get; }
 
-    private StakingOperationResult(bool success, string? error)
+    private StakingOperationResult(bool success, string? error, BasaltErrorCode? errorCode)
     {
         IsSuccess = success;
         ErrorMessage = error;
+        ErrorCode = errorCode;
     }
 
-    public static StakingOperationResult Ok() => new(true, null);
-    public static StakingOperationResult Error(string message) => new(false, message);
+    public static StakingOperationResult Ok() => new(true, null, null);
+    public static StakingOperationResult Error(string message) => new(false, message, null);
+    public static StakingOperationResult Error(string message, BasaltErrorCode errorCode) => new(false, message, errorCode);
 }

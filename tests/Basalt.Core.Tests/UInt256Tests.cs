@@ -374,6 +374,123 @@ public class UInt256Tests
         UInt256.TrySub(UInt256.Zero, UInt256.One, out _).Should().BeFalse();
     }
 
+    // ===== AUDIT C-01: TryAdd overflow edge cases =====
+
+    [Fact]
+    public void TryAdd_CarryWithMaxHi_DetectsOverflow()
+    {
+        // a.Lo = max -> carry will be 1 when added with b.Lo = 1
+        // b.Hi = max -> hiSum = 0 + max = max, hi = max + 1 = overflow
+        var a = new UInt256(UInt128.MaxValue, 0);
+        var b = new UInt256(1, UInt128.MaxValue);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CheckedAdd_CarryWithMaxHi_Throws()
+    {
+        var a = new UInt256(UInt128.MaxValue, 0);
+        var b = new UInt256(1, UInt128.MaxValue);
+        var act = () => UInt256.CheckedAdd(a, b);
+        act.Should().Throw<OverflowException>();
+    }
+
+    [Fact]
+    public void TryAdd_HiOverflowWithoutCarry_DetectsOverflow()
+    {
+        var a = new UInt256(0, UInt128.MaxValue);
+        var b = new UInt256(0, 1);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryAdd_JustBelowOverflow_Succeeds()
+    {
+        UInt256.TryAdd(UInt256.MaxValue, UInt256.Zero, out var result).Should().BeTrue();
+        result.Should().Be(UInt256.MaxValue);
+    }
+
+    [Fact]
+    public void TryAdd_BothMaxHi_DetectsOverflow()
+    {
+        var a = new UInt256(0, UInt128.MaxValue);
+        var b = new UInt256(0, UInt128.MaxValue);
+        UInt256.TryAdd(a, b, out _).Should().BeFalse();
+    }
+
+    // ===== AUDIT M-01: ToString consistency =====
+
+    [Fact]
+    public void ToString_LargeValue_ReturnsDecimal()
+    {
+        var v = new UInt256(0, 1); // 2^128
+        v.ToString().Should().NotStartWith("0x");
+        UInt256.Parse(v.ToString()).Should().Be(v);
+    }
+
+    [Fact]
+    public void ToString_RoundTrip_AllSizes()
+    {
+        var small = new UInt256(42);
+        UInt256.Parse(small.ToString()).Should().Be(small);
+
+        var medium = new UInt256(ulong.MaxValue);
+        UInt256.Parse(medium.ToString()).Should().Be(medium);
+
+        var large = new UInt256(UInt128.MaxValue, 1);
+        UInt256.Parse(large.ToString()).Should().Be(large);
+    }
+
+    // ===== AUDIT M-02: ToHexString zero =====
+
+    [Fact]
+    public void ToHexString_Zero_ReturnsZero()
+    {
+        UInt256.Zero.ToHexString().Should().Be("0");
+    }
+
+    // ===== AUDIT M-03: TryParse =====
+
+    [Fact]
+    public void TryParse_ValidDecimal_ReturnsTrue()
+    {
+        UInt256.TryParse("12345", out var result).Should().BeTrue();
+        ((ulong)result).Should().Be(12345UL);
+    }
+
+    [Fact]
+    public void TryParse_ValidHex_ReturnsTrue()
+    {
+        UInt256.TryParse("0xff", out var result).Should().BeTrue();
+        ((ulong)result).Should().Be(255UL);
+    }
+
+    [Fact]
+    public void TryParse_Invalid_ReturnsFalse()
+    {
+        UInt256.TryParse("not_a_number", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Null_ReturnsFalse()
+    {
+        UInt256.TryParse(null, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Empty_ReturnsFalse()
+    {
+        UInt256.TryParse("", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_Overflow_ReturnsFalse()
+    {
+        // A value that exceeds 2^256
+        var huge = "115792089237316195423570985008687907853269984665640564039457584007913129639936"; // 2^256
+        UInt256.TryParse(huge, out _).Should().BeFalse();
+    }
+
     // ===== CORE-06: ChainParameters tests =====
 
     [Fact]
@@ -404,6 +521,61 @@ public class UInt256Tests
         p.ValidatorSetSize.Should().Be(4u);
         p.EpochLength.Should().Be(100u);
         p.InitialBaseFee.Should().Be(new UInt256(1));
+    }
+
+    // ===== AUDIT H-07: ChainParameters.Validate =====
+
+    [Fact]
+    public void ChainParameters_Validate_DefaultDevnet_Succeeds()
+    {
+        var act = () => ChainParameters.Devnet.Validate();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroBlockTimeMs_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", BlockTimeMs = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*BlockTimeMs*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroBaseFeeChangeDenominator_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", BaseFeeChangeDenominator = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*BaseFeeChangeDenominator*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroElasticityMultiplier_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", ElasticityMultiplier = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*ElasticityMultiplier*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroEpochLength_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", EpochLength = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*EpochLength*");
+    }
+
+    // ===== AUDIT L-05: Mainnet/Testnet static readonly =====
+
+    [Fact]
+    public void ChainParameters_Mainnet_ReturnsSameInstance()
+    {
+        ReferenceEquals(ChainParameters.Mainnet, ChainParameters.Mainnet).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ChainParameters_Testnet_ReturnsSameInstance()
+    {
+        ReferenceEquals(ChainParameters.Testnet, ChainParameters.Testnet).Should().BeTrue();
     }
 
     // ===== CORE-08: Address.IsSystemContract tests =====
@@ -451,5 +623,82 @@ public class UInt256Tests
         bytes[19] = 0x01;
         var addr = new Address(bytes);
         addr.IsSystemContract.Should().BeFalse();
+    }
+
+    // ===== AUDIT C-03: Unaligned memory access roundtrip tests =====
+
+    [Fact]
+    public void Signature_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[Signature.Size + 3];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(3, Signature.Size);
+        var sig = new Signature(span);
+        sig.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void PublicKey_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[PublicKey.Size + 3];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(3, PublicKey.Size);
+        var key = new PublicKey(span);
+        key.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void BlsSignature_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[BlsSignature.Size + 5];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(5, BlsSignature.Size);
+        var sig = new BlsSignature(span);
+        sig.ToArray().Should().Equal(span.ToArray());
+    }
+
+    [Fact]
+    public void BlsPublicKey_FromUnalignedSpan_RoundTrips()
+    {
+        var buffer = new byte[BlsPublicKey.Size + 7];
+        Random.Shared.NextBytes(buffer);
+        var span = buffer.AsSpan(7, BlsPublicKey.Size);
+        var key = new BlsPublicKey(span);
+        key.ToArray().Should().Equal(span.ToArray());
+    }
+
+    // ===== AUDIT H-09: GetHashCode distribution tests =====
+
+    [Fact]
+    public void Signature_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[Signature.Size];
+        var bytes2 = new byte[Signature.Size];
+        bytes1[56] = 0x01; // differs only in _v7
+        var sig1 = new Signature(bytes1);
+        var sig2 = new Signature(bytes2);
+        sig1.GetHashCode().Should().NotBe(sig2.GetHashCode());
+    }
+
+    [Fact]
+    public void BlsSignature_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[BlsSignature.Size];
+        var bytes2 = new byte[BlsSignature.Size];
+        bytes1[88] = 0x01; // differs only in _v11
+        var sig1 = new BlsSignature(bytes1);
+        var sig2 = new BlsSignature(bytes2);
+        sig1.GetHashCode().Should().NotBe(sig2.GetHashCode());
+    }
+
+    [Fact]
+    public void BlsPublicKey_GetHashCode_DiffersForTailOnlyDifference()
+    {
+        var bytes1 = new byte[BlsPublicKey.Size];
+        var bytes2 = new byte[BlsPublicKey.Size];
+        bytes1[40] = 0x01; // differs only in _v5
+        var key1 = new BlsPublicKey(bytes1);
+        var key2 = new BlsPublicKey(bytes2);
+        key1.GetHashCode().Should().NotBe(key2.GetHashCode());
     }
 }

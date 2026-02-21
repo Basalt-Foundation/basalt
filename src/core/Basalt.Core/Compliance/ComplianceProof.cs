@@ -11,10 +11,10 @@ public readonly struct ComplianceProof
     public Hash256 SchemaId { get; init; }
 
     /// <summary>Groth16 proof bytes (A[48] + B[96] + C[48] = 192 bytes).</summary>
-    public byte[] Proof { get; init; }
+    public byte[] Proof { get; init; } = Array.Empty<byte>();
 
     /// <summary>Public inputs for the Groth16 verifier (N × 32-byte scalars).</summary>
-    public byte[] PublicInputs { get; init; }
+    public byte[] PublicInputs { get; init; } = Array.Empty<byte>();
 
     /// <summary>
     /// Unique nullifier per proof, preventing cross-transaction correlation.
@@ -25,4 +25,7 @@ public readonly struct ComplianceProof
 
     /// <summary>Fixed size of a Groth16 proof (A + B + C).</summary>
     public const int Groth16ProofSize = 192;
+
+    /// <summary>Parameterless constructor for default initialization with safe defaults.</summary>
+    public ComplianceProof() { }
 }

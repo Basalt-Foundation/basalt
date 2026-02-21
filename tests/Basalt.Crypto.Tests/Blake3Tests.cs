@@ -66,4 +66,36 @@ public class Blake3Tests
 
         incrementalResult.Should().Be(singleShot);
     }
+
+    // ===== AUDIT M-11: Disposed guard on IncrementalHasher =====
+
+    [Fact]
+    public void IncrementalHasher_UpdateAfterDispose_ThrowsObjectDisposedException()
+    {
+        var hasher = Blake3Hasher.CreateIncremental();
+        hasher.Dispose();
+
+        var act = () => hasher.Update(new byte[] { 1, 2, 3 });
+        act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void IncrementalHasher_FinalizeAfterDispose_ThrowsObjectDisposedException()
+    {
+        var hasher = Blake3Hasher.CreateIncremental();
+        hasher.Dispose();
+
+        var act = () => hasher.Finalize();
+        act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void IncrementalHasher_DoubleDispose_DoesNotThrow()
+    {
+        var hasher = Blake3Hasher.CreateIncremental();
+        hasher.Dispose();
+
+        var act = () => hasher.Dispose();
+        act.Should().NotThrow();
+    }
 }

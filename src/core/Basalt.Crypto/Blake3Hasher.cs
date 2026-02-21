@@ -49,6 +49,7 @@ public static class Blake3Hasher
 public sealed class IncrementalHasher : IDisposable
 {
     private readonly Blake3.Hasher _hasher;
+    private bool _disposed;
 
     internal IncrementalHasher()
     {
@@ -57,11 +58,13 @@ public sealed class IncrementalHasher : IDisposable
 
     public void Update(ReadOnlySpan<byte> data)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         _hasher.Update(data);
     }
 
     public Hash256 Finalize()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         Span<byte> output = stackalloc byte[32];
         _hasher.Finalize(output);
         return new Hash256(output);
@@ -69,11 +72,16 @@ public sealed class IncrementalHasher : IDisposable
 
     public void FinalizeInto(Span<byte> output)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         _hasher.Finalize(output);
     }
 
     public void Dispose()
     {
-        _hasher.Dispose();
+        if (!_disposed)
+        {
+            _disposed = true;
+            _hasher.Dispose();
+        }
     }
 }
