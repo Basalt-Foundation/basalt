@@ -163,7 +163,7 @@ public class ConfidentialTransferTests
         // because range proofs are mandatory to prevent hidden inflation.
         var transfer = CreateBalancedTransfer(amount: 42, inputBlindingValue: 7, outputBlindingValue: 3);
 
-        TransferValidator.ValidateTransfer(transfer).Should().BeFalse();
+        TransferValidator.ValidateTransfer(transfer, null).Should().BeFalse();
     }
 
     [Fact]
@@ -419,13 +419,13 @@ public class ConfidentialTransferTests
             BalanceProofBlinding = new byte[32]
         };
 
-        TransferValidator.ValidateTransfer(transfer).Should().BeFalse();
+        TransferValidator.ValidateTransfer(transfer, null).Should().BeFalse();
     }
 
     [Fact]
     public void ValidateTransfer_NullTransfer_ReturnsFalse()
     {
-        TransferValidator.ValidateTransfer(null!).Should().BeFalse();
+        TransferValidator.ValidateTransfer(null!, null).Should().BeFalse();
     }
 
     // ── ValidateRangeProof ──────────────────────────────────────────────────

@@ -6,6 +6,8 @@ using Basalt.Crypto;
 using FluentAssertions;
 using Xunit;
 
+#pragma warning disable CS0618 // Tests exercise deprecated 3-parameter overloads for backward compatibility coverage
+
 namespace Basalt.Confidentiality.Tests;
 
 public class PrivateChannelTests

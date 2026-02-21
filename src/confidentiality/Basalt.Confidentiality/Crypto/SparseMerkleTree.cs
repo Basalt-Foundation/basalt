@@ -87,6 +87,11 @@ public sealed class SparseMerkleTree
     /// above the leaves (0 = leaf, _depth = root) and hex_prefix encodes the
     /// path bits that identify a node at that level.
     /// Only nodes whose hash differs from the default are stored.
+    ///
+    /// M-04 Performance note: String keys incur allocation and hashing overhead
+    /// compared to a struct-based key (e.g., (int level, Hash256 prefix)).
+    /// This is acceptable for the current use case (off-chain issuer revocation
+    /// trees with moderate size) but should be profiled if used in hot paths.
     /// </summary>
     private readonly Dictionary<string, Hash256> _nodes;
 

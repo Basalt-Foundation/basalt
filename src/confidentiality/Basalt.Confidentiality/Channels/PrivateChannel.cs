@@ -221,6 +221,7 @@ public sealed class PrivateChannel
     /// Uses PartyAPublicKey as the sender direction (legacy behavior for single-direction channels).
     /// Callers should prefer the 4-parameter overload with explicit senderX25519PublicKey.
     /// </summary>
+    [Obsolete("M-05: Use the 4-parameter overload with explicit senderX25519PublicKey to specify direction.")]
     public ChannelMessage CreateMessage(byte[] sharedSecret, byte[] payload, byte[] senderPrivateKey)
     {
         // Legacy callers don't specify direction; default to PartyA as sender
@@ -280,6 +281,7 @@ public sealed class PrivateChannel
     /// Uses PartyAPublicKey as the sender direction (legacy behavior for single-direction channels).
     /// Callers should prefer the 4-parameter overload with explicit senderX25519PublicKey.
     /// </summary>
+    [Obsolete("M-05: Use the 4-parameter overload with explicit senderX25519PublicKey to specify direction.")]
     public byte[] VerifyAndDecrypt(ChannelMessage message, byte[] sharedSecret, PublicKey senderPublicKey)
     {
         // Legacy callers don't specify direction; default to PartyA as sender
