@@ -51,7 +51,12 @@ public sealed class BlockProductionLoop
     {
         _cts?.Cancel();
         if (_loopTask != null)
-            await _loopTask;
+        {
+            // L-7: Timeout to prevent indefinite hang if ProduceBlock is stuck
+            var completed = await Task.WhenAny(_loopTask, Task.Delay(30_000));
+            if (completed != _loopTask)
+                _logger.LogWarning("Block production loop did not stop within 30 seconds.");
+        }
         _logger.LogInformation("Block production stopped.");
     }
 
@@ -84,10 +89,15 @@ public sealed class BlockProductionLoop
             return;
         }
 
-        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock);
-        var block = _blockBuilder.BuildBlock(pendingTxs, _stateDb, parentBlock.Header, _proposer);
+        // C-4: Fork the state database before building to prevent canonical state corruption
+        // if AddBlock fails (e.g., due to a concurrent consensus finalization).
+        var proposalState = _stateDb.Fork();
 
-        var result = _chainManager.AddBlock(block);
+        // M-8: Pass stateDb to GetPending for nonce-gap filtering
+        var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, proposalState);
+        var block = _blockBuilder.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposer);
+
+        var result = _chainManager.AddBlock(block, block.Header.StateRoot);
         if (result.IsSuccess)
         {
             _mempool.RemoveConfirmed(block.Transactions);
@@ -103,6 +113,7 @@ public sealed class BlockProductionLoop
         }
         else
         {
+            // C-4: Fork is discarded — canonical state is unaffected
             _logger.LogError("Failed to add block: {Error}", result.Message);
         }
     }

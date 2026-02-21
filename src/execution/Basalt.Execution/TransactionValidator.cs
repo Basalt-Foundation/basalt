@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Crypto;
+using Basalt.Execution.VM;
 using Basalt.Storage;
 
 namespace Basalt.Execution;
@@ -53,11 +54,19 @@ public sealed class TransactionValidator
             return BasaltResult.Error(BasaltErrorCode.InsufficientBalance, "Insufficient balance for value + gas.");
 
         // Step 6: Check gas limits and fee constraints
+        // H-5: Minimum gas limit validation — must cover at least the base tx cost
+        if (tx.GasLimit < GasTable.TxBase)
+            return BasaltResult.Error(BasaltErrorCode.InsufficientGas, $"Transaction gas limit {tx.GasLimit} is below minimum ({GasTable.TxBase}).");
+
         if (tx.GasLimit > _chainParams.BlockGasLimit)
             return BasaltResult.Error(BasaltErrorCode.GasLimitExceeded, "Transaction gas limit exceeds block gas limit.");
 
         if (tx.IsEip1559)
         {
+            // H-2: MaxPriorityFeePerGas must not exceed MaxFeePerGas (EIP-1559 invariant)
+            if (tx.MaxPriorityFeePerGas > tx.MaxFeePerGas)
+                return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "MaxPriorityFeePerGas exceeds MaxFeePerGas.");
+
             // EIP-1559: MaxFeePerGas must cover the current base fee
             if (!baseFee.IsZero && tx.MaxFeePerGas < baseFee)
                 return BasaltResult.Error(BasaltErrorCode.InsufficientGas, "MaxFeePerGas below current base fee.");

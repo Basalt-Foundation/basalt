@@ -67,6 +67,9 @@ public sealed class BlockBuilder
             if (totalGasUsed + tx.GasLimit > _chainParams.BlockGasLimit)
                 continue;
 
+            // L-5: Signature was already verified at mempool admission (M-2).
+            // Validate() re-verifies here for defense-in-depth. If performance
+            // becomes an issue, consider caching verification results.
             var validation = _validator.Validate(tx, stateDb, baseFee);
             if (!validation.IsSuccess)
             {
@@ -165,6 +168,13 @@ public sealed class BlockBuilder
         return Blake3Hasher.Hash(buffer);
     }
 
+    /// <summary>
+    /// Compute a binary Merkle tree root from a list of hashes.
+    /// L-6: When the leaf count is odd, the last hash is promoted without re-hashing.
+    /// This is a known "second pre-image" pattern. With BLAKE3's 256-bit security,
+    /// exploiting this is computationally infeasible. A future version may add domain
+    /// separation between leaf and internal node hashes for defense-in-depth.
+    /// </summary>
     private static Hash256 ComputeMerkleRoot(List<Hash256> hashes)
     {
         if (hashes.Count == 0)
@@ -180,7 +190,7 @@ public sealed class BlockBuilder
                 if (i + 1 < hashes.Count)
                     next.Add(Blake3Hasher.HashPair(hashes[i], hashes[i + 1]));
                 else
-                    next.Add(hashes[i]);
+                    next.Add(hashes[i]); // L-6: Odd leaf promoted without re-hashing
             }
             hashes = next;
         }

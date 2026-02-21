@@ -37,16 +37,41 @@ public sealed class BlockHeader
     private Hash256 ComputeHash()
     {
         var size = GetSerializedSize();
-        Span<byte> buffer = stackalloc byte[size];
-        var writer = new BasaltWriter(buffer);
-        WriteTo(ref writer);
-        return Blake3Hasher.Hash(writer.WrittenSpan);
+        // H-6: Use heap allocation for large sizes to prevent stack overflow
+        if (size > 4096)
+        {
+            var heapBuffer = new byte[size];
+            var writer = new BasaltWriter(heapBuffer);
+            WriteTo(ref writer);
+            return Blake3Hasher.Hash(writer.WrittenSpan);
+        }
+        else
+        {
+            Span<byte> buffer = stackalloc byte[size];
+            var writer = new BasaltWriter(buffer);
+            WriteTo(ref writer);
+            return Blake3Hasher.Hash(writer.WrittenSpan);
+        }
     }
 
+    /// <summary>
+    /// L-2: Uses proper VarInt size calculation for ExtraData length prefix.
+    /// </summary>
     public int GetSerializedSize()
     {
         return 8 + Hash256.Size + Hash256.Size + Hash256.Size + Hash256.Size +
-               8 + Address.Size + 4 + 8 + 8 + 32 + 4 + 4 + ExtraData.Length;
+               8 + Address.Size + 4 + 8 + 8 + 32 + 4 + VarIntSize((ulong)ExtraData.Length) + ExtraData.Length;
+    }
+
+    private static int VarIntSize(ulong value)
+    {
+        int size = 1;
+        while (value >= 0x80)
+        {
+            size++;
+            value >>= 7;
+        }
+        return size;
     }
 
     public void WriteTo(ref BasaltWriter writer)
