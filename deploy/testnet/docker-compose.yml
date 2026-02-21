@@ -28,7 +28,8 @@ services:
   # ─── Website (Next.js static export via nginx) ───────────────────
   website:
     build:
-      dockerfile: deploy/testnet/Dockerfile.website
+      context: .
+      dockerfile: Dockerfile.website
     container_name: basalt-website
     networks:
       - basalt-testnet
