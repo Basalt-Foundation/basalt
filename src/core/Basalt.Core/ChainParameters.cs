@@ -74,19 +74,49 @@ public sealed class ChainParameters
     /// <summary>Protocol version.</summary>
     public uint ProtocolVersion { get; init; } = 1;
 
-    /// <summary>Pre-defined Basalt mainnet parameters.</summary>
-    public static ChainParameters Mainnet => new()
+    /// <summary>
+    /// Validates that all chain parameters are within acceptable ranges.
+    /// Should be called at node startup to catch misconfigurations early.
+    /// </summary>
+    public void Validate()
+    {
+        if (BlockTimeMs == 0)
+            throw new InvalidOperationException("BlockTimeMs must be greater than zero.");
+        if (BaseFeeChangeDenominator == 0)
+            throw new InvalidOperationException("BaseFeeChangeDenominator must be greater than zero.");
+        if (ElasticityMultiplier == 0)
+            throw new InvalidOperationException("ElasticityMultiplier must be greater than zero.");
+        if (EpochLength == 0)
+            throw new InvalidOperationException("EpochLength must be greater than zero.");
+        if (ValidatorSetSize == 0)
+            throw new InvalidOperationException("ValidatorSetSize must be greater than zero.");
+        if (BlockGasLimit == 0)
+            throw new InvalidOperationException("BlockGasLimit must be greater than zero.");
+        if (MaxBlockSizeBytes == 0)
+            throw new InvalidOperationException("MaxBlockSizeBytes must be greater than zero.");
+        if (MaxTransactionsPerBlock == 0)
+            throw new InvalidOperationException("MaxTransactionsPerBlock must be greater than zero.");
+        if (string.IsNullOrEmpty(NetworkName))
+            throw new InvalidOperationException("NetworkName must not be empty.");
+    }
+
+    private static readonly ChainParameters _mainnet = new()
     {
         ChainId = 1,
         NetworkName = "basalt-mainnet",
     };
 
-    /// <summary>Pre-defined Basalt testnet parameters.</summary>
-    public static ChainParameters Testnet => new()
+    private static readonly ChainParameters _testnet = new()
     {
         ChainId = 2,
         NetworkName = "basalt-testnet",
     };
+
+    /// <summary>Pre-defined Basalt mainnet parameters.</summary>
+    public static ChainParameters Mainnet => _mainnet;
+
+    /// <summary>Pre-defined Basalt testnet parameters.</summary>
+    public static ChainParameters Testnet => _testnet;
 
     /// <summary>Pre-defined Basalt devnet parameters for local development.</summary>
     public static ChainParameters Devnet => new()

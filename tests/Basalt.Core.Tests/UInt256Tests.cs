@@ -523,6 +523,61 @@ public class UInt256Tests
         p.InitialBaseFee.Should().Be(new UInt256(1));
     }
 
+    // ===== AUDIT H-07: ChainParameters.Validate =====
+
+    [Fact]
+    public void ChainParameters_Validate_DefaultDevnet_Succeeds()
+    {
+        var act = () => ChainParameters.Devnet.Validate();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroBlockTimeMs_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", BlockTimeMs = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*BlockTimeMs*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroBaseFeeChangeDenominator_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", BaseFeeChangeDenominator = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*BaseFeeChangeDenominator*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroElasticityMultiplier_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", ElasticityMultiplier = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*ElasticityMultiplier*");
+    }
+
+    [Fact]
+    public void ChainParameters_Validate_ZeroEpochLength_Throws()
+    {
+        var p = new ChainParameters { ChainId = 99, NetworkName = "test", EpochLength = 0 };
+        var act = () => p.Validate();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*EpochLength*");
+    }
+
+    // ===== AUDIT L-05: Mainnet/Testnet static readonly =====
+
+    [Fact]
+    public void ChainParameters_Mainnet_ReturnsSameInstance()
+    {
+        ReferenceEquals(ChainParameters.Mainnet, ChainParameters.Mainnet).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ChainParameters_Testnet_ReturnsSameInstance()
+    {
+        ReferenceEquals(ChainParameters.Testnet, ChainParameters.Testnet).Should().BeTrue();
+    }
+
     // ===== CORE-08: Address.IsSystemContract tests =====
 
     [Fact]
