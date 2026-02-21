@@ -466,11 +466,12 @@ public sealed class PipelinedConsensus
             _ => throw new ArgumentException($"Unknown phase: {phase}"),
         };
 
+        bool isNew;
         lock (votes)
-            votes.Add(voter);
+            isNew = votes.Add(voter);
 
-        // Track signatures for aggregation
-        if (signature != null && publicKey != null)
+        // M-02: Only track signatures for new votes (prevent duplicate aggregation)
+        if (isNew && signature != null && publicKey != null)
         {
             var sigList = phase switch
             {

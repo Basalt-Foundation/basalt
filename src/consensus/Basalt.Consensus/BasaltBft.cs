@@ -322,12 +322,15 @@ public sealed class BasaltBft
             return null;
         }
 
-        // Track vote signature for aggregation
+        // L-02: Track vote signature for aggregation, deduplicating by public key
         var sigKey = (vote.ViewNumber, vote.Phase);
         var sigList = _voteSignatures.GetOrAdd(sigKey, _ => new List<(byte[], byte[])>());
+        var voterSigBytes = vote.VoterSignature.ToArray();
+        var voterPkBytes = vote.VoterPublicKey.ToArray();
         lock (sigList)
         {
-            sigList.Add((vote.VoterSignature.ToArray(), vote.VoterPublicKey.ToArray()));
+            if (!sigList.Exists(s => s.Item2.AsSpan().SequenceEqual(voterPkBytes)))
+                sigList.Add((voterSigBytes, voterPkBytes));
         }
 
         return vote.Phase switch
@@ -553,12 +556,14 @@ public sealed class BasaltBft
         var signature = new BlsSignature(signatureBytes);
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
-        // Track signature for aggregation
+        // Track signature for aggregation (dedup by public key)
         var sigKey = (_currentView, phase);
         var sigList = _voteSignatures.GetOrAdd(sigKey, _ => new List<(byte[], byte[])>());
+        var selfPkBytes = publicKey.ToArray();
         lock (sigList)
         {
-            sigList.Add((signatureBytes, publicKey.ToArray()));
+            if (!sigList.Exists(s => s.Item2.AsSpan().SequenceEqual(selfPkBytes)))
+                sigList.Add((signatureBytes, selfPkBytes));
         }
 
         return new ConsensusVoteMessage
