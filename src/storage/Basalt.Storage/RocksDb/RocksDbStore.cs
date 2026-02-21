@@ -133,11 +133,19 @@ public sealed class RocksDbStore : IDisposable
 /// <summary>
 /// Scoped write batch for atomic multi-key writes.
 /// </summary>
+/// <remarks>
+/// <para><b>Important (H-03):</b> This type does <b>not</b> auto-commit on <see cref="Dispose"/>.
+/// Callers must explicitly call <see cref="Commit"/> before the scope ends.
+/// If <c>Dispose()</c> is called with pending (uncommitted) operations, a warning is logged
+/// via <see cref="Console.Error"/> to make the silent drop detectable.</para>
+/// </remarks>
 public sealed class WriteBatchScope : IDisposable
 {
     private readonly RocksDbSharp.RocksDb _db;
     private readonly Dictionary<string, ColumnFamilyHandle> _columnFamilies;
     private readonly WriteBatch _batch;
+    private bool _hasOperations;
+    private bool _committed;
 
     internal WriteBatchScope(RocksDbSharp.RocksDb db, Dictionary<string, ColumnFamilyHandle> columnFamilies)
     {
@@ -149,20 +157,29 @@ public sealed class WriteBatchScope : IDisposable
     public void Put(string columnFamily, byte[] key, byte[] value)
     {
         _batch.Put(key, value, _columnFamilies[columnFamily]);
+        _hasOperations = true;
     }
 
     public void Delete(string columnFamily, byte[] key)
     {
         _batch.Delete(key, _columnFamilies[columnFamily]);
+        _hasOperations = true;
     }
 
     public void Commit()
     {
         _db.Write(_batch);
+        _committed = true;
     }
 
     public void Dispose()
     {
+        if (_hasOperations && !_committed)
+        {
+            Console.Error.WriteLine(
+                "WARNING: WriteBatchScope disposed with uncommitted operations. " +
+                "Data was silently dropped. Ensure Commit() is called before Dispose().");
+        }
         _batch.Dispose();
     }
 }
