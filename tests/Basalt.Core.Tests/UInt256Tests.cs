@@ -382,7 +382,7 @@ public class UInt256Tests
         var p = ChainParameters.FromConfiguration(1, "mainnet");
         p.ChainId.Should().Be(1u);
         p.MinValidatorStake.Should().Be(UInt256.Parse("100000000000000000000000"));
-        p.ValidatorSetSize.Should().Be(100u);
+        p.ValidatorSetSize.Should().Be(ChainParameters.MaxValidatorSetSize);
         p.EpochLength.Should().Be(1000u);
     }
 
@@ -392,7 +392,7 @@ public class UInt256Tests
         var p = ChainParameters.FromConfiguration(2, "testnet");
         p.ChainId.Should().Be(2u);
         p.MinValidatorStake.Should().Be(UInt256.Parse("100000000000000000000000"));
-        p.ValidatorSetSize.Should().Be(100u);
+        p.ValidatorSetSize.Should().Be(ChainParameters.MaxValidatorSetSize);
     }
 
     [Fact]
