@@ -105,6 +105,13 @@ public sealed class GossipService
     /// responsible for re-broadcasting after validation.
     /// NET-M15: Does NOT award reputation. Caller must invoke RewardPeerForValidMessage
     /// after validating the message content.
+    /// <para>
+    /// <b>M-1: SenderId verification.</b> The <paramref name="sender"/> parameter is the
+    /// authenticated peer identity from the TCP connection (post-handshake PeerId). The
+    /// <c>message.SenderId</c> field is self-reported by the peer in the wire format header.
+    /// Callers should treat <paramref name="sender"/> as authoritative for routing and
+    /// reputation decisions, not <c>message.SenderId</c>.
+    /// </para>
     /// </summary>
     public void HandleMessage(PeerId sender, NetworkMessage message)
     {
