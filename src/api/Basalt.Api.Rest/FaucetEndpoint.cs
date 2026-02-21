@@ -80,7 +80,11 @@ public static class FaucetEndpoint
                     Message = "Invalid address format.",
                 });
 
-            var addrKey = request.Address.ToUpperInvariant();
+            // M-1: Normalize address by stripping 0x prefix before uppercasing
+            // to prevent rate limit bypass via "0xABC" vs "ABC" toggle
+            var normalized = request.Address.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? request.Address[2..] : request.Address;
+            var addrKey = normalized.ToUpperInvariant();
 
             // Rate limit check
             if (_lastRequest.TryGetValue(addrKey, out var lastTime))
@@ -190,18 +194,15 @@ public static class FaucetEndpoint
             });
         });
 
-        // Diagnostic endpoint — check faucet account state and mempool
+        // M-8: Status endpoint — expose only public-facing faucet state
         app.MapGet("/v1/faucet/status", () =>
         {
             var faucetAccount = stateDb.GetAccount(FaucetAddress);
-            return Results.Ok(new
+            return Results.Ok(new FaucetStatusResponse
             {
-                faucetAddress = FaucetAddress.ToHexString(),
-                balance = faucetAccount?.Balance.ToString() ?? "NOT FOUND",
-                nonce = faucetAccount?.Nonce ?? 0,
-                pendingNonce = _pendingNonce,
-                nonceInitialized = _nonceInitialized,
-                mempoolSize = mempool.Count,
+                FaucetAddress = FaucetAddress.ToHexString(),
+                Available = faucetAccount != null && faucetAccount.Value.Balance > UInt256.Zero,
+                CooldownSeconds = CooldownSeconds,
             });
         });
     }
@@ -217,4 +218,12 @@ public sealed class FaucetResponse
     [JsonPropertyName("success")] public bool Success { get; set; }
     [JsonPropertyName("message")] public string Message { get; set; } = "";
     [JsonPropertyName("txHash")] public string? TxHash { get; set; }
+}
+
+/// <summary>M-8: Public-facing faucet status — no internal state exposed.</summary>
+public sealed class FaucetStatusResponse
+{
+    [JsonPropertyName("faucetAddress")] public string FaucetAddress { get; set; } = "";
+    [JsonPropertyName("available")] public bool Available { get; set; }
+    [JsonPropertyName("cooldownSeconds")] public int CooldownSeconds { get; set; }
 }

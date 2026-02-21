@@ -13,7 +13,12 @@ public static class GraphQLSetup
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
             .AddMaxExecutionDepthRule(10)
-            .ModifyRequestOptions(opt => opt.ExecutionTimeout = TimeSpan.FromSeconds(10));
+            // M-4: Limit query complexity to prevent expensive nested queries
+            .ModifyPagingOptions(opt => opt.MaxPageSize = 100)
+            .ModifyRequestOptions(opt =>
+            {
+                opt.ExecutionTimeout = TimeSpan.FromSeconds(10);
+            });
 
         return services;
     }

@@ -15,6 +15,10 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
     private readonly TransactionValidator _validator;
     private readonly IStateDatabase _stateDb;
 
+    /// <summary>H-3: Maximum concurrent SubscribeBlocks streams.</summary>
+    private const int MaxSubscribeStreams = 100;
+    private int _activeStreams;
+
     public BasaltNodeService(
         ChainManager chainManager,
         Mempool mempool,
@@ -81,6 +85,12 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
             if (!Enum.IsDefined(typeof(TransactionType), (TransactionType)request.Type))
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid transaction type"));
 
+            // H-2: Validate signature and public key byte lengths
+            if (request.Signature.Length != 64)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Signature must be exactly 64 bytes"));
+            if (request.SenderPublicKey.Length != 32)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "SenderPublicKey must be exactly 32 bytes"));
+
             var tx = new Transaction
             {
                 Type = (TransactionType)request.Type,
@@ -90,6 +100,8 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
                 Value = UInt256.Parse(request.Value),
                 GasLimit = request.GasLimit,
                 GasPrice = UInt256.Parse(request.GasPrice),
+                MaxFeePerGas = string.IsNullOrEmpty(request.MaxFeePerGas) ? UInt256.Zero : UInt256.Parse(request.MaxFeePerGas),
+                MaxPriorityFeePerGas = string.IsNullOrEmpty(request.MaxPriorityFeePerGas) ? UInt256.Zero : UInt256.Parse(request.MaxPriorityFeePerGas),
                 Data = request.Data.ToByteArray(),
                 Priority = (byte)request.Priority,
                 ChainId = request.ChainId,
@@ -129,30 +141,44 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
         IServerStreamWriter<BlockReply> responseStream,
         ServerCallContext context)
     {
-        var lastSentBlock = _chainManager.LatestBlockNumber;
-
-        // Send current latest block immediately
-        var latest = _chainManager.LatestBlock;
-        if (latest != null)
+        // H-3: Enforce connection limit on streaming RPCs
+        if (Interlocked.Increment(ref _activeStreams) > MaxSubscribeStreams)
         {
-            await responseStream.WriteAsync(ToBlockReply(latest));
+            Interlocked.Decrement(ref _activeStreams);
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, "Too many active block subscriptions"));
         }
 
-        // Poll for new blocks until the client disconnects
-        while (!context.CancellationToken.IsCancellationRequested)
+        try
         {
-            await Task.Delay(200, context.CancellationToken);
+            var lastSentBlock = _chainManager.LatestBlockNumber;
 
-            var currentNumber = _chainManager.LatestBlockNumber;
-            while (lastSentBlock < currentNumber)
+            // Send current latest block immediately
+            var latest = _chainManager.LatestBlock;
+            if (latest != null)
             {
-                lastSentBlock++;
-                var block = _chainManager.GetBlockByNumber(lastSentBlock);
-                if (block != null)
+                await responseStream.WriteAsync(ToBlockReply(latest));
+            }
+
+            // Poll for new blocks until the client disconnects
+            while (!context.CancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(200, context.CancellationToken);
+
+                var currentNumber = _chainManager.LatestBlockNumber;
+                while (lastSentBlock < currentNumber)
                 {
-                    await responseStream.WriteAsync(ToBlockReply(block));
+                    lastSentBlock++;
+                    var block = _chainManager.GetBlockByNumber(lastSentBlock);
+                    if (block != null)
+                    {
+                        await responseStream.WriteAsync(ToBlockReply(block));
+                    }
                 }
             }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeStreams);
         }
     }
 
@@ -168,6 +194,8 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
             Proposer = block.Header.Proposer.ToHexString(),
             GasUsed = block.Header.GasUsed,
             GasLimit = block.Header.GasLimit,
+            // M-2: Include base fee in block reply
+            BaseFee = block.Header.BaseFee.ToString(),
             TransactionCount = block.Transactions.Count,
         };
     }

@@ -8,6 +8,7 @@ using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 
 namespace Basalt.Api.Rest;
 
@@ -16,6 +17,10 @@ namespace Basalt.Api.Rest;
 /// </summary>
 public static class RestApiEndpoints
 {
+    /// <summary>L-4: Normalize hex string by stripping optional 0x prefix.</summary>
+    private static string StripHexPrefix(string hex)
+        => hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
+
     public static void MapBasaltEndpoints(
         Microsoft.AspNetCore.Routing.IEndpointRouteBuilder app,
         ChainManager chainManager,
@@ -23,7 +28,8 @@ public static class RestApiEndpoints
         TransactionValidator validator,
         Storage.IStateDatabase stateDb,
         IContractRuntime? contractRuntime = null,
-        Storage.RocksDb.ReceiptStore? receiptStore = null)
+        Storage.RocksDb.ReceiptStore? receiptStore = null,
+        Microsoft.Extensions.Logging.ILogger? logger = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -107,10 +113,20 @@ public static class RestApiEndpoints
         UInt256 GetCurrentBaseFee() => chainManager.LatestBlock?.Header.BaseFee ?? UInt256.Zero;
 
         // POST /v1/transactions
+        // M-9: Transaction data size is bounded by the TransactionRequest.ToTransaction()
+        // validation (signature=64B, pubkey=32B) and TransactionValidator gas/size limits.
         app.MapPost("/v1/transactions", (TransactionRequest request) =>
         {
             try
             {
+                // M-9: Reject oversized data fields before full deserialization
+                if (request.Data is { Length: > 131_072 }) // 64KB hex = 128KB + prefix
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                    {
+                        Code = 400,
+                        Message = "Transaction data exceeds maximum size (64KB).",
+                    });
+
                 var tx = request.ToTransaction();
                 var validationResult = validator.Validate(tx, stateDb, GetCurrentBaseFee());
                 if (!validationResult.IsSuccess)
@@ -137,8 +153,10 @@ public static class RestApiEndpoints
                     Status = "pending",
                 });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                // L-1: Log the exception for diagnostics
+                logger?.LogWarning(ex, "Transaction submission failed");
                 return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                 {
                     Code = (int)BasaltErrorCode.InternalError,
@@ -294,9 +312,11 @@ public static class RestApiEndpoints
         {
             var maxTxs = Math.Clamp(count ?? 50, 1, 200);
             var latestNum = chainManager.LatestBlockNumber;
+            // H-1: Cap scan depth to prevent full-chain traversal DoS
+            var scanDepth = Math.Min(latestNum + 1, 1000UL);
             var transactions = new List<TransactionDetailResponse>();
 
-            for (ulong i = 0; i <= latestNum && transactions.Count < maxTxs; i++)
+            for (ulong i = 0; i < scanDepth && transactions.Count < maxTxs; i++)
             {
                 var block = chainManager.GetBlockByNumber(latestNum - i);
                 if (block == null) continue;
@@ -310,7 +330,7 @@ public static class RestApiEndpoints
         // GET /v1/transactions/{hash}
         app.MapGet("/v1/transactions/{hash}", (string hash) =>
         {
-            var normalized = hash.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hash[2..] : hash;
+            var normalized = StripHexPrefix(hash);
             if (!Hash256.TryFromHexString(normalized, out var targetHash))
                 return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                 {
@@ -341,7 +361,7 @@ public static class RestApiEndpoints
         // GET /v1/receipts/{hash}
         app.MapGet("/v1/receipts/{hash}", (string hash) =>
         {
-            var normalized = hash.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hash[2..] : hash;
+            var normalized = StripHexPrefix(hash);
             if (!Hash256.TryFromHexString(normalized, out var targetHash))
                 return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                 {
@@ -363,8 +383,15 @@ public static class RestApiEndpoints
             {
                 try
                 {
-                    var dataHex = request.Data.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                        ? request.Data[2..] : request.Data;
+                    // M-9: Reject oversized call data
+                    if (request.Data is { Length: > 131_072 })
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                        {
+                            Code = 400,
+                            Message = "Call data exceeds maximum size (64KB).",
+                        });
+
+                    var dataHex = StripHexPrefix(request.Data);
 
                     if (!Address.TryFromHexString(request.To, out var contractAddr))
                         return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
@@ -435,8 +462,9 @@ public static class RestApiEndpoints
                         Error = result.ErrorMessage,
                     });
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    logger?.LogWarning(ex, "Contract call failed");
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
@@ -485,7 +513,8 @@ public static class RestApiEndpoints
                     ulong? deployBlockNumber = null;
 
                     var latestNum = chainManager.LatestBlockNumber;
-                    var scanDepth = Math.Min(latestNum + 1, 5000UL);
+                    // H-4: Cap deploy-tx scan depth to prevent expensive lookups
+                    var scanDepth = Math.Min(latestNum + 1, 1000UL);
 
                     for (ulong i = 0; i < scanDepth; i++)
                     {
@@ -516,8 +545,9 @@ public static class RestApiEndpoints
                         DeployBlockNumber = deployBlockNumber,
                     });
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    logger?.LogWarning(ex, "Contract info lookup failed");
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
@@ -630,8 +660,9 @@ public static class RestApiEndpoints
                         GasUsed = gasMeter.GasUsed,
                     });
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    logger?.LogWarning(ex, "Storage read failed");
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
                     {
                         Code = (int)BasaltErrorCode.InternalError,
@@ -642,6 +673,10 @@ public static class RestApiEndpoints
         }
 
         // GET /v1/pools — list all staking pools from the StakingPool contract
+        // L-2: Reads contract storage directly with hardcoded HostStorageProvider tags.
+        // Tags: 0x01 = UInt64, 0x07 = String, 0x0A = UInt256.
+        // This is a read-only convenience endpoint that mirrors StakingPool internal layout.
+        // If the contract storage format changes, this endpoint must be updated accordingly.
         app.MapGet("/v1/pools", () =>
         {
             var contractAddr = new Address(new byte[]
@@ -1046,6 +1081,7 @@ public sealed class ComplianceProofDto
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(FaucetRequest))]
 [JsonSerializable(typeof(FaucetResponse))]
+[JsonSerializable(typeof(FaucetStatusResponse))]
 [JsonSerializable(typeof(TransactionDetailResponse))]
 [JsonSerializable(typeof(TransactionDetailResponse[]))]
 [JsonSerializable(typeof(PaginatedBlocksResponse))]

@@ -43,12 +43,13 @@ public class Mutation
                 Status = "pending",
             };
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            // L-1: Include exception type in error for diagnostics
             return new TransactionResult
             {
                 Success = false,
-                ErrorMessage = "Transaction submission failed",
+                ErrorMessage = $"Transaction submission failed: {ex.GetType().Name}",
             };
         }
     }
