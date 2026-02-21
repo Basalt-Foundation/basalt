@@ -377,7 +377,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _localPeerId,
             _privateKey,
             _loggerFactory.CreateLogger<BasaltBft>(),
-            _blsSigner);
+            _blsSigner,
+            chainId: _chainParams.ChainId);
 
         // When a block is finalized by consensus, apply it
         _consensus.OnBlockFinalized += HandleBlockFinalized;
@@ -414,7 +415,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _privateKey,
             _blsSigner,
             _loggerFactory.CreateLogger<PipelinedConsensus>(),
-            lastFinalized);
+            lastFinalized,
+            _chainParams.ChainId);
 
         // When a block is finalized by pipelined consensus, apply it
         _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;

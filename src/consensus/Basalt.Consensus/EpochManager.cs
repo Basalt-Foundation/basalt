@@ -110,9 +110,18 @@ public sealed class EpochManager
     /// Record which validators signed the commit phase for a given block.
     /// Called after each block finalization with the commit voter bitmap.
     /// All nodes record the same bitmap (from the same finalized QC), ensuring determinism.
+    /// M-05: Only records bitmaps for blocks in the current epoch to prevent stale data.
     /// </summary>
     public void RecordBlockSigners(ulong blockNumber, ulong commitBitmap)
     {
+        // Guard: only track bitmaps for the current epoch
+        if (_chainParams.EpochLength > 0)
+        {
+            var blockEpoch = ComputeEpoch(blockNumber, _chainParams.EpochLength);
+            if (blockEpoch != _currentEpoch && blockEpoch != _currentEpoch + 1)
+                return; // Stale or too-far-future block
+        }
+
         lock (_blockSignersLock)
             _blockSigners[blockNumber] = commitBitmap;
     }
@@ -162,11 +171,12 @@ public sealed class EpochManager
     public ValidatorSet BuildValidatorSetFromStaking()
     {
         var activeValidators = _stakingState.GetActiveValidators(); // sorted by TotalStake desc
-        // Cap at 64 — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
+        // Cap at MaxValidatorSetSize — commit voter bitmap is a ulong, so indices >= 64 cannot be represented
         var configuredSize = (int)_chainParams.ValidatorSetSize;
-        var maxSize = Math.Min(configuredSize, 64);
-        if (configuredSize > 64)
-            _logger.LogWarning("ValidatorSetSize {Configured} exceeds bitmap limit of 64; effective set size capped at 64", configuredSize);
+        var maxSize = Math.Min(configuredSize, (int)ChainParameters.MaxValidatorSetSize);
+        if (configuredSize > (int)ChainParameters.MaxValidatorSetSize)
+            _logger.LogWarning("ValidatorSetSize {Configured} exceeds bitmap limit of {Max}; effective set size capped",
+                configuredSize, ChainParameters.MaxValidatorSetSize);
         var selected = activeValidators.Take(maxSize).ToList();
 
         // Sort by address ascending for deterministic index assignment across all nodes

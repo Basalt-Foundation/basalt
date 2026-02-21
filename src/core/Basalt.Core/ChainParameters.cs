@@ -47,8 +47,13 @@ public sealed class ChainParameters
     /// <summary>Contract call base gas cost.</summary>
     public ulong ContractCallGasCost { get; init; } = 50_000;
 
-    /// <summary>Number of validators in the active set.</summary>
-    public uint ValidatorSetSize { get; init; } = 100;
+    /// <summary>
+    /// Maximum validator set size supported by the ulong commit voter bitmap.
+    /// </summary>
+    public const uint MaxValidatorSetSize = 64;
+
+    /// <summary>Number of validators in the active set (max 64 due to bitmap representation).</summary>
+    public uint ValidatorSetSize { get; init; } = MaxValidatorSetSize;
 
     /// <summary>Minimum stake required to become a validator.</summary>
     public UInt256 MinValidatorStake { get; init; } = UInt256.Parse("100000000000000000000000"); // 100,000 tokens
