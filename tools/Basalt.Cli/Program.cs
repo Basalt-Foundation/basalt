@@ -1,5 +1,7 @@
 using System.CommandLine;
+using System.Security.Cryptography;
 using Basalt.Cli;
+using Basalt.Codec;
 using Basalt.Core;
 using Basalt.Crypto;
 
@@ -75,24 +77,36 @@ accountCreateCommand.AddOption(outputOption);
 accountCreateCommand.SetHandler(async (string? output) =>
 {
     var (privateKey, publicKey) = Ed25519Signer.GenerateKeyPair();
-    var address = Ed25519Signer.DeriveAddress(publicKey);
-
-    var privHex = Convert.ToHexString(privateKey).ToLowerInvariant();
-    var pubHex = publicKey.ToString();
-    var addrHex = address.ToHexString();
-
-    Console.WriteLine("Account created:");
-    Console.WriteLine($"  Address:     {addrHex}");
-    Console.WriteLine($"  Public Key:  {pubHex}");
-    Console.WriteLine($"  Private Key: 0x{privHex}");
-    Console.WriteLine();
-    Console.WriteLine("WARNING: Store your private key securely. Never share it.");
-
-    if (output != null)
+    try
     {
-        var content = $"address={addrHex}\npublicKey={pubHex}\nprivateKey=0x{privHex}\n";
-        await File.WriteAllTextAsync(output, content);
-        Console.WriteLine($"\nKey pair saved to: {output}");
+        var address = Ed25519Signer.DeriveAddress(publicKey);
+
+        var privHex = Convert.ToHexString(privateKey).ToLowerInvariant();
+        var pubHex = publicKey.ToString();
+        var addrHex = address.ToHexString();
+
+        Console.WriteLine("Account created:");
+        Console.WriteLine($"  Address:     {addrHex}");
+        Console.WriteLine($"  Public Key:  {pubHex}");
+        Console.WriteLine($"  Private Key: 0x{privHex}");
+        Console.WriteLine();
+        Console.WriteLine("WARNING: Store your private key securely. Never share it.");
+
+        if (output != null)
+        {
+            var content = $"address={addrHex}\npublicKey={pubHex}\nprivateKey=0x{privHex}\n";
+            await File.WriteAllTextAsync(output, content);
+
+            // Set file permissions to owner-only (0600) to protect the private key
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            Console.WriteLine($"\nKey pair saved to: {output}");
+        }
+    }
+    finally
+    {
+        CryptographicOperations.ZeroMemory(privateKey);
     }
 }, outputOption);
 
@@ -128,7 +142,7 @@ var txToOption = new Option<string>("--to", "Recipient address") { IsRequired = 
 var txValueOption = new Option<string>("--value", "Amount to send") { IsRequired = true };
 var txKeyOption = new Option<string>("--key", "Sender private key (hex)") { IsRequired = true };
 var txGasOption = new Option<ulong>("--gas", getDefaultValue: () => 21000, "Gas limit");
-var txChainIdOption = new Option<uint>("--chain-id", getDefaultValue: () => 1, "Chain ID");
+var txChainIdOption = new Option<uint>("--chain-id", getDefaultValue: () => 31337, "Chain ID");
 txSendCommand.AddOption(txToOption);
 txSendCommand.AddOption(txValueOption);
 txSendCommand.AddOption(txKeyOption);
@@ -140,61 +154,108 @@ txSendCommand.SetHandler(async (string to, string value, string key, ulong gas, 
 {
     var privKeyHex = key.StartsWith("0x") ? key[2..] : key;
     var privateKey = Convert.FromHexString(privKeyHex);
-    var publicKey = Ed25519Signer.GetPublicKey(privateKey);
-    var senderAddress = Ed25519Signer.DeriveAddress(publicKey);
-
-    using var client = new NodeClient(nodeUrl);
-
-    // Get current nonce
-    var account = await client.GetAccountAsync(senderAddress.ToHexString());
-    var nonce = account?.Nonce ?? 0;
-
-    var tx = new TxRequest
+    try
     {
-        Type = 0, // Transfer
-        Nonce = nonce,
-        Sender = senderAddress.ToHexString(),
-        To = to,
-        Value = value,
-        GasLimit = gas,
-        GasPrice = "1",
-        ChainId = chainId,
-        SenderPublicKey = publicKey.ToString().TrimStart('0', 'x'),
-    };
+        var publicKey = Ed25519Signer.GetPublicKey(privateKey);
+        var senderAddress = Ed25519Signer.DeriveAddress(publicKey);
 
-    // Sign the transaction
-    var txBytes = System.Text.Encoding.UTF8.GetBytes(
-        $"{tx.Type}{tx.Nonce}{tx.Sender}{tx.To}{tx.Value}{tx.GasLimit}{tx.GasPrice}{tx.ChainId}");
-    var txHash = Blake3Hasher.Hash(txBytes);
-    var sig = Ed25519Signer.Sign(privateKey, txHash.ToArray());
-    tx.Signature = Convert.ToHexString(sig.ToArray()).ToLowerInvariant();
-    tx.SenderPublicKey = Convert.ToHexString(publicKey.ToArray()).ToLowerInvariant();
+        using var client = new NodeClient(nodeUrl);
 
-    var result = await client.SendTransactionAsync(tx);
-    if (result?.Error != null)
-    {
-        Console.Error.WriteLine($"Error: {result.Error}");
-        return;
+        // Get current nonce
+        var account = await client.GetAccountAsync(senderAddress.ToHexString());
+        var nonce = account?.Nonce ?? 0;
+
+        // Parse addresses and value for canonical binary signing payload
+        var toAddress = Address.FromHexString(to);
+        var txValue = UInt256.Parse(value);
+
+        // Construct canonical binary signing payload matching Transaction.WriteSigningPayload()
+        // Format: Type(1) + Nonce(8) + Sender(20) + To(20) + Value(32) + GasLimit(8) +
+        //         GasPrice(32) + MaxFeePerGas(32) + MaxPriorityFeePerGas(32) + Data(4+len) +
+        //         Priority(1) + ChainId(4) + ComplianceProofsHash(32)
+        const int payloadSize = 1 + 8 + 20 + 20 + 32 + 8 + 32 + 32 + 32 + 4 + 0 + 1 + 4 + 32; // 226 bytes for empty data
+        Span<byte> payload = stackalloc byte[payloadSize];
+        var writer = new BasaltWriter(payload);
+        writer.WriteByte(0); // TransactionType.Transfer
+        writer.WriteUInt64(nonce);
+        writer.WriteAddress(senderAddress);
+        writer.WriteAddress(toAddress);
+        writer.WriteUInt256(txValue);
+        writer.WriteUInt64(gas);
+        writer.WriteUInt256(UInt256.One); // GasPrice = 1
+        writer.WriteUInt256(UInt256.Zero); // MaxFeePerGas (legacy tx)
+        writer.WriteUInt256(UInt256.Zero); // MaxPriorityFeePerGas (legacy tx)
+        writer.WriteBytes([]); // Empty data
+        writer.WriteByte(0); // Priority
+        writer.WriteUInt32(chainId);
+        writer.WriteHash256(Hash256.Zero); // ComplianceProofsHash (no proofs)
+
+        var sig = Ed25519Signer.Sign(privateKey, payload);
+
+        var tx = new TxRequest
+        {
+            Type = 0,
+            Nonce = nonce,
+            Sender = senderAddress.ToHexString(),
+            To = to,
+            Value = value,
+            GasLimit = gas,
+            GasPrice = "1",
+            ChainId = chainId,
+            Signature = Convert.ToHexString(sig.ToArray()).ToLowerInvariant(),
+            SenderPublicKey = Convert.ToHexString(publicKey.ToArray()).ToLowerInvariant(),
+        };
+
+        var result = await client.SendTransactionAsync(tx);
+        if (result?.Error != null)
+        {
+            Console.Error.WriteLine($"Error: {result.Error}");
+            return;
+        }
+
+        Console.WriteLine($"Transaction sent:");
+        Console.WriteLine($"  Hash:   {result?.Hash}");
+        Console.WriteLine($"  Status: {result?.Status}");
     }
-
-    Console.WriteLine($"Transaction sent:");
-    Console.WriteLine($"  Hash:   {result?.Hash}");
-    Console.WriteLine($"  Status: {result?.Status}");
+    finally
+    {
+        CryptographicOperations.ZeroMemory(privateKey);
+    }
 }, txToOption, txValueOption, txKeyOption, txGasOption, txChainIdOption, nodeUrlOption);
 
 var txStatusCommand = new Command("status", "Get transaction status");
 var txHashArg = new Argument<string>("hash", "Transaction hash");
+var explorerOption = new Option<string?>("--explorer", "Explorer URL (defaults to node URL with port incremented by 1)");
 txStatusCommand.AddArgument(txHashArg);
 txStatusCommand.AddOption(nodeUrlOption);
+txStatusCommand.AddOption(explorerOption);
 
-txStatusCommand.SetHandler((string hash, string nodeUrl) =>
+txStatusCommand.SetHandler((string hash, string nodeUrl, string? explorerUrl) =>
 {
     // Transaction lookup by hash would require a dedicated API endpoint
     // For now, direct users to the block explorer
     Console.WriteLine($"Transaction: {hash}");
     Console.WriteLine("Use the block explorer for detailed transaction status.");
-    Console.WriteLine($"  Explorer: {nodeUrl.Replace("5000", "5001")}/tx/{hash}");
-}, txHashArg, nodeUrlOption);
+
+    if (explorerUrl != null)
+    {
+        Console.WriteLine($"  Explorer: {explorerUrl.TrimEnd('/')}/tx/{hash}");
+    }
+    else
+    {
+        // Best-effort: try to derive explorer URL by incrementing port
+        try
+        {
+            var uri = new Uri(nodeUrl);
+            var explorerPort = uri.Port + 1;
+            Console.WriteLine($"  Explorer: {uri.Scheme}://{uri.Host}:{explorerPort}/tx/{hash}");
+        }
+        catch
+        {
+            Console.WriteLine($"  Pass --explorer <url> for a direct link.");
+        }
+    }
+}, txHashArg, nodeUrlOption, explorerOption);
 
 txCommand.AddCommand(txSendCommand);
 txCommand.AddCommand(txStatusCommand);

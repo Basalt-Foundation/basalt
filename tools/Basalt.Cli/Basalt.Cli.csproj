@@ -11,6 +11,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
     <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
   </ItemGroup>
 </Project>
