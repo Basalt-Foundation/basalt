@@ -533,4 +533,70 @@ public class Groth16VerifierTests
 
         Groth16Verifier.Verify(vk, tamperedProof, publicInputs).Should().BeFalse();
     }
+
+    // ── C-02: Identity element rejection ────────────────────────────────────
+
+    [Fact]
+    public void Verify_IdentityA_ReturnsFalse()
+    {
+        var (vk, proof) = BuildValidTestVector();
+        var identityG1 = new byte[PairingEngine.G1CompressedSize];
+        identityG1[0] = 0xC0;
+
+        var badProof = new Groth16Proof { A = identityG1, B = proof.B, C = proof.C };
+        Groth16Verifier.Verify(vk, badProof, Array.Empty<byte[]>()).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_IdentityB_ReturnsFalse()
+    {
+        var (vk, proof) = BuildValidTestVector();
+        var identityG2 = new byte[PairingEngine.G2CompressedSize];
+        identityG2[0] = 0xC0;
+
+        var badProof = new Groth16Proof { A = proof.A, B = identityG2, C = proof.C };
+        Groth16Verifier.Verify(vk, badProof, Array.Empty<byte[]>()).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_IdentityC_ReturnsFalse()
+    {
+        var (vk, proof) = BuildValidTestVector();
+        var identityG1 = new byte[PairingEngine.G1CompressedSize];
+        identityG1[0] = 0xC0;
+
+        var badProof = new Groth16Proof { A = proof.A, B = proof.B, C = identityG1 };
+        Groth16Verifier.Verify(vk, badProof, Array.Empty<byte[]>()).Should().BeFalse();
+    }
+
+    // ── C-01: Subgroup validation ───────────────────────────────────────────
+
+    [Fact]
+    public void Verify_ValidProofPoints_PassSubgroupCheck()
+    {
+        // Generators are always in the subgroup, so the valid test vector should pass
+        var (vk, proof) = BuildValidTestVector();
+        Groth16Verifier.Verify(vk, proof, Array.Empty<byte[]>()).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Verify_InvalidG2BetaInVk_ReturnsFalse()
+    {
+        var (vk, proof) = BuildValidTestVector();
+        // Create a 96-byte G2 point that's not a valid curve point
+        var badG2 = new byte[PairingEngine.G2CompressedSize];
+        badG2[0] = 0x80; // compression flag
+        badG2[1] = 0x01; // invalid coordinates
+
+        var badVk = new VerificationKey
+        {
+            AlphaG1 = vk.AlphaG1,
+            BetaG2 = badG2,
+            GammaG2 = vk.GammaG2,
+            DeltaG2 = vk.DeltaG2,
+            IC = vk.IC,
+        };
+
+        Groth16Verifier.Verify(badVk, proof, Array.Empty<byte[]>()).Should().BeFalse();
+    }
 }

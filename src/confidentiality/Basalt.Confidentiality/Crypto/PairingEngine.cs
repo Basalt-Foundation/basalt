@@ -218,4 +218,75 @@ public static class PairingEngine
 
         return true;
     }
+
+    /// <summary>
+    /// Checks whether a compressed G2 point is the identity (point at infinity).
+    /// The BLS12-381 compressed G2 identity has the form 0xC0 followed by 95 zero bytes.
+    /// </summary>
+    /// <param name="point">96-byte compressed G2 point.</param>
+    /// <returns><c>true</c> if the point is the identity element.</returns>
+    public static bool IsG2Identity(ReadOnlySpan<byte> point)
+    {
+        if (point.Length != G2CompressedSize)
+            throw new ArgumentException($"G2 point must be {G2CompressedSize} bytes.", nameof(point));
+
+        if (point[0] != 0xC0)
+            return false;
+
+        for (int i = 1; i < G2CompressedSize; i++)
+        {
+            if (point[i] != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validate that a compressed G1 point is on the curve AND in the G1 subgroup.
+    /// Uses blst's native subgroup check.
+    /// </summary>
+    /// <param name="point">48-byte compressed G1 point.</param>
+    /// <returns><c>true</c> if the point is a valid G1 subgroup element.</returns>
+    public static bool IsValidG1(ReadOnlySpan<byte> point)
+    {
+        if (point.Length != G1CompressedSize)
+            return false;
+
+        try
+        {
+            var p = new Bls.P1Affine();
+            p.Decode(point);
+            return p.InGroup();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Validate that a compressed G2 point is on the curve AND in the G2 subgroup.
+    /// This is critical for security: G2 has a non-trivial cofactor, so points can
+    /// be on the curve but NOT in the subgroup, enabling small-subgroup attacks
+    /// that break Groth16 soundness.
+    /// </summary>
+    /// <param name="point">96-byte compressed G2 point.</param>
+    /// <returns><c>true</c> if the point is a valid G2 subgroup element.</returns>
+    public static bool IsValidG2(ReadOnlySpan<byte> point)
+    {
+        if (point.Length != G2CompressedSize)
+            return false;
+
+        try
+        {
+            var p = new Bls.P2Affine();
+            p.Decode(point);
+            return p.InGroup();
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
