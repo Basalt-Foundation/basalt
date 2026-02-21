@@ -25,6 +25,15 @@ services:
       - basalt-testnet
     restart: unless-stopped
 
+  # ─── Website (Next.js static export via nginx) ───────────────────
+  website:
+    build:
+      dockerfile: deploy/testnet/Dockerfile.website
+    container_name: basalt-website
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+
   # ─── Reverse Proxy (routing, CORS, security headers) ───────────────
   caddy:
     image: caddy:2-alpine
@@ -38,6 +47,8 @@ services:
       validator-0:
         condition: service_healthy
       explorer:
+        condition: service_started
+      website:
         condition: service_started
 
   # ─── Validator 0 (Primary RPC endpoint) ────────────────────────────

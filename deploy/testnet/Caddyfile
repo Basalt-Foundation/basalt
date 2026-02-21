@@ -1,7 +1,17 @@
-# Basalt Testnet — Caddy reverse proxy
+# Basalt — Caddy reverse proxy
 # Cloudflare Tunnel terminates HTTPS. Caddy handles routing, CORS, and headers.
+# Two domains: basalt.foundation (website) and testnet.basalt.foundation (testnet).
 
+# ─── Website (basalt.foundation) ───────────────────────────────────
 :80 {
+	# Match website domain first; fall through to testnet for other hosts
+	@website host basalt.foundation
+	handle @website {
+		reverse_proxy website:80
+	}
+
+	# ─── Testnet (testnet.basalt.foundation or any other host) ─────
+
 	# REST API
 	handle /v1/* {
 		reverse_proxy validator-0:5000

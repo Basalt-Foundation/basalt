@@ -13,25 +13,27 @@ Users (HTTPS)
 +--------+---------+
          | (tunnel)
          v
-+------------------------------------------+
-| Windows/Linux VPS (no ports exposed)     |
-|                                           |
-| +------------+                            |
-| | cloudflared |  Cloudflare Tunnel agent  |
-| +------+-----+                            |
-|        |                                  |
-| +------+-----+                            |
-| |   Caddy    |  Routing, CORS, headers   |
-| +------+-----+                            |
-|        |                                  |
-| +------+------+------+------+            |
-| |Val-0 |Val-1 |Val-2 |Val-3 |            |
-| |(RPC) |      |      |      |            |
-| +------+------+------+------+            |
-|                                           |
-| Chain ID: 4242 | Block time: 2s          |
-| Consensus: BasaltBFT (3f+1 = 4 nodes)   |
-+------------------------------------------+
++---------------------------------------------+
+| Windows/Linux VPS (no ports exposed)        |
+|                                              |
+| +------------+                               |
+| | cloudflared |  Cloudflare Tunnel agent     |
+| +------+-----+                               |
+|        |                                     |
+| +------+-----+                               |
+| |   Caddy    |  Host-based routing + CORS   |
+| +------+-----+                               |
+|        |                                     |
+|   basalt.foundation    testnet.basalt.foundation
+|        |                       |             |
+| +------+------+  +------+------+------+------+
+| |   Website   |  |Val-0 |Val-1 |Val-2 |Val-3 |
+| | (Next.js)   |  |(RPC) |      |      |      |
+| +-------------+  +------+------+------+------+
+|                                              |
+| Chain ID: 4242 | Block time: 2s             |
+| Consensus: BasaltBFT (3f+1 = 4 nodes)      |
++---------------------------------------------+
 ```
 
 ## Step 1: Create a Cloudflare Tunnel
@@ -41,13 +43,18 @@ Users (HTTPS)
 3. Click **Create a tunnel** > select **Cloudflared**
 4. Name it `basalt-testnet`
 5. Copy the **tunnel token** (you'll need it in Step 3)
-6. In the **Public Hostnames** tab, add a route:
-   - **Subdomain**: `testnet` (or your choice)
-   - **Domain**: your Cloudflare domain (e.g. `basalt.foundation`)
-   - **Service**: `http://caddy:80`
+6. In the **Public Hostnames** tab, add two routes:
+   - **Route 1 (Testnet):**
+     - **Subdomain**: `testnet`
+     - **Domain**: `basalt.foundation`
+     - **Service**: `http://caddy:80`
+   - **Route 2 (Website):**
+     - **Subdomain**: *(leave empty for root domain)*
+     - **Domain**: `basalt.foundation`
+     - **Service**: `http://caddy:80`
 7. Save
 
-Your testnet will be accessible at `https://testnet.basalt.foundation` (or whatever you configured).
+Your testnet will be accessible at `https://testnet.basalt.foundation` and the website at `https://basalt.foundation`.
 
 ## Step 2: Install Prerequisites (Windows VPS)
 
@@ -79,14 +86,14 @@ The script will:
 1. Verify Docker is running in Linux container mode
 2. Generate 4 validator key pairs
 3. Prompt for your Cloudflare Tunnel token
-4. Build all Docker images
-5. Start the 4-validator testnet + cloudflared tunnel
+4. Build all Docker images (validators, explorer, website)
+5. Start the 4-validator testnet, website, and cloudflared tunnel
 6. Clean up build cache to save disk space
 
 ## Step 4: Verify
 
 ```powershell
-# Check all 6 containers are running
+# Check all 7 containers are running
 docker compose ps
 
 # Check blockchain status (via tunnel)
