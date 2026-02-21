@@ -600,9 +600,9 @@ public partial struct Mixed
 
         var generatedSource = result.GeneratedTrees[0].GetText().ToString();
 
-        // Variable-size means GetSerializedSize uses estimate approach
+        // Variable-size means GetSerializedSize computes actual runtime length
         generatedSource.Should().Contain("int size = 4;");
-        generatedSource.Should().Contain("size += 64; // estimate for Name");
+        generatedSource.Should().Contain("size += 4 + System.Text.Encoding.UTF8.GetByteCount(Name");
         generatedSource.Should().Contain("return size;");
     }
 
@@ -658,10 +658,10 @@ public partial class MultiString
         generatedSource.Should().Contain("writer.WriteString(Second)");
         generatedSource.Should().Contain("writer.WriteString(Third)");
 
-        // Three variable-length fields → 3 estimate lines
-        generatedSource.Should().Contain("size += 64; // estimate for First");
-        generatedSource.Should().Contain("size += 64; // estimate for Second");
-        generatedSource.Should().Contain("size += 64; // estimate for Third");
+        // Three variable-length fields → 3 runtime-computed lines
+        generatedSource.Should().Contain("size += 4 + System.Text.Encoding.UTF8.GetByteCount(First");
+        generatedSource.Should().Contain("size += 4 + System.Text.Encoding.UTF8.GetByteCount(Second");
+        generatedSource.Should().Contain("size += 4 + System.Text.Encoding.UTF8.GetByteCount(Third");
     }
 
     [Fact]

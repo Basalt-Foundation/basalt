@@ -65,21 +65,10 @@ public sealed class NoDynamicAnalyzer : DiagnosticAnalyzer
                 symbol = symbolInfo.CandidateSymbols[0];
             }
 
+            // L-07: INamedTypeSymbol inherits ITypeSymbol, so single check suffices
             if (symbol is ITypeSymbol ts)
             {
                 var fullName = ts.ToDisplayString();
-                if (fullName == "System.Dynamic.ExpandoObject" ||
-                    fullName == "System.Dynamic.DynamicObject")
-                {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticIds.NoDynamic,
-                        identifierName.GetLocation(),
-                        identifierText));
-                }
-            }
-            else if (symbol is INamedTypeSymbol nts)
-            {
-                var fullName = nts.ToDisplayString();
                 if (fullName == "System.Dynamic.ExpandoObject" ||
                     fullName == "System.Dynamic.DynamicObject")
                 {

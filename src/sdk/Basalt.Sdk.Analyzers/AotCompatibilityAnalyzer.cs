@@ -54,23 +54,58 @@ public sealed class AotCompatibilityAnalyzer : DiagnosticAnalyzer
         context.RegisterSyntaxNodeAction(AnalyzeObjectCreation, SyntaxKind.ObjectCreationExpression);
     }
 
+    // H-03: Use semantic model to resolve the actual containing type and member name,
+    // instead of string.Contains() which causes false positives on user types.
     private static void AnalyzeMemberAccess(SyntaxNodeAnalysisContext context)
     {
         if (!AnalyzerHelper.IsInsideBasaltContract(context.Node))
             return;
 
         var memberAccess = (MemberAccessExpressionSyntax)context.Node;
-        var fullName = memberAccess.ToString();
 
-        foreach (var banned in BannedMemberAccesses)
+        // First try semantic resolution
+        var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess, context.CancellationToken);
+        var symbol = symbolInfo.Symbol;
+
+        if (symbol != null)
         {
-            if (fullName.Contains(banned))
+            var containingType = symbol.ContainingType?.ToDisplayString();
+            var memberName = symbol.Name;
+
+            if (containingType != null)
             {
-                context.ReportDiagnostic(Diagnostic.Create(
-                    DiagnosticIds.AotIncompatible,
-                    memberAccess.GetLocation(),
-                    banned));
-                return;
+                var fullQualified = containingType + "." + memberName;
+                foreach (var banned in BannedMemberAccesses)
+                {
+                    // Match "Type.Member" against "Namespace.Type.Member"
+                    if (fullQualified.EndsWith(banned))
+                    {
+                        context.ReportDiagnostic(Diagnostic.Create(
+                            DiagnosticIds.AotIncompatible,
+                            memberAccess.GetLocation(),
+                            banned));
+                        return;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Fallback to syntactic matching if semantic model can't resolve
+            var expressionText = memberAccess.Expression.ToString();
+            var memberName = memberAccess.Name.Identifier.Text;
+            var syntacticFull = expressionText + "." + memberName;
+
+            foreach (var banned in BannedMemberAccesses)
+            {
+                if (syntacticFull == banned)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticIds.AotIncompatible,
+                        memberAccess.GetLocation(),
+                        banned));
+                    return;
+                }
             }
         }
     }

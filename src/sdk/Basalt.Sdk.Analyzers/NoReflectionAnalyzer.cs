@@ -22,20 +22,10 @@ public sealed class NoReflectionAnalyzer : DiagnosticAnalyzer
         context.RegisterSyntaxNodeAction(AnalyzeInvocation, SyntaxKind.InvocationExpression);
     }
 
+    // L-03: Cleaned up redundant IsInsideBasaltContract call
     private static void AnalyzeUsingDirective(SyntaxNodeAnalysisContext context)
     {
         var usingDirective = (UsingDirectiveSyntax)context.Node;
-
-        if (!AnalyzerHelper.IsInsideBasaltContract(usingDirective))
-        {
-            // Using directives at file level: check if any containing class is a contract.
-            // For file-scoped usings we still flag them if they import System.Reflection.
-            // However, we only flag usings that are inside a contract namespace or at top level
-            // when the compilation unit contains a contract class. For simplicity, flag always
-            // if the using is for System.Reflection and is inside a contract class.
-            // Top-level usings are not inside a class, so we need a different approach:
-            // We still flag them since they enable reflection in the entire file.
-        }
 
         var nameText = usingDirective.Name?.ToString();
         if (nameText == null)
@@ -43,7 +33,8 @@ public sealed class NoReflectionAnalyzer : DiagnosticAnalyzer
 
         if (nameText == "System.Reflection" || nameText.StartsWith("System.Reflection."))
         {
-            // For top-level usings, check if any class in the file is a BasaltContract
+            // Using directives may be at file level (outside any class).
+            // Check if the node is inside a contract, or if the file contains one.
             if (!AnalyzerHelper.IsInsideBasaltContract(usingDirective))
             {
                 var root = usingDirective.SyntaxTree.GetRoot(context.CancellationToken);

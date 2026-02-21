@@ -23,6 +23,15 @@ public sealed class DeterminismAnalyzer : DiagnosticAnalyzer
         context.RegisterSyntaxNodeAction(AnalyzePredefinedType, SyntaxKind.PredefinedType);
     }
 
+    // M-03: Non-deterministic type/member pairs to check via semantic model
+    private static readonly (string Type, string[] Members)[] NonDeterministicApis =
+    {
+        ("System.DateTime", new[] { "Now", "UtcNow" }),
+        ("System.DateTimeOffset", new[] { "Now", "UtcNow" }),
+        ("System.Guid", new[] { "NewGuid" }),
+        ("System.Environment", new[] { "TickCount", "TickCount64" }),
+    };
+
     private static void AnalyzeMemberAccess(SyntaxNodeAnalysisContext context)
     {
         var memberAccess = (MemberAccessExpressionSyntax)context.Node;
@@ -30,36 +39,53 @@ public sealed class DeterminismAnalyzer : DiagnosticAnalyzer
         if (!AnalyzerHelper.IsInsideBasaltContract(memberAccess))
             return;
 
-        var expressionText = memberAccess.Expression.ToString();
         var memberName = memberAccess.Name.Identifier.Text;
-        var fullText = $"{expressionText}.{memberName}";
 
-        // DateTime.Now, DateTime.UtcNow
-        if (expressionText == "DateTime" && (memberName == "Now" || memberName == "UtcNow"))
+        // M-03: Try semantic model first to catch fully-qualified and aliased calls
+        var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess, context.CancellationToken);
+        var symbol = symbolInfo.Symbol;
+        if (symbol != null)
         {
-            Report(context, memberAccess, fullText);
-            return;
+            var containingType = symbol.ContainingType?.ToDisplayString();
+            if (containingType != null)
+            {
+                foreach (var (type, members) in NonDeterministicApis)
+                {
+                    if (containingType == type)
+                    {
+                        foreach (var m in members)
+                        {
+                            if (memberName == m)
+                            {
+                                Report(context, memberAccess, $"{type.Substring(type.LastIndexOf('.') + 1)}.{memberName}");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
         }
-
-        // DateTimeOffset.Now, DateTimeOffset.UtcNow
-        if (expressionText == "DateTimeOffset" && (memberName == "Now" || memberName == "UtcNow"))
+        else
         {
-            Report(context, memberAccess, fullText);
-            return;
-        }
+            // Fallback: syntactic check for simple names
+            var expressionText = memberAccess.Expression.ToString();
+            var fullText = $"{expressionText}.{memberName}";
 
-        // Guid.NewGuid
-        if (expressionText == "Guid" && memberName == "NewGuid")
-        {
-            Report(context, memberAccess, fullText);
-            return;
-        }
-
-        // Environment.TickCount, Environment.TickCount64
-        if (expressionText == "Environment" && (memberName == "TickCount" || memberName == "TickCount64"))
-        {
-            Report(context, memberAccess, fullText);
-            return;
+            if ((expressionText == "DateTime" || expressionText == "DateTimeOffset") && (memberName == "Now" || memberName == "UtcNow"))
+            {
+                Report(context, memberAccess, fullText);
+                return;
+            }
+            if (expressionText == "Guid" && memberName == "NewGuid")
+            {
+                Report(context, memberAccess, fullText);
+                return;
+            }
+            if (expressionText == "Environment" && (memberName == "TickCount" || memberName == "TickCount64"))
+            {
+                Report(context, memberAccess, fullText);
+                return;
+            }
         }
     }
 

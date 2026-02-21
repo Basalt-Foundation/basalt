@@ -450,14 +450,15 @@ namespace Basalt.Generators.Json
 
         var bodyIndent = indent + "    ";
 
-        sb.AppendLine($"{bodyIndent}private static System.Text.Json.JsonSerializerOptions? _basaltJsonOptions;");
+        // M-06: Thread-safe lazy initialization using Lazy<T>
+        sb.AppendLine($"{bodyIndent}private static readonly System.Lazy<System.Text.Json.JsonSerializerOptions> _basaltJsonOptionsLazy =");
+        sb.AppendLine($"{bodyIndent}    new System.Lazy<System.Text.Json.JsonSerializerOptions>(() => global::Basalt.Generators.Json.BasaltJsonConverters.CreateOptions());");
         sb.AppendLine();
         sb.AppendLine($"{bodyIndent}/// <summary>");
         sb.AppendLine($"{bodyIndent}/// Gets a cached <see cref=\"System.Text.Json.JsonSerializerOptions\"/> instance");
         sb.AppendLine($"{bodyIndent}/// pre-configured with converters for all Basalt blockchain primitive types.");
         sb.AppendLine($"{bodyIndent}/// </summary>");
-        sb.AppendLine($"{bodyIndent}public static System.Text.Json.JsonSerializerOptions BasaltJsonOptions =>");
-        sb.AppendLine($"{bodyIndent}    _basaltJsonOptions ??= global::Basalt.Generators.Json.BasaltJsonConverters.CreateOptions();");
+        sb.AppendLine($"{bodyIndent}public static System.Text.Json.JsonSerializerOptions BasaltJsonOptions => _basaltJsonOptionsLazy.Value;");
 
         sb.AppendLine($"{indent}}}");
 

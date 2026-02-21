@@ -29,7 +29,8 @@ public sealed class StorageAccessAnalyzer : DiagnosticAnalyzer
         var expr = memberAccess.Expression.ToString();
         var member = memberAccess.Name.Identifier.Text;
 
-        if (expr == "ContractStorage" && (member == "Read" || member == "Write"))
+        // L-02: Expanded to cover all ContractStorage operations (Delete, Exists)
+        if (expr == "ContractStorage" && (member == "Read" || member == "Write" || member == "Delete" || member == "Exists"))
         {
             context.ReportDiagnostic(Diagnostic.Create(
                 DiagnosticIds.RawStorageAccess,

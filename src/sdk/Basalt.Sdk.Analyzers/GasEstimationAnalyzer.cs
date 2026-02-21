@@ -42,13 +42,26 @@ public sealed class GasEstimationAnalyzer : DiagnosticAnalyzer
         int loops = descendants.Count(n => n is ForStatementSyntax || n is WhileStatementSyntax || n is ForEachStatementSyntax);
         gas += loops * LoopGas;
 
-        // Count storage operations
+        // H-02: Count storage operations using member name + receiver type heuristic
+        // to avoid false positives from Dictionary.Add, List.Remove, etc.
         int storageOps = descendants.Count(n =>
         {
-            if (n is InvocationExpressionSyntax invocation)
+            if (n is InvocationExpressionSyntax invocation &&
+                invocation.Expression is MemberAccessExpressionSyntax memberAccess)
             {
-                var text = invocation.Expression.ToString();
-                return text.Contains(".Get(") || text.Contains(".Set(") || text.Contains(".Add(") || text.Contains(".Remove(");
+                var methodName = memberAccess.Name.Identifier.Text;
+                if (methodName != "Get" && methodName != "Set" && methodName != "Add" && methodName != "Remove")
+                    return false;
+
+                // Check receiver expression text for known storage types
+                var receiverText = memberAccess.Expression.ToString();
+                if (receiverText.Contains("Storage") || receiverText.StartsWith("_"))
+                    return true;
+
+                // Fallback: use semantic model to check the receiver type
+                var typeInfo = context.SemanticModel.GetTypeInfo(memberAccess.Expression, context.CancellationToken);
+                var typeName = typeInfo.Type?.ToDisplayString() ?? "";
+                return typeName.Contains("StorageValue") || typeName.Contains("StorageMap") || typeName.Contains("StorageList");
             }
             return false;
         });
@@ -58,7 +71,10 @@ public sealed class GasEstimationAnalyzer : DiagnosticAnalyzer
         int externalCalls = descendants.Count(n =>
         {
             if (n is InvocationExpressionSyntax invocation)
-                return invocation.Expression.ToString().Contains("Context.CallContract");
+            {
+                var text = invocation.Expression.ToString();
+                return text.Contains("Context.CallContract") || text.EndsWith(".CallContract");
+            }
             return false;
         });
         gas += externalCalls * ExternalCallGas;
