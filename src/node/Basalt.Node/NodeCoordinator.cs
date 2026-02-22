@@ -103,6 +103,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // MED-03: Per-peer sync request rate limiting (max 1 per second per peer)
     private readonly ConcurrentDictionary<PeerId, long> _lastSyncRequestTime = new();
 
+    /// <summary>LOW-N01: Timestamp of last sync rate-limit eviction run.</summary>
+    private long _lastSyncEvictionTime;
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -1040,6 +1043,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
         }
         _lastSyncRequestTime[sender] = now;
+
+        // LOW-N01: Evict stale entries every 5 minutes to prevent unbounded growth
+        if (now - Volatile.Read(ref _lastSyncEvictionTime) > 300_000)
+        {
+            Volatile.Write(ref _lastSyncEvictionTime, now);
+            var cutoff = now - 300_000;
+            foreach (var kvp in _lastSyncRequestTime)
+            {
+                if (kvp.Value < cutoff)
+                    _lastSyncRequestTime.TryRemove(kvp.Key, out _);
+            }
+        }
 
         // N-03: Cap sync response to prevent a peer from requesting unbounded blocks
         var maxBlocks = Math.Min(request.MaxBlocks, MaxSyncResponseBlocks);

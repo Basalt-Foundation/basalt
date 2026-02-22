@@ -1,3 +1,5 @@
+# LOW-N04: Validator keys below are for DEVNET ONLY — never use in production.
+# These are deterministic test keys shared across all devnet instances.
 services:
   validator-0:
     build:
