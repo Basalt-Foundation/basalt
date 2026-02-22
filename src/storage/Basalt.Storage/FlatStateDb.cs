@@ -22,6 +22,7 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly Dictionary<(Address, Hash256), byte[]> _storageCache;
     private readonly HashSet<Address> _deletedAccounts;
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
+    private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
     private readonly IFlatStatePersistence? _persistence;
     private readonly ILogger? _logger;
 
@@ -44,6 +45,7 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache = new Dictionary<(Address, Hash256), byte[]>();
         _deletedAccounts = new HashSet<Address>();
         _deletedStorage = new HashSet<(Address, Hash256)>();
+        _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _persistence = persistence;
         _logger = logger;
     }
@@ -64,6 +66,7 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache = storageCache;
         _deletedAccounts = deletedAccounts;
         _deletedStorage = deletedStorage;
+        _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _persistence = null; // Forks never persist
     }
 
@@ -172,6 +175,7 @@ public sealed class FlatStateDb : IStateDatabase
         var cacheKey = (contract, key);
         _storageCache[cacheKey] = value;
         _deletedStorage.Remove(cacheKey);
+        _dirtyStorageKeys.Add(cacheKey);
         _trie.SetStorage(contract, key, value);
         CheckCacheSize();
     }
@@ -184,6 +188,7 @@ public sealed class FlatStateDb : IStateDatabase
         var cacheKey = (contract, key);
         _storageCache.Remove(cacheKey);
         _deletedStorage.Add(cacheKey);
+        _dirtyStorageKeys.Add(cacheKey);
         _trie.DeleteStorage(contract, key);
     }
 
@@ -255,6 +260,8 @@ public sealed class FlatStateDb : IStateDatabase
     {
         return _trie.GenerateStorageProof(contract, key);
     }
+
+    public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;
 
     /// <summary>
     /// Flush the current flat cache to persistent storage, including deletions.

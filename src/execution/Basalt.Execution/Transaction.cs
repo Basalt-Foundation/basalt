@@ -34,6 +34,10 @@ public sealed class Transaction
     public UInt256 GasPrice { get; init; }
     public UInt256 MaxFeePerGas { get; init; } = UInt256.Zero;
     public UInt256 MaxPriorityFeePerGas { get; init; } = UInt256.Zero;
+    /// <summary>
+    /// LOW-02: This is a mutable byte array. Callers must not mutate the contents after
+    /// construction, as doing so would invalidate the cached transaction hash.
+    /// </summary>
     public byte[] Data { get; init; } = [];
     /// <summary>
     /// L-3: Reserved for future use (e.g., transaction priority lanes).
@@ -50,6 +54,8 @@ public sealed class Transaction
     /// without revealing identity, issuer, or credential details.
     /// A BLAKE3 hash of serialized proofs is included in the signing payload (COMPL-02)
     /// to prevent relay nodes from stripping or modifying proofs.
+    /// LOW-02: Mutable array — callers must not mutate after construction
+    /// as doing so would invalidate the cached transaction hash.
     /// </summary>
     public ComplianceProof[] ComplianceProofs { get; init; } = [];
 
@@ -225,7 +231,7 @@ public sealed class Transaction
 public sealed class TransactionReceipt
 {
     public required Hash256 TransactionHash { get; init; }
-    public required Hash256 BlockHash { get; init; }
+    public required Hash256 BlockHash { get; set; }
     public required ulong BlockNumber { get; init; }
     public required int TransactionIndex { get; init; }
     public required Address From { get; init; }

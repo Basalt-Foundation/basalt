@@ -43,10 +43,11 @@ public sealed class GasMeter
 
     /// <summary>
     /// Add a gas refund (e.g. from storage deletion).
+    /// MED-04: Uses checked arithmetic to prevent silent overflow.
     /// </summary>
     public void AddRefund(ulong amount)
     {
-        GasRefund += amount;
+        checked { GasRefund += amount; }
     }
 
     /// <summary>
