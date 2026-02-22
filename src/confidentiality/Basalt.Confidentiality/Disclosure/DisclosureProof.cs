@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Basalt.Confidentiality.Crypto;
 using Basalt.Core;
 
@@ -59,7 +60,9 @@ public sealed class DisclosureProof
             return false;
 
         // F-15: If a commitment reference is provided, it must match the given commitment
-        if (proof.CommitmentRef != null && !proof.CommitmentRef.AsSpan().SequenceEqual(commitment))
+        // LOW-02: Use constant-time comparison to prevent timing side-channel attacks
+        if (proof.CommitmentRef != null &&
+            !CryptographicOperations.FixedTimeEquals(proof.CommitmentRef, commitment))
             return false;
 
         return PedersenCommitment.Open(commitment, proof.Value, proof.BlindingFactor);

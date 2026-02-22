@@ -149,6 +149,10 @@ public sealed class PrivateChannel
     /// <returns>A tuple of (senderX25519PubKey, receiverX25519PubKey).</returns>
     private (byte[] SenderPub, byte[] ReceiverPub) ResolveSenderReceiver(byte[] senderX25519PubKey)
     {
+        // LOW-03: Reject channels where both parties use the same key
+        if (PartyAPublicKey.AsSpan().SequenceEqual(PartyBPublicKey))
+            throw new InvalidOperationException("Party A and Party B public keys must be distinct.");
+
         if (senderX25519PubKey.AsSpan().SequenceEqual(PartyAPublicKey))
             return (PartyAPublicKey, PartyBPublicKey);
         if (senderX25519PubKey.AsSpan().SequenceEqual(PartyBPublicKey))
@@ -189,6 +193,10 @@ public sealed class PrivateChannel
             {
                 if (_status != ChannelStatus.Active)
                     throw new InvalidOperationException($"Cannot send messages on a channel with status {_status}.");
+
+                // LOW-01: Nonce overflow check — prevent wrap-around to 0
+                if (Nonce == ulong.MaxValue)
+                    throw new InvalidOperationException("Nonce exhausted, re-key required.");
 
                 currentNonce = Nonce;
                 Nonce = currentNonce + 1;
