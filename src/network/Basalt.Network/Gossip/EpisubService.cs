@@ -304,16 +304,29 @@ public sealed class EpisubService
     /// </summary>
     public IEnumerable<(Hash256 Id, byte[] Data)> HandleIWant(PeerId sender, Hash256[] messageIds)
     {
-        // NET-H09: Per-peer rate limiting — max 10 IWANT requests per second per peer.
+        // NET-H09 + NEW-L05: Per-peer rate limiting — max 10 IWANT requests per second per peer.
+        // Uses AddOrUpdate to atomically check the elapsed time and update the timestamp,
+        // eliminating the TOCTOU race between GetOrAdd and the subsequent indexer write.
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var lastTimestamp = _lastIWantTimestamps.GetOrAdd(sender, 0L);
-        var elapsed = now - lastTimestamp;
-        if (elapsed < 1000 / MaxIWantRequestsPerSecond) // 100ms minimum interval
+        bool rateLimited = false;
+        _lastIWantTimestamps.AddOrUpdate(
+            sender,
+            now, // Add: first request from this peer, allow it
+            (_, lastTs) =>
+            {
+                var elapsed = now - lastTs;
+                if (elapsed < 1000 / MaxIWantRequestsPerSecond) // 100ms minimum interval
+                {
+                    rateLimited = true;
+                    return lastTs; // Keep old timestamp, reject request
+                }
+                return now; // Allow request, update timestamp
+            });
+        if (rateLimited)
         {
             _logger.LogWarning("IWANT rate limit exceeded for peer {PeerId}, ignoring request", sender);
             return [];
         }
-        _lastIWantTimestamps[sender] = now;
 
         // NET-H09: Truncate oversized IWANT requests to prevent amplification DoS.
         var count = Math.Min(messageIds.Length, MaxIWantIds);

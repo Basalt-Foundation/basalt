@@ -23,6 +23,7 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly HashSet<Address> _deletedAccounts;
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
+    private readonly HashSet<Address> _dirtyAccounts;
     private readonly IFlatStatePersistence? _persistence;
     private readonly ILogger? _logger;
 
@@ -46,6 +47,7 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts = new HashSet<Address>();
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
+        _dirtyAccounts = new HashSet<Address>();
         _persistence = persistence;
         _logger = logger;
     }
@@ -67,6 +69,7 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts = deletedAccounts;
         _deletedStorage = deletedStorage;
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
+        _dirtyAccounts = new HashSet<Address>();
         _persistence = null; // Forks never persist
     }
 
@@ -104,6 +107,7 @@ public sealed class FlatStateDb : IStateDatabase
     {
         _accountCache[address] = state;
         _deletedAccounts.Remove(address);
+        _dirtyAccounts.Add(address);
         _trie.SetAccount(address, state);
         CheckCacheSize();
     }
@@ -127,6 +131,7 @@ public sealed class FlatStateDb : IStateDatabase
     {
         _accountCache.Remove(address);
         _deletedAccounts.Add(address);
+        _dirtyAccounts.Add(address);
 
         // Remove storage entries for this address from cache
         var keysToRemove = new List<(Address, Hash256)>();
@@ -262,6 +267,8 @@ public sealed class FlatStateDb : IStateDatabase
     }
 
     public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;
+
+    public IReadOnlyCollection<Address> GetModifiedAccounts() => _dirtyAccounts;
 
     /// <summary>
     /// Flush the current flat cache to persistent storage, including deletions.

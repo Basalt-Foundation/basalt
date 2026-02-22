@@ -151,7 +151,6 @@ public class AuditRemediationTests
             Available = true,
             Balance = "500000000000000000000000000",
             Nonce = 5,
-            PendingNonce = 7,
             CooldownSeconds = 60,
         };
 
@@ -159,7 +158,7 @@ public class AuditRemediationTests
         response.Available.Should().BeTrue();
         response.Balance.Should().Be("500000000000000000000000000");
         response.Nonce.Should().Be(5);
-        response.PendingNonce.Should().Be(7);
+        // R3-NEW-5: PendingNonce removed — internal nonce state should not be exposed.
         response.CooldownSeconds.Should().Be(60);
     }
 
@@ -326,7 +325,7 @@ public class AuditRemediationTests
         var mempool = new Mempool(100);
         var validator = new TransactionValidator(TestChainParams);
         var stateDb = new InMemoryStateDb();
-        var mutation = new Mutation();
+        var mutation = new Mutation(Microsoft.Extensions.Logging.Abstractions.NullLogger<Mutation>.Instance);
 
         var input = new TransactionInput
         {

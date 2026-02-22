@@ -57,12 +57,9 @@ public sealed class SlashingEngine
     /// </summary>
     public SlashingResult SlashDoubleSign(Address validator, ulong blockNumber, Hash256 hash1, Hash256 hash2)
     {
-        var info = _stakingState.GetStakeInfo(validator);
-        if (info == null)
-            return SlashingResult.Error("Validator not found");
-
-        var penalty = info.TotalStake; // 100%
-        return ApplySlash(validator, penalty, SlashingReason.DoubleSign, blockNumber,
+        // LOW-05: Use ApplySlashPercent to atomically read stake and compute penalty
+        // under the StakingState lock, preventing TOCTOU races with concurrent slashes.
+        return ApplyPercentSlash(validator, DoubleSignPenaltyPercent, SlashingReason.DoubleSign, blockNumber,
             $"Double-sign at block {blockNumber}: {hash1.ToHexString()[..16]}.. vs {hash2.ToHexString()[..16]}..");
     }
 
@@ -71,12 +68,9 @@ public sealed class SlashingEngine
     /// </summary>
     public SlashingResult SlashInactivity(Address validator, ulong fromBlock, ulong toBlock)
     {
-        var info = _stakingState.GetStakeInfo(validator);
-        if (info == null)
-            return SlashingResult.Error("Validator not found");
-
-        var penalty = info.TotalStake * new UInt256(InactivityPenaltyPercent) / new UInt256(100);
-        return ApplySlash(validator, penalty, SlashingReason.Inactivity, toBlock,
+        // LOW-05: Use ApplySlashPercent to atomically read stake and compute penalty
+        // under the StakingState lock, preventing TOCTOU races with concurrent slashes.
+        return ApplyPercentSlash(validator, InactivityPenaltyPercent, SlashingReason.Inactivity, toBlock,
             $"Inactive from block {fromBlock} to {toBlock}");
     }
 
@@ -85,22 +79,21 @@ public sealed class SlashingEngine
     /// </summary>
     public SlashingResult SlashInvalidBlock(Address validator, ulong blockNumber, string reason)
     {
-        var info = _stakingState.GetStakeInfo(validator);
-        if (info == null)
-            return SlashingResult.Error("Validator not found");
-
-        var penalty = info.TotalStake * new UInt256(InvalidBlockPenaltyPercent) / new UInt256(100);
-        return ApplySlash(validator, penalty, SlashingReason.InvalidBlock, blockNumber,
+        // LOW-05: Use ApplySlashPercent to atomically read stake and compute penalty
+        // under the StakingState lock, preventing TOCTOU races with concurrent slashes.
+        return ApplyPercentSlash(validator, InvalidBlockPenaltyPercent, SlashingReason.InvalidBlock, blockNumber,
             $"Invalid block at {blockNumber}: {reason}");
     }
 
-    private SlashingResult ApplySlash(Address validator, UInt256 penalty, SlashingReason reason,
+    /// <summary>
+    /// Apply a percentage-based slash atomically via StakingState.ApplySlashPercent (LOW-05).
+    /// The stake read and penalty computation both happen under the StakingState lock,
+    /// eliminating the TOCTOU race where concurrent slashes could use a stale TotalStake.
+    /// </summary>
+    private SlashingResult ApplyPercentSlash(Address validator, int percent, SlashingReason reason,
         ulong blockNumber, string description)
     {
-        // F-CON-03: Delegate the entire read-modify-write to StakingState.ApplySlash
-        // which runs atomically under the lock. This prevents race conditions where
-        // concurrent slashing operations read stale StakeInfo and double-slash.
-        var appliedPenalty = _stakingState.ApplySlash(validator, penalty);
+        var appliedPenalty = _stakingState.ApplySlashPercent(validator, percent);
         if (appliedPenalty == null)
             return SlashingResult.Error("Validator not found");
 

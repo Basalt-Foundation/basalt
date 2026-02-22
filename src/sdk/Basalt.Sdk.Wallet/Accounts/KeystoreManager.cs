@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Basalt.Core;
@@ -84,9 +85,17 @@ public static class KeystoreManager
         var walletFile = JsonSerializer.Deserialize(json, WalletKeystoreJsonContext.Default.WalletKeystoreFile)
             ?? throw new InvalidOperationException("Failed to deserialize wallet keystore file.");
 
+        // R2 LOW-03: Zero the decrypted private key after use to minimize the window
+        // where sensitive key material is exposed in memory.
         var decryptedKey = Keystore.Decrypt(walletFile.Keystore, password);
-
-        return Account.FromPrivateKey(decryptedKey);
+        try
+        {
+            return Account.FromPrivateKey(decryptedKey);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(decryptedKey);
+        }
     }
 }
 

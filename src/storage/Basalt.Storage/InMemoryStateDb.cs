@@ -18,6 +18,7 @@ public sealed class InMemoryStateDb : IStateDatabase
     private readonly Dictionary<Address, AccountState> _accounts = new();
     private readonly Dictionary<(Address, Hash256), byte[]> _storage = new();
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys = new();
+    private readonly HashSet<Address> _dirtyAccounts = new();
 
     public AccountState? GetAccount(Address address)
     {
@@ -27,6 +28,7 @@ public sealed class InMemoryStateDb : IStateDatabase
     public void SetAccount(Address address, AccountState state)
     {
         _accounts[address] = state;
+        _dirtyAccounts.Add(address);
     }
 
     public bool AccountExists(Address address)
@@ -37,6 +39,7 @@ public sealed class InMemoryStateDb : IStateDatabase
     public void DeleteAccount(Address address)
     {
         _accounts.Remove(address);
+        _dirtyAccounts.Add(address);
     }
 
     /// <summary>
@@ -115,4 +118,6 @@ public sealed class InMemoryStateDb : IStateDatabase
     }
 
     public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;
+
+    public IReadOnlyCollection<Address> GetModifiedAccounts() => _dirtyAccounts;
 }

@@ -210,6 +210,19 @@ public sealed class PipelinedConsensus
             return null;
         }
 
+        // LOW-02 R3: Reject non-sequential proposals that skip block numbers.
+        // A Byzantine leader could send proposals for blocks 5,7,9 (skipping 6,8) to exhaust
+        // the pipeline with rounds that can never finalize in order.
+        for (var bn = _lastFinalizedBlock + 1; bn < proposal.BlockNumber; bn++)
+        {
+            if (!_activeRounds.ContainsKey(bn))
+            {
+                _logger.LogWarning("Rejecting non-sequential proposal for block {Block}, missing round for block {Missing}",
+                    proposal.BlockNumber, bn);
+                return null;
+            }
+        }
+
         var round = _activeRounds.GetOrAdd(proposal.BlockNumber, _ => new ConsensusRound
         {
             BlockNumber = proposal.BlockNumber,
@@ -343,6 +356,11 @@ public sealed class PipelinedConsensus
             _logger.LogWarning("View change from non-validator {Sender}", viewChange.SenderId);
             return null;
         }
+
+        // MED-03 R3: Verify VoterPublicKey matches the registered BLS public key for the sender.
+        var vcValidator = _validatorSet.GetByPeerId(viewChange.SenderId);
+        if (vcValidator == null || !vcValidator.BlsPublicKey.ToArray().AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
+            return null;
 
         // H-01: Verify view change signature (domain-separated)
         Span<byte> sigPayload = stackalloc byte[ViewChangePayloadSize];

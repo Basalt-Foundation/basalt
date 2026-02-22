@@ -72,6 +72,10 @@ services:
     networks:
       - basalt-testnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/v1/status"]
       interval: 10s
@@ -99,6 +103,10 @@ services:
     networks:
       - basalt-testnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   # ─── Validator 2 ───────────────────────────────────────────────────
   validator-2:
@@ -120,6 +128,10 @@ services:
     networks:
       - basalt-testnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   # ─── Validator 3 ───────────────────────────────────────────────────
   validator-3:
@@ -141,6 +153,10 @@ services:
     networks:
       - basalt-testnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   validator-0-data:

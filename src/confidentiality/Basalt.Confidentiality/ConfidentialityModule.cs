@@ -47,11 +47,19 @@ public static class ConfidentialityModule
             _ = PedersenCommitment.HGenerator;
 
             // Verify X25519 key generation works
+            // LOW-05: Zero ephemeral private key after health check
             var (privKey, pubKey) = X25519KeyExchange.GenerateKeyPair();
-            if (privKey.Length != X25519KeyExchange.KeySize || pubKey.Length != X25519KeyExchange.KeySize)
-                return false;
+            try
+            {
+                if (privKey.Length != X25519KeyExchange.KeySize || pubKey.Length != X25519KeyExchange.KeySize)
+                    return false;
 
-            return true;
+                return true;
+            }
+            finally
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(privKey);
+            }
         }
         catch
         {

@@ -47,8 +47,12 @@ public sealed class TransactionValidator
             return BasaltResult.Error(BasaltErrorCode.InvalidNonce, $"Expected nonce {expectedNonce}, got {tx.Nonce}.");
 
         // Step 5: Check balance (value + max gas cost)
+        // MED-03 R3: Use checked arithmetic to prevent UInt256 overflow.
+        // Without this, tx.Value + gasCost could wrap to a small number, passing the balance
+        // check for a transaction the sender cannot actually afford.
         var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
-        var totalCost = tx.Value + gasCost;
+        if (!UInt256.TryAdd(tx.Value, gasCost, out var totalCost))
+            return BasaltResult.Error(BasaltErrorCode.InsufficientBalance, "Value + gas cost overflows.");
         var balance = account?.Balance ?? UInt256.Zero;
         if (balance < totalCost)
             return BasaltResult.Error(BasaltErrorCode.InsufficientBalance, "Insufficient balance for value + gas.");

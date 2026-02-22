@@ -74,7 +74,6 @@ public sealed class PeerInfo
         get => new(Volatile.Read(ref _connectedAtTicks), TimeSpan.Zero);
         set => Volatile.Write(ref _connectedAtTicks, value.UtcTicks);
     }
-    public int FailedAttempts { get; set; }
 
     /// <summary>
     /// NET-H13: Time until which this peer is banned. Null if not banned.

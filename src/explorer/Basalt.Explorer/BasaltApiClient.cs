@@ -372,4 +372,5 @@ public sealed class WebSocketBlockEvent
 [JsonSerializable(typeof(FaucetResponseDto))]
 [JsonSerializable(typeof(ContractCallRequestDto))]
 [JsonSerializable(typeof(ContractCallResponseDto))]
+[JsonSerializable(typeof(List<string>))]
 internal partial class ExplorerJsonContext : JsonSerializerContext;

@@ -98,7 +98,7 @@
             var stored = await JS.InvokeAsync<string?>("localStorage.getItem", "basalt_recent_searches");
             if (!string.IsNullOrEmpty(stored))
             {
-                try { _recentSearches = System.Text.Json.JsonSerializer.Deserialize<List<string>>(stored) ?? new(); }
+                try { _recentSearches = System.Text.Json.JsonSerializer.Deserialize(stored, ExplorerJsonContext.Default.ListString) ?? new(); }
                 catch { _recentSearches = new(); }
             }
 
@@ -169,7 +169,7 @@
         _recentSearches.Insert(0, query);
         if (_recentSearches.Count > 10) _recentSearches.RemoveAt(10);
         await JS.InvokeVoidAsync("localStorage.setItem", "basalt_recent_searches",
-            System.Text.Json.JsonSerializer.Serialize(_recentSearches));
+            System.Text.Json.JsonSerializer.Serialize(_recentSearches, ExplorerJsonContext.Default.ListString));
     }
 
     private void ApplySuggestion(string value)

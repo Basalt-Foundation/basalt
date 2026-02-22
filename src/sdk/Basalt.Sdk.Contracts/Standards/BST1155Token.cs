@@ -136,7 +136,8 @@ public partial class BST1155Token : IBST1155
     {
         Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "BST1155: not owner");
         var balance = _balances.Get(BalanceKey(to, tokenId));
-        _balances.Set(BalanceKey(to, tokenId), balance + amount);
+        // N-6: Use checked addition to prevent silent overflow on mint
+        _balances.Set(BalanceKey(to, tokenId), UInt256.CheckedAdd(balance, amount));
 
         if (!string.IsNullOrEmpty(uri))
             _tokenURIs.Set(tokenId.ToString(), uri);

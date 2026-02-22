@@ -78,7 +78,18 @@ public sealed class NodeConfiguration
     // N-12: Validate DataDir to prevent path traversal
     public static string ValidateDataDir(string dataDir)
     {
-        var resolved = Path.GetFullPath(dataDir);
+        // LOW-N03: Resolve symlinks before validation to prevent bypass via symlinked paths.
+        // ResolveLinkTarget throws if the path doesn't exist yet, so fall back to GetFullPath.
+        string resolved;
+        try
+        {
+            resolved = new FileInfo(dataDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                ?? Path.GetFullPath(dataDir);
+        }
+        catch (IOException)
+        {
+            resolved = Path.GetFullPath(dataDir);
+        }
 
         // Use case-insensitive comparison on macOS (HFS+) and Windows
         var comparison = OperatingSystem.IsLinux()

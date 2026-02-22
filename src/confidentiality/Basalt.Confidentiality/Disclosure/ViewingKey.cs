@@ -59,13 +59,14 @@ public static class ViewingKey
         var (ephPrivKey, ephPubKey) = X25519KeyExchange.GenerateKeyPair();
 
         byte[]? sharedSecret = null;
+        // LOW-04: Declare plaintext outside try so it can be zeroed in finally
+        var plaintext = new byte[64];
         try
         {
             // Derive shared secret
             sharedSecret = X25519KeyExchange.DeriveSharedSecret(ephPrivKey, viewerPublicKey);
 
             // Build plaintext: value (32 bytes BE) || blindingFactor (32 bytes)
-            var plaintext = new byte[64];
             value.WriteTo(plaintext.AsSpan(0, 32), isBigEndian: true);
             blindingFactor.CopyTo(plaintext.AsSpan(32));
 
@@ -90,6 +91,8 @@ public static class ViewingKey
             // F-14: Zero shared secret after use
             if (sharedSecret != null)
                 CryptographicOperations.ZeroMemory(sharedSecret);
+            // LOW-04: Zero plaintext containing committed value + blinding factor
+            CryptographicOperations.ZeroMemory(plaintext);
         }
     }
 

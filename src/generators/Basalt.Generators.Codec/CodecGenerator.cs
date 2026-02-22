@@ -327,6 +327,13 @@ public sealed class CodecGenerator : IIncrementalGenerator
     /// Returns the fixed byte size for the type, -1 for variable-size types (string, byte[]),
     /// or null if the type is unsupported.
     /// </summary>
+    /// <remarks>
+    /// LOW-06: For variable-size fields (string, byte[]), <see cref="EmitGetSerializedSize"/>
+    /// uses a fixed 4-byte length prefix in the size calculation. The actual wire format uses
+    /// VarInt encoding (1-10 bytes), so the computed size is an upper bound, not an exact value.
+    /// This is acceptable because the size is used for buffer pre-allocation where slight
+    /// over-estimation is preferable to under-estimation and reallocation.
+    /// </remarks>
     private static int? GetFixedSize(string typeFullName) => NormalizeType(typeFullName) switch
     {
         "byte" => 1,

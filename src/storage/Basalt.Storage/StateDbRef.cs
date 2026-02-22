@@ -58,4 +58,8 @@ public sealed class StateDbRef : IStateDatabase
     public void DeleteStorage(Address contract, Hash256 key) => _inner.DeleteStorage(contract, key);
 
     public IStateDatabase Fork() => _inner.Fork();
+
+    public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _inner.GetModifiedStorageKeys();
+
+    public IReadOnlyCollection<Address> GetModifiedAccounts() => _inner.GetModifiedAccounts();
 }

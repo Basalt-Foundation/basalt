@@ -29,7 +29,7 @@ public class GraphQLMutationTests
         var mempool = new Mempool(100);
         var validator = new TransactionValidator(TestChainParams);
         var stateDb = new InMemoryStateDb();
-        var mutation = new Mutation();
+        var mutation = new Mutation(Microsoft.Extensions.Logging.Abstractions.NullLogger<Mutation>.Instance);
 
         var input = new TransactionInput
         {
@@ -63,7 +63,7 @@ public class GraphQLMutationTests
         var mempool = new Mempool(100);
         var validator = new TransactionValidator(TestChainParams);
         var stateDb = new InMemoryStateDb();
-        var mutation = new Mutation();
+        var mutation = new Mutation(Microsoft.Extensions.Logging.Abstractions.NullLogger<Mutation>.Instance);
 
         var input = new TransactionInput
         {
@@ -94,7 +94,7 @@ public class GraphQLMutationTests
         var mempool = new Mempool(100);
         var validator = new TransactionValidator(TestChainParams);
         var stateDb = new InMemoryStateDb();
-        var mutation = new Mutation();
+        var mutation = new Mutation(Microsoft.Extensions.Logging.Abstractions.NullLogger<Mutation>.Instance);
 
         var senderHex = "0x" + new string('a', 40);
         var toHex = "0x" + new string('b', 40);

@@ -50,6 +50,12 @@ public sealed class BridgeState
     /// </summary>
     public BridgeDeposit Lock(byte[] sender, byte[] recipient, UInt256 amount, byte[]? tokenAddress = null)
     {
+        // INFO-02: Validate sender and recipient address lengths
+        if (sender.Length != 20)
+            throw new BridgeException($"Sender must be exactly 20 bytes, got {sender.Length}.");
+        if (recipient.Length != 20)
+            throw new BridgeException($"Recipient must be exactly 20 bytes, got {recipient.Length}.");
+
         if (amount.IsZero)
             throw new BridgeException("Cannot bridge zero amount");
 
@@ -274,9 +280,13 @@ public sealed class BridgeState
     /// </remarks>
     public static byte[] ComputeDepositLeaf(ulong nonce, byte[] recipient, UInt256 amount)
     {
+        // LOW-07: Reject short or oversized recipients instead of silent truncation/padding
+        if (recipient.Length != 20)
+            throw new BridgeException($"Recipient must be exactly 20 bytes, got {recipient.Length}.");
+
         var data = new byte[8 + 20 + 32];
         BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(0, 8), nonce);
-        recipient.AsSpan(0, Math.Min(recipient.Length, 20)).CopyTo(data.AsSpan(8));
+        recipient.AsSpan(0, 20).CopyTo(data.AsSpan(8));
         amount.WriteTo(data.AsSpan(28, 32));
         return data;
     }

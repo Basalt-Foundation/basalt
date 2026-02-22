@@ -281,9 +281,8 @@ public sealed class ReputationScorer
         // NET-M22: Cap minor penalties so they cannot push score below LowRepThreshold
         if (IsMinorPenalty(delta))
         {
-            int accumulated = _minorPenaltyAccumulator.GetOrAdd(peerId, 0);
-            int newAccumulated = accumulated + Math.Abs(delta);
-            _minorPenaltyAccumulator[peerId] = newAccumulated;
+            // NEW-L02: Use atomic AddOrUpdate to prevent lost updates under concurrency
+            _minorPenaltyAccumulator.AddOrUpdate(peerId, Math.Abs(delta), (_, acc) => acc + Math.Abs(delta));
 
             // Check if applying this penalty would bring score below LowRepThreshold
             int projectedScore = oldScore + delta;

@@ -494,7 +494,10 @@ public static class RestApiEndpoints
                             Message = "Invalid address format.",
                         });
 
-                    var account = stateDb.GetAccount(contractAddr);
+                    // S3-02: Fork state for consistent multi-read snapshot
+                    var snapshot = stateDb.Fork();
+
+                    var account = snapshot.GetAccount(contractAddr);
                     if (account == null || account.Value.AccountType is not (Storage.AccountType.Contract or Storage.AccountType.SystemContract))
                         return Microsoft.AspNetCore.Http.Results.NotFound();
 
@@ -504,7 +507,7 @@ public static class RestApiEndpoints
                     codeKeySpan[0] = 0xFF;
                     codeKeySpan[1] = 0x01;
                     var codeStorageKey = new Hash256(codeKeySpan);
-                    var code = stateDb.GetStorage(contractAddr, codeStorageKey) ?? [];
+                    var code = snapshot.GetStorage(contractAddr, codeStorageKey) ?? [];
 
                     var codeHashHex = "";
                     if (code.Length > 0)
@@ -581,7 +584,10 @@ public static class RestApiEndpoints
                             Message = "Invalid address format.",
                         });
 
-                    var account = stateDb.GetAccount(contractAddr);
+                    // S3-02: Fork state for consistent multi-read snapshot
+                    var snapshot = stateDb.Fork();
+
+                    var account = snapshot.GetAccount(contractAddr);
                     if (account == null || account.Value.AccountType is not (Storage.AccountType.Contract or Storage.AccountType.SystemContract))
                         return Microsoft.AspNetCore.Http.Results.NotFound();
 
@@ -591,7 +597,7 @@ public static class RestApiEndpoints
                     codeKeySpan[0] = 0xFF;
                     codeKeySpan[1] = 0x01;
                     var codeStorageKey = new Hash256(codeKeySpan);
-                    var code = stateDb.GetStorage(contractAddr, codeStorageKey) ?? [];
+                    var code = snapshot.GetStorage(contractAddr, codeStorageKey) ?? [];
 
                     if (code.Length == 0)
                         return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
@@ -609,10 +615,10 @@ public static class RestApiEndpoints
                     storageGetSelector.CopyTo(callData, 0);
                     keyHash.WriteTo(callData.AsSpan(4));
 
-                    // Create execution context for read-only call (fork state to avoid mutation)
+                    // Create execution context for read-only call (fork from snapshot to avoid mutation)
                     var latestBlock = chainManager.LatestBlock;
                     var gasMeter = new GasMeter(100_000);
-                    var forkedDb = stateDb.Fork();
+                    var forkedDb = snapshot.Fork();
 
                     var ctx = new VmExecutionContext
                     {
@@ -1080,8 +1086,8 @@ public sealed class ComplianceProofDto
         return new ComplianceProof
         {
             SchemaId = Hash256.FromHexString(SchemaId),
-            Proof = Convert.FromHexString(Proof.StartsWith("0x") ? Proof[2..] : Proof),
-            PublicInputs = Convert.FromHexString(PublicInputs.StartsWith("0x") ? PublicInputs[2..] : PublicInputs),
+            Proof = Convert.FromHexString(Proof.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? Proof[2..] : Proof),
+            PublicInputs = Convert.FromHexString(PublicInputs.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? PublicInputs[2..] : PublicInputs),
             Nullifier = Hash256.FromHexString(Nullifier),
         };
     }

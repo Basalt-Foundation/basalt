@@ -122,6 +122,9 @@ public sealed class GossipService
         // M-4: Compute message ID and deduplicate to prevent processing the same message twice.
         // This is especially important for relayed gossip where multiple peers may forward
         // the same transaction/block announcement.
+        // NEW-L03 R3: This re-serializes the message for hashing even though it arrived as bytes.
+        // A future optimization could pass the original wire bytes alongside the deserialized message
+        // to avoid the redundant serialization. Acceptable for now as BLAKE3 hashing is fast.
         var serialized = SerializeMessage(message);
         var msgId = Blake3Hasher.Hash(serialized);
         if (IsMessageSeen(msgId))

@@ -95,11 +95,12 @@ public sealed class SanctionsList
             return _auditLog.ToList();
     }
 
+    // MED-01 R3: Aligned with post-add eviction pattern used in ComplianceEngine and IdentityRegistry.
     private void AddAuditEvent(ComplianceEvent evt)
     {
-        if (_auditLog.Count >= MaxAuditLogSize)
-            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
         _auditLog.Add(evt);
+        if (_auditLog.Count > MaxAuditLogSize)
+            _auditLog.RemoveAt(0);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);
