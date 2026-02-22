@@ -1,4 +1,5 @@
 using Basalt.Bridge;
+using Basalt.Core;
 using Basalt.Crypto;
 using FluentAssertions;
 using Xunit;
@@ -8,6 +9,23 @@ namespace Basalt.Bridge.Tests;
 public class BridgeStateTests
 {
     private static byte[] Addr(byte seed) { var a = new byte[20]; a[19] = seed; return a; }
+
+    /// <summary>
+    /// Build a valid 2-leaf Merkle proof for a deposit. Returns non-empty proof
+    /// (required by LOW-06) and root that passes VerifyMerkleProof.
+    /// The deposit leaf is placed at position (nonce &amp; 1) since VerifyMerkleProof
+    /// uses the nonce as the Merkle index.
+    /// </summary>
+    private static (byte[] Root, byte[][] Proof) BuildTestProof(ulong nonce, byte[] recipient, UInt256 amount)
+    {
+        var depositLeaf = BridgeState.ComputeDepositLeaf(nonce, recipient, amount);
+        var dummyLeaf = BridgeState.ComputeDepositLeaf(ulong.MaxValue, new byte[20], (UInt256)1);
+        // Place deposit at position matching nonce parity for Merkle index compatibility
+        if ((nonce & 1) == 0)
+            return BridgeProofVerifier.BuildMerkleProof([depositLeaf, dummyLeaf], 0);
+        else
+            return BridgeProofVerifier.BuildMerkleProof([dummyLeaf, depositLeaf], 1);
+    }
 
     private readonly BridgeState _bridge = new() { BasaltChainId = 1, EthereumChainId = 11155111 };
 
@@ -320,12 +338,19 @@ public class BridgeStateTests
         var relayer = new MultisigRelayer(1);
         relayer.AddRelayer(pubKey.ToArray());
 
+        // MED-06: Lock tokens first to establish locked balance
+        _bridge.Lock(Addr(1), Addr(2), 100);
+
+        // LOW-06: Build valid Merkle proof (non-empty)
+        var (root, proof) = BuildTestProof(0, Addr(2), 100);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 100,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -342,12 +367,16 @@ public class BridgeStateTests
         var relayer = new MultisigRelayer(1);
         relayer.AddRelayer(pubKey.ToArray());
 
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        var (root, proof) = BuildTestProof(0, Addr(2), 100);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 100,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -366,12 +395,16 @@ public class BridgeStateTests
         relayer.AddRelayer(k0.PublicKey.ToArray());
         relayer.AddRelayer(k1.PublicKey.ToArray());
 
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        var (root, proof) = BuildTestProof(0, Addr(2), 100);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 100,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -388,12 +421,16 @@ public class BridgeStateTests
         var relayer = new MultisigRelayer(1);
         relayer.AddRelayer(pubKey.ToArray());
 
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        var (root, proof) = BuildTestProof(0, Addr(2), 100);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 100,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         withdrawal.AddSignature(new RelayerSignature
@@ -412,14 +449,22 @@ public class BridgeStateTests
         var relayer = new MultisigRelayer(1);
         relayer.AddRelayer(pubKey.ToArray());
 
+        // Lock enough tokens for all 5 withdrawals: 100+200+300+400+500 = 1500
+        for (ulong i = 0; i < 5; i++)
+            _bridge.Lock(Addr(1), Addr(2), 100 * (i + 1));
+
         for (ulong i = 0; i < 5; i++)
         {
+            var amount = (UInt256)(100 * (i + 1));
+            var (root, proof) = BuildTestProof(i, Addr(2), amount);
+
             var withdrawal = new BridgeWithdrawal
             {
                 DepositNonce = i,
                 Recipient = Addr(2),
-                Amount = 100 * (i + 1),
-                StateRoot = new byte[32],
+                Amount = amount,
+                StateRoot = root,
+                Proof = proof,
             };
 
             var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -500,12 +545,15 @@ public class BridgeStateTests
         _bridge.Lock(Addr(1), Addr(2), 5000);
         _bridge.GetLockedBalance().Should().Be(5000);
 
+        var (root, proof) = BuildTestProof(0, Addr(2), 3000);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 3000,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -527,12 +575,15 @@ public class BridgeStateTests
         _bridge.Lock(Addr(1), Addr(2), 10000, token);
         _bridge.GetLockedBalance(token).Should().Be(10000);
 
+        var (root, proof) = BuildTestProof(0, Addr(2), 4000);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 4000,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
@@ -553,12 +604,16 @@ public class BridgeStateTests
         var relayer = new MultisigRelayer(1);
         relayer.AddRelayer(pubKey.ToArray());
 
+        _bridge.Lock(Addr(1), Addr(2), 100);
+        var (root, proof) = BuildTestProof(0, Addr(2), 100);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = Addr(2),
             Amount = 100,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
         withdrawal.AddSignature(MultisigRelayer.Sign(msgHash, privKey, pubKey.ToArray()));
