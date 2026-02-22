@@ -16,10 +16,18 @@ public sealed class BlockBuilder
     private readonly ILogger<BlockBuilder>? _logger;
 
     public BlockBuilder(ChainParameters chainParams, ILogger<BlockBuilder>? logger = null)
+        : this(chainParams, new TransactionExecutor(chainParams), logger) { }
+
+    /// <summary>
+    /// HIGH-01: Accept a shared TransactionExecutor that has staking/compliance dependencies.
+    /// Without this, the block builder's internal executor lacks IStakingState and IComplianceVerifier,
+    /// causing staking transactions to fail and compliance checks to be skipped during block building.
+    /// </summary>
+    public BlockBuilder(ChainParameters chainParams, TransactionExecutor executor, ILogger<BlockBuilder>? logger = null)
     {
         _chainParams = chainParams;
         _validator = new TransactionValidator(chainParams);
-        _executor = new TransactionExecutor(chainParams);
+        _executor = executor;
         _logger = logger;
     }
 
@@ -104,6 +112,12 @@ public sealed class BlockBuilder
             BaseFee = baseFee,
         };
 
+        // MED-02: Update receipt BlockHash to match the final header.
+        // Receipts were created with the preliminary header (zero roots),
+        // so their BlockHash was incorrect.
+        foreach (var receipt in receipts)
+            receipt.BlockHash = header.Hash;
+
         return new Block
         {
             Header = header,
@@ -170,10 +184,9 @@ public sealed class BlockBuilder
 
     /// <summary>
     /// Compute a binary Merkle tree root from a list of hashes.
+    /// LOW-04: Uses domain separation bytes to distinguish leaves (0x00) from internal nodes (0x01),
+    /// preventing second pre-image attacks where a leaf could be mistaken for an internal node.
     /// L-6: When the leaf count is odd, the last hash is promoted without re-hashing.
-    /// This is a known "second pre-image" pattern. With BLAKE3's 256-bit security,
-    /// exploiting this is computationally infeasible. A future version may add domain
-    /// separation between leaf and internal node hashes for defense-in-depth.
     /// </summary>
     private static Hash256 ComputeMerkleRoot(List<Hash256> hashes)
     {
@@ -182,19 +195,38 @@ public sealed class BlockBuilder
         if (hashes.Count == 1)
             return hashes[0];
 
-        while (hashes.Count > 1)
+        // LOW-04: Hash leaves with 0x00 domain prefix
+        var current = new List<Hash256>(hashes.Count);
+        Span<byte> leafBuf = stackalloc byte[1 + Hash256.Size];
+        leafBuf[0] = 0x00; // Leaf domain separator
+        foreach (var h in hashes)
         {
-            var next = new List<Hash256>();
-            for (int i = 0; i < hashes.Count; i += 2)
-            {
-                if (i + 1 < hashes.Count)
-                    next.Add(Blake3Hasher.HashPair(hashes[i], hashes[i + 1]));
-                else
-                    next.Add(hashes[i]); // L-6: Odd leaf promoted without re-hashing
-            }
-            hashes = next;
+            h.WriteTo(leafBuf[1..]);
+            current.Add(Blake3Hasher.Hash(leafBuf));
         }
 
-        return hashes[0];
+        // LOW-04: Hash internal nodes with 0x01 domain prefix
+        Span<byte> nodeBuf = stackalloc byte[1 + Hash256.Size * 2];
+        nodeBuf[0] = 0x01; // Internal node domain separator
+        while (current.Count > 1)
+        {
+            var next = new List<Hash256>();
+            for (int i = 0; i < current.Count; i += 2)
+            {
+                if (i + 1 < current.Count)
+                {
+                    current[i].WriteTo(nodeBuf[1..]);
+                    current[i + 1].WriteTo(nodeBuf[(1 + Hash256.Size)..]);
+                    next.Add(Blake3Hasher.Hash(nodeBuf));
+                }
+                else
+                {
+                    next.Add(current[i]); // L-6: Odd leaf promoted without re-hashing
+                }
+            }
+            current = next;
+        }
+
+        return current[0];
     }
 }

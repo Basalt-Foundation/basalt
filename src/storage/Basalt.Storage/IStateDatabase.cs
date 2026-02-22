@@ -33,6 +33,13 @@ public interface IStateDatabase
     /// Used for speculative block building during consensus proposals.
     /// </summary>
     IStateDatabase Fork();
+
+    /// <summary>
+    /// Returns the set of storage keys modified since this database was created or forked.
+    /// Used by TransactionExecutor.MergeForkState to copy dirty storage from a fork
+    /// back to the canonical state after successful contract execution.
+    /// </summary>
+    IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => [];
 }
 
 /// <summary>

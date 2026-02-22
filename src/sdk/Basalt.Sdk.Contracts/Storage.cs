@@ -144,6 +144,13 @@ public sealed class StorageValue<T> where T : struct
 /// <summary>
 /// Storage map for key-value storage in contracts.
 /// </summary>
+/// <remarks>
+/// N-5: Key collision — the colon delimiter in <see cref="FullKey"/> means a key like
+/// "abc:def" would collide with prefix "abc" + key "def". This is safe for current usage
+/// because all key patterns use hex-encoded addresses (no colons), ulong IDs (numeric),
+/// or known short identifiers (e.g. "owner", "admin"). If user-supplied free-text keys
+/// are ever supported, a non-printable delimiter (e.g. 0x00) should be used instead.
+/// </remarks>
 public sealed class StorageMap<TKey, TValue>
     where TKey : notnull
 {

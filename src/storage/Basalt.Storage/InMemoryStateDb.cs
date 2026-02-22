@@ -17,6 +17,7 @@ public sealed class InMemoryStateDb : IStateDatabase
 {
     private readonly Dictionary<Address, AccountState> _accounts = new();
     private readonly Dictionary<(Address, Hash256), byte[]> _storage = new();
+    private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys = new();
 
     public AccountState? GetAccount(Address address)
     {
@@ -104,10 +105,14 @@ public sealed class InMemoryStateDb : IStateDatabase
     public void SetStorage(Address contract, Hash256 key, byte[] value)
     {
         _storage[(contract, key)] = value;
+        _dirtyStorageKeys.Add((contract, key));
     }
 
     public void DeleteStorage(Address contract, Hash256 key)
     {
         _storage.Remove((contract, key));
+        _dirtyStorageKeys.Add((contract, key));
     }
+
+    public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;
 }

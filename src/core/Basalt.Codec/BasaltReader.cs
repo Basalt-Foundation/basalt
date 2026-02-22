@@ -107,8 +107,31 @@ public ref struct BasaltReader
             }
 
             shift += 7;
-            if (shift >= 64)
-                throw new FormatException("VarInt is too long.");
+            // MEDIUM-03: After 9 continuation bytes (shift=63), the next byte is the 10th
+            // and final byte. Only bit 0 is meaningful (bit 63 of the ulong). Peek ahead
+            // to validate: bits 1-6 must be zero (would overflow) and continuation must be
+            // clear (11+ bytes is invalid for a 64-bit value).
+            if (shift >= 63)
+            {
+                EnsureAvailable(1);
+                var last = _buffer[_position++];
+                byteCount++;
+
+                // Only bit 0 matters (ulong bit 63); bits 1-6 would overflow
+                if ((last & 0x7E) != 0)
+                    throw new FormatException("VarInt overflow: 10th byte has invalid high bits.");
+                if ((last & 0x80) != 0)
+                    throw new FormatException("VarInt is too long.");
+
+                result |= (ulong)(last & 0x01) << shift;
+
+                // Non-minimal check: 10th byte of 0 means bits 57-63 are all zero,
+                // which should have been encoded in fewer bytes
+                if (byteCount > 1 && last == 0)
+                    throw new FormatException("Non-minimal VarInt encoding detected.");
+
+                return result;
+            }
         }
     }
 
@@ -215,10 +238,14 @@ public ref struct BasaltReader
         return key;
     }
 
+    /// <summary>
+    /// LOW-04: Uses subtraction to avoid integer overflow when _position + bytes
+    /// could exceed int.MaxValue for extreme values.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureAvailable(int bytes)
     {
-        if (_position + bytes > _buffer.Length)
+        if (bytes > _buffer.Length - _position)
             ThrowUnexpectedEnd();
     }
 

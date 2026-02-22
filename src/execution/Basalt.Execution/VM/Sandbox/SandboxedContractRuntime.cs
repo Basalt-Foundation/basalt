@@ -160,6 +160,9 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             ctx.GasMeter.Consume(GasTable.Call);
 
             // H-12: SDK contract path — now wrapped in timeout scope
+            // MED-05: Uses Task.Run + WaitAsync for preemptive cancellation.
+            // Previously, CancellationToken was only checked before/after Dispatch(),
+            // so an infinite loop inside Dispatch() would never be interrupted.
             if (ContractRegistry.IsSdkContract(code))
             {
                 using var sdkCts = new CancellationTokenSource(_config.ExecutionTimeout);
@@ -174,9 +177,12 @@ public sealed class SandboxedContractRuntime : IContractRuntime
                     if (callData.Length < 4)
                         return new ContractCallResult { Success = true, Logs = [.. ctx.EmittedLogs] };
 
-                    var result = contract.Dispatch(callData[..4], callData.Length > 4 ? callData[4..] : []);
+                    var selectorBytes = callData[..4];
+                    var argBytes = callData.Length > 4 ? callData[4..] : Array.Empty<byte>();
 
-                    sdkCts.Token.ThrowIfCancellationRequested();
+                    // Preemptive timeout: run Dispatch on a thread pool thread and cancel via WaitAsync
+                    var dispatchTask = Task.Run(() => contract.Dispatch(selectorBytes, argBytes));
+                    var result = dispatchTask.WaitAsync(sdkCts.Token).GetAwaiter().GetResult();
 
                     return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
                 }

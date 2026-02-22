@@ -98,6 +98,12 @@ public sealed class ChainParameters
             throw new InvalidOperationException("EpochLength must be greater than zero.");
         if (ValidatorSetSize == 0)
             throw new InvalidOperationException("ValidatorSetSize must be greater than zero.");
+        // MEDIUM-02: Consensus vote bitmap is ulong (64 bits), so >64 validators silently
+        // corrupts quorum detection. Enforce at validation time.
+        if (ValidatorSetSize > MaxValidatorSetSize)
+            throw new InvalidOperationException(
+                $"ValidatorSetSize ({ValidatorSetSize}) exceeds maximum ({MaxValidatorSetSize}). " +
+                "Consensus vote bitmap is ulong (64 bits).");
         if (BlockGasLimit == 0)
             throw new InvalidOperationException("BlockGasLimit must be greater than zero.");
         if (MaxBlockSizeBytes == 0)
