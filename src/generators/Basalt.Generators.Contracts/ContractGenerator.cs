@@ -480,7 +480,9 @@ public sealed class ContractGenerator : IIncrementalGenerator
                     }
                     else
                     {
-                        // Variable-length return: estimate a buffer size
+                        // LOW-05: Variable-length return buffer fixed at 4096 bytes.
+                        // This is sufficient for most contract returns (strings, byte arrays).
+                        // If a contract returns data > 4096 bytes, the buffer will need resizing.
                         sb.AppendLine("                var _buf = new byte[4096];");
                     }
                     sb.AppendLine("                var writer = new Basalt.Codec.BasaltWriter(_buf);");
@@ -577,7 +579,10 @@ public sealed class ContractGenerator : IIncrementalGenerator
 
     // ---- Data models ----
 
-    private sealed class ContractInfo
+    // MED-01: IEquatable on model classes enables incremental generator caching —
+    // Roslyn skips re-generation when Equals returns true for the cached model.
+
+    private sealed class ContractInfo : IEquatable<ContractInfo>
     {
         public string? Namespace { get; }
         public string TypeName { get; }
@@ -593,9 +598,34 @@ public sealed class ContractGenerator : IIncrementalGenerator
             Events = events;
             HasContractBase = hasContractBase;
         }
+
+        public bool Equals(ContractInfo? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Namespace == other.Namespace && TypeName == other.TypeName
+                && HasContractBase == other.HasContractBase
+                && Methods.SequenceEqual(other.Methods)
+                && Events.SequenceEqual(other.Events);
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as ContractInfo);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + (Namespace?.GetHashCode() ?? 0);
+                hash = hash * 31 + TypeName.GetHashCode();
+                hash = hash * 31 + HasContractBase.GetHashCode();
+                hash = hash * 31 + Methods.Count;
+                hash = hash * 31 + Events.Count;
+                return hash;
+            }
+        }
     }
 
-    private sealed class MethodInfo
+    private sealed class MethodInfo : IEquatable<MethodInfo>
     {
         public string Name { get; }
         public string? Mutability { get; }
@@ -614,9 +644,33 @@ public sealed class ContractGenerator : IIncrementalGenerator
             ReturnTypeFullName = returnTypeFullName;
             ReturnsVoid = returnsVoid;
         }
+
+        public bool Equals(MethodInfo? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Name == other.Name && Mutability == other.Mutability
+                && ReturnTypeFullName == other.ReturnTypeFullName && ReturnsVoid == other.ReturnsVoid
+                && Parameters.SequenceEqual(other.Parameters);
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as MethodInfo);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + Name.GetHashCode();
+                hash = hash * 31 + (Mutability?.GetHashCode() ?? 0);
+                hash = hash * 31 + ReturnTypeFullName.GetHashCode();
+                hash = hash * 31 + ReturnsVoid.GetHashCode();
+                hash = hash * 31 + Parameters.Count;
+                return hash;
+            }
+        }
     }
 
-    private sealed class ParameterInfo
+    private sealed class ParameterInfo : IEquatable<ParameterInfo>
     {
         public string Name { get; }
         public string TypeName { get; }
@@ -628,9 +682,22 @@ public sealed class ContractGenerator : IIncrementalGenerator
             TypeName = typeName;
             FullTypeName = fullTypeName;
         }
+
+        public bool Equals(ParameterInfo? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Name == other.Name && FullTypeName == other.FullTypeName;
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as ParameterInfo);
+        public override int GetHashCode()
+        {
+            unchecked { return Name.GetHashCode() * 31 + FullTypeName.GetHashCode(); }
+        }
     }
 
-    private sealed class EventInfo
+    private sealed class EventInfo : IEquatable<EventInfo>
     {
         public string Name { get; }
         public List<EventPropertyInfo> Properties { get; }
@@ -640,9 +707,22 @@ public sealed class ContractGenerator : IIncrementalGenerator
             Name = name;
             Properties = properties;
         }
+
+        public bool Equals(EventInfo? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Name == other.Name && Properties.SequenceEqual(other.Properties);
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as EventInfo);
+        public override int GetHashCode()
+        {
+            unchecked { return Name.GetHashCode() * 31 + Properties.Count; }
+        }
     }
 
-    private sealed class EventPropertyInfo
+    private sealed class EventPropertyInfo : IEquatable<EventPropertyInfo>
     {
         public string Name { get; }
         public string TypeName { get; }
@@ -653,6 +733,25 @@ public sealed class ContractGenerator : IIncrementalGenerator
             Name = name;
             TypeName = typeName;
             Indexed = indexed;
+        }
+
+        public bool Equals(EventPropertyInfo? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Name == other.Name && TypeName == other.TypeName && Indexed == other.Indexed;
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as EventPropertyInfo);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = Name.GetHashCode();
+                hash = hash * 31 + TypeName.GetHashCode();
+                hash = hash * 31 + Indexed.GetHashCode();
+                return hash;
+            }
         }
     }
 }
