@@ -84,8 +84,11 @@ public sealed class TransactionExecutor
                 ? (ulong)recipientBalance.Lo : ulong.MaxValue;
             var txAmountForCompliance = tx.Value.Hi == 0 && (ulong)(tx.Value.Lo >> 64) == 0
                 ? (ulong)tx.Value.Lo : ulong.MaxValue;
+            // MED-01: Use Address.Zero as token address sentinel for native transfers.
+            // Previously tx.To (recipient) was passed as tokenAddress, which would look up
+            // the recipient's compliance policy instead of the native token policy.
             var outcome = _complianceVerifier.CheckTransferCompliance(
-                tx.To.ToArray(), tx.Sender.ToArray(), tx.To.ToArray(),
+                Address.Zero.ToArray(), tx.Sender.ToArray(), tx.To.ToArray(),
                 txAmountForCompliance, blockHeader.Timestamp, amountForCompliance);
             if (!outcome.Allowed)
                 return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);

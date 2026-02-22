@@ -65,6 +65,9 @@ public sealed class ComplianceEngine : IComplianceVerifier
     /// <summary>
     /// Traditional compliance check delegated from execution layer (H-02).
     /// Maps ComplianceCheckResult to ComplianceCheckOutcome for the Core interface.
+    /// LOW-03: hasTravelRuleData defaults to false via the IComplianceVerifier interface,
+    /// which doesn't include this parameter. When travel rule enforcement is needed,
+    /// callers should use CheckTransfer() directly with the hasTravelRuleData parameter.
     /// </summary>
     public ComplianceCheckOutcome CheckTransferCompliance(
         byte[] tokenAddress, byte[] sender, byte[] receiver,
@@ -320,12 +323,16 @@ public sealed class ComplianceEngine : IComplianceVerifier
         });
     }
 
-    /// <summary>M-05: Evicts oldest entries when audit log exceeds MaxAuditLogSize.</summary>
+    /// <summary>
+    /// M-05: Evicts oldest entries when audit log exceeds MaxAuditLogSize.
+    /// LOW-01: Uses single RemoveAt(0) instead of RemoveRange(0, excess) since we
+    /// add one event at a time, so at most one excess entry needs eviction.
+    /// </summary>
     private void AddAuditEvent(ComplianceEvent evt)
     {
-        if (_auditLog.Count >= MaxAuditLogSize)
-            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
         _auditLog.Add(evt);
+        if (_auditLog.Count > MaxAuditLogSize)
+            _auditLog.RemoveAt(0);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);

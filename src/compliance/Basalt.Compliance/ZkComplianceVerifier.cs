@@ -100,6 +100,13 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         return null;
     }
 
+    /// <summary>
+    /// MED-03: blockTimestamp is accepted for future use. Currently, credential expiry is enforced
+    /// within the Groth16 circuit itself — the proof mathematically guarantees the credential
+    /// has not expired at the time of proving. Out-of-circuit timestamp validation would require
+    /// a standardized public input layout (e.g., fixed index for expiry field), which is
+    /// circuit-dependent and not yet standardized across schema types.
+    /// </summary>
     private ComplianceCheckOutcome VerifySingleProof(
         ComplianceProof proof,
         ProofRequirement requirement,
@@ -117,10 +124,12 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Invalid public inputs: must be non-empty and a multiple of 32 bytes");
 
-        // 2. Check nullifier not already consumed (reject replays)
+        // 2. HIGH-01: Tentatively consume nullifier before verification to prevent TOCTOU race.
+        // Two concurrent threads with the same nullifier could both pass a check-then-consume pattern.
+        // By consuming first, the second thread's Add() returns false immediately.
         lock (_lock)
         {
-            if (_usedNullifiers.Contains(proof.Nullifier))
+            if (!_usedNullifiers.Add(proof.Nullifier))
                 return ComplianceCheckOutcome.Fail(
                     BasaltErrorCode.ComplianceProofInvalid,
                     "Duplicate nullifier: proof has already been used");
@@ -129,9 +138,13 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         // 3. Lookup verification key for this schema
         var vkBytes = _getVerificationKey(requirement.SchemaId);
         if (vkBytes == null || vkBytes.Length == 0)
+        {
+            // HIGH-01: Roll back nullifier on early exit
+            lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 $"No verification key registered for schema {requirement.SchemaId.ToHexString()}");
+        }
 
         // 4. Decode VK and proof
         VerificationKey vk;
@@ -143,6 +156,8 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         }
         catch (Exception ex)
         {
+            // HIGH-01: Roll back nullifier on decode failure
+            lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 $"Failed to decode proof or verification key: {ex.Message}");
@@ -159,15 +174,15 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
 
         // 6. Verify the Groth16 proof
         if (!Groth16Verifier.Verify(vk, groth16Proof, publicInputs))
+        {
+            // HIGH-01: Roll back nullifier on verification failure
+            lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Groth16 proof verification failed");
-
-        // 7. M-03: Only consume nullifier AFTER successful verification
-        lock (_lock)
-        {
-            _usedNullifiers.Add(proof.Nullifier);
         }
+
+        // Nullifier already consumed in step 2 — no further action needed
 
         return ComplianceCheckOutcome.Success;
     }

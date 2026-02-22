@@ -50,7 +50,12 @@ public sealed class ComplianceEvent
     /// <summary>Transfer amount (for transfer events).</summary>
     public ulong Amount { get; init; }
 
-    /// <summary>Unix timestamp (seconds) when the event occurred.</summary>
+    /// <summary>
+    /// Unix timestamp (seconds) when the event occurred.
+    /// LOW-02: Some audit events use DateTimeOffset.UtcNow for this field (provider approval,
+    /// attestation revocation, policy changes). This is metadata-only and NOT consensus-critical —
+    /// audit log timestamps are never used in block validation or state transitions.
+    /// </summary>
     public long Timestamp { get; init; }
 
     /// <summary>Human-readable details of the event.</summary>
