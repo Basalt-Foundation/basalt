@@ -101,11 +101,24 @@ public sealed class TcpTransport : IAsyncDisposable
             throw new InvalidOperationException(
                 $"Total connection limit ({MaxTotalConnections}) reached; cannot create outbound connection.");
 
-        // NET-H01: Enforce per-IP connection limit for outbound connections
-        var currentIpCount = _connectionsPerIp.GetOrAdd(host, 0);
-        if (currentIpCount >= MaxConnectionsPerIp)
-            throw new InvalidOperationException(
-                $"Per-IP connection limit ({MaxConnectionsPerIp}) reached for {host}; cannot create outbound connection.");
+        // MEDIUM-01: Atomic per-IP connection limit check-and-increment.
+        // Previous GetOrAdd → check → AddOrUpdate had a TOCTOU race where two concurrent
+        // connections to the same IP could both pass the check.
+        {
+            bool limitExceeded = false;
+            _connectionsPerIp.AddOrUpdate(host, 1, (_, count) =>
+            {
+                if (count >= MaxConnectionsPerIp)
+                {
+                    limitExceeded = true;
+                    return count; // Don't increment
+                }
+                return count + 1;
+            });
+            if (limitExceeded)
+                throw new InvalidOperationException(
+                    $"Per-IP connection limit ({MaxConnectionsPerIp}) reached for {host}; cannot create outbound connection.");
+        }
 
         var client = new TcpClient();
 
@@ -368,15 +381,26 @@ public sealed class TcpTransport : IAsyncDisposable
                 continue;
             }
 
-            // NET-H01: Per-IP connection limit
+            // MEDIUM-01: Atomic per-IP connection limit check-and-increment (inbound)
             var remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
-            var currentIpCount = _connectionsPerIp.GetOrAdd(remoteIp, 0);
-            if (currentIpCount >= MaxConnectionsPerIp)
             {
-                _logger.LogWarning("Per-IP connection limit ({Limit}) reached for {Ip}; rejecting",
-                    MaxConnectionsPerIp, remoteIp);
-                client.Dispose();
-                continue;
+                bool limitExceeded = false;
+                _connectionsPerIp.AddOrUpdate(remoteIp, 1, (_, count) =>
+                {
+                    if (count >= MaxConnectionsPerIp)
+                    {
+                        limitExceeded = true;
+                        return count;
+                    }
+                    return count + 1;
+                });
+                if (limitExceeded)
+                {
+                    _logger.LogWarning("Per-IP connection limit ({Limit}) reached for {Ip}; rejecting",
+                        MaxConnectionsPerIp, remoteIp);
+                    client.Dispose();
+                    continue;
+                }
             }
 
             var endpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -392,8 +416,7 @@ public sealed class TcpTransport : IAsyncDisposable
                 continue;
             }
 
-            // NET-H01: Increment per-IP counter and track mapping for decrement on disconnect
-            _connectionsPerIp.AddOrUpdate(remoteIp, 1, (_, count) => count + 1);
+            // MEDIUM-01: Per-IP counter already incremented atomically above
             _peerIpMap[tempId] = remoteIp;
 
             _logger.LogInformation("Inbound connection accepted from {Endpoint} as {PeerId}", endpoint, tempId);
