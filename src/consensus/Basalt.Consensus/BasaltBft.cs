@@ -309,6 +309,13 @@ public sealed class BasaltBft
             return null;
         }
 
+        // MED-01 R3: Verify VoterPublicKey matches the registered BLS public key for the voter.
+        // Without this, an attacker can submit votes with their own BLS key but another
+        // validator's SenderId, causing aggregate QC verification to fail and stalling finalization.
+        var voteVInfo = _validatorSet.GetByPeerId(vote.SenderId);
+        if (voteVInfo == null || !voteVInfo.BlsPublicKey.ToArray().AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()))
+            return null;
+
         // F-CON-02: Verify vote is for the correct block hash
         if (vote.BlockHash != _currentProposalHash)
         {
@@ -383,6 +390,13 @@ public sealed class BasaltBft
             _logger.LogWarning("View change from non-validator {Sender}", viewChange.SenderId);
             return null;
         }
+
+        // MED-03 R3: Verify VoterPublicKey matches the registered BLS public key for the sender.
+        // Without this, a Byzantine validator can impersonate another by sending a view change with
+        // SenderId=PeerId_B but their own BlsKey_A, casting 2 votes and reaching false quorum.
+        var vcValidator = _validatorSet.GetByPeerId(viewChange.SenderId);
+        if (vcValidator == null || !vcValidator.BlsPublicKey.ToArray().AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
+            return null;
 
         // H-01: Verify view change signature (domain-separated)
         Span<byte> sigPayload = stackalloc byte[ViewChangePayloadSize];

@@ -138,8 +138,9 @@ public sealed class TransactionExecutor
 
         if (senderState.Balance < totalDebit)
         {
-            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader);
-            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader, tx.GasLimit);
+            // MED-02 R3: Report tx.GasLimit as GasUsed (not 0) since the sender was charged maxGasFee.
+            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false,
                 BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
         }
 
@@ -274,7 +275,7 @@ public sealed class TransactionExecutor
         {
             // C-2: Still charge gas + increment nonce
             var sState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
-            ChargeGasAndIncrementNonce(stateDb, tx.Sender, sState, maxGasFee, effectiveGasPrice, blockHeader);
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, sState, maxGasFee, effectiveGasPrice, blockHeader, tx.GasLimit);
             // HIGH-03: Report tx.GasLimit as GasUsed (not 0) since the sender was charged maxGasFee.
             // This ensures totalGasUsed in the block header is accurate.
             return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false,
@@ -287,8 +288,9 @@ public sealed class TransactionExecutor
 
         if (senderState.Balance < totalDebit)
         {
-            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader);
-            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, maxGasFee, effectiveGasPrice, blockHeader, tx.GasLimit);
+            // MED-02 R3: Report tx.GasLimit as GasUsed (not 0) since the sender was charged maxGasFee.
+            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false,
                 BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
         }
 
@@ -649,7 +651,8 @@ public sealed class TransactionExecutor
     /// </summary>
     private static void ChargeGasAndIncrementNonce(
         IStateDatabase stateDb, Address sender, AccountState senderState,
-        UInt256 gasFee, UInt256 effectiveGasPrice, BlockHeader blockHeader)
+        UInt256 gasFee, UInt256 effectiveGasPrice, BlockHeader blockHeader,
+        ulong gasLimit = GasTable.TxBase)
     {
         // Charge what we can (capped at balance)
         var actualCharge = senderState.Balance < gasFee ? senderState.Balance : gasFee;
@@ -660,11 +663,17 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(sender, senderState);
 
-        // HIGH-02: Credit proposer tip using at least TxBase gas so the charged amount
-        // is properly accounted for. Previously gasUsed=0 meant no tip was credited,
-        // causing a protocol-level supply leak on failed transactions.
-        if (!actualCharge.IsZero)
-            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, GasTable.TxBase);
+        // MED-01 R3: Credit proposer tip using the actual gas equivalent charged to the sender,
+        // not the fixed TxBase (21,000). A failed tx with GasLimit=1,000,000 charges the sender
+        // the full gas limit but was only crediting the proposer for 21,000 gas worth of tip.
+        if (!actualCharge.IsZero && !effectiveGasPrice.IsZero)
+        {
+            var gasEquivalent = actualCharge / effectiveGasPrice;
+            var gasUnits = (gasEquivalent.IsZero || gasEquivalent > new UInt256(gasLimit))
+                ? gasLimit
+                : (ulong)gasEquivalent.Lo;
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUnits);
+        }
     }
 
     /// <summary>
@@ -673,18 +682,22 @@ public sealed class TransactionExecutor
     /// </summary>
     private static void MergeForkState(IStateDatabase fork, IStateDatabase canonical, Address contractAddress)
     {
-        // Copy the contract account state from fork to canonical
-        var contractAccount = fork.GetAccount(contractAddress);
-        if (contractAccount.HasValue)
-            canonical.SetAccount(contractAddress, contractAccount.Value);
+        // CRIT-01 R3: Merge ALL modified accounts from the fork, not just the contract address.
+        // When a contract calls Context.TransferNative(recipient, amount), the recipient's balance
+        // credit lives on the fork. Without merging all dirty accounts, native transfer recipients
+        // permanently lose funds (debited from contract but never credited to recipient).
+        foreach (var addr in fork.GetModifiedAccounts())
+        {
+            var account = fork.GetAccount(addr);
+            if (account.HasValue)
+                canonical.SetAccount(addr, account.Value);
+            else
+                canonical.DeleteAccount(addr);
+        }
 
-        // CRIT-01: Merge storage mutations from the fork back to canonical.
-        // Without this, all SetStorage() calls during contract execution are silently lost.
+        // Merge storage mutations from the fork back to canonical.
         foreach (var (contract, key) in fork.GetModifiedStorageKeys())
         {
-            if (contract != contractAddress)
-                continue;
-
             var value = fork.GetStorage(contract, key);
             if (value != null)
                 canonical.SetStorage(contract, key, value);

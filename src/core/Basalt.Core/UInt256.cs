@@ -408,7 +408,13 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     {
         if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            var hex = s[2..].PadLeft(64, '0');
+            // LOW-01 R3: Validate hex length before decoding. Without this, hex strings
+            // longer than 64 chars are silently truncated by Convert.FromHexString into
+            // a 32-byte destination, discarding the least significant bytes.
+            var hexPart = s[2..].TrimStart('0');
+            if (hexPart.Length > 64)
+                throw new OverflowException("Hex value exceeds UInt256 range.");
+            var hex = hexPart.PadLeft(64, '0');
             Span<byte> bytes = stackalloc byte[32];
             Convert.FromHexString(hex, bytes, out _, out _);
             return new UInt256(bytes, isBigEndian: true);

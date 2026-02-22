@@ -96,7 +96,7 @@ public sealed class TransactionInput
             GasPrice = UInt256.Parse(GasPrice),
             MaxFeePerGas = string.IsNullOrEmpty(MaxFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxFeePerGas),
             MaxPriorityFeePerGas = string.IsNullOrEmpty(MaxPriorityFeePerGas) ? UInt256.Zero : UInt256.Parse(MaxPriorityFeePerGas),
-            Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x") ? Data[2..] : Data),
+            Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? Data[2..] : Data),
             Priority = Priority,
             ChainId = ChainId,
             Signature = new Basalt.Core.Signature(sigBytes),

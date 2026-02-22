@@ -1,11 +1,19 @@
 using Basalt.Core;
 using Basalt.Execution;
 using Basalt.Storage;
+using Microsoft.Extensions.Logging;
 
 namespace Basalt.Api.GraphQL;
 
 public class Mutation
 {
+    private readonly ILogger<Mutation> _logger;
+
+    public Mutation(ILogger<Mutation> logger)
+    {
+        _logger = logger;
+    }
+
     public TransactionResult SubmitTransaction(
         TransactionInput input,
         [Service] ChainManager chainManager,
@@ -43,8 +51,10 @@ public class Mutation
                 Status = "pending",
             };
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            // R3-NEW-6: Log the exception server-side for diagnostics
+            _logger.LogWarning(ex, "GraphQL SubmitTransaction failed");
             // NEW-7: Don't leak exception type name to clients
             return new TransactionResult
             {

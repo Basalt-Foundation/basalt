@@ -40,6 +40,13 @@ public interface IStateDatabase
     /// back to the canonical state after successful contract execution.
     /// </summary>
     IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => [];
+
+    /// <summary>
+    /// Returns the set of account addresses modified since this database was created or forked.
+    /// Used by TransactionExecutor.MergeForkState to copy ALL dirty accounts (not just the
+    /// contract address) from a fork back to canonical state — including native transfer recipients.
+    /// </summary>
+    IReadOnlyCollection<Address> GetModifiedAccounts() => [];
 }
 
 /// <summary>

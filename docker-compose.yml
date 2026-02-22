@@ -23,6 +23,10 @@ services:
     networks:
       - basalt-devnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/v1/status"]
       interval: 5s
@@ -52,6 +56,10 @@ services:
     networks:
       - basalt-devnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   validator-2:
     build:
@@ -75,6 +83,10 @@ services:
     networks:
       - basalt-devnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   validator-3:
     build:
@@ -98,6 +110,10 @@ services:
     networks:
       - basalt-devnet
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   validator-0-data:

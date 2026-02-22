@@ -126,7 +126,11 @@ public sealed class TransportEncryption : IDisposable
         var plaintext = new byte[ciphertextLength];
         _recvCipher.Decrypt(nonce, ciphertext, tag, plaintext);
 
-        // Update receive nonce after successful decryption
+        // NEW-L04: Update receive nonce after successful decryption.
+        // Thread-safety note: the receive-side nonce (_recvNonce) is only read and written
+        // by the single receive loop for this connection (TCP is single-reader). Volatile is
+        // used for visibility guarantees, not mutual exclusion. If the receive path were ever
+        // made concurrent, this would need Interlocked.CompareExchange or a lock.
         Volatile.Write(ref _recvNonce, receivedCounter);
 
         return plaintext;

@@ -125,7 +125,8 @@ public partial class BST3525Token : IBST3525
         _tokenValues.Set(TokenKey(fromId), fromVal - value);
 
         var toVal = _tokenValues.Get(TokenKey(toId));
-        _tokenValues.Set(TokenKey(toId), toVal + value);
+        // N-7: Use checked addition to prevent silent overflow on value transfer
+        _tokenValues.Set(TokenKey(toId), UInt256.CheckedAdd(toVal, value));
 
         Context.Emit(new TransferValueEvent
         {

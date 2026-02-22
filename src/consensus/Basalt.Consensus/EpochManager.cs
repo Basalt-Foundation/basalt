@@ -168,6 +168,14 @@ public sealed class EpochManager
     /// Selects the top N active validators by stake, then sorts by address ascending
     /// for deterministic index assignment.
     /// </summary>
+    /// <remarks>
+    /// <para><b>LOW-03 R3 (BLS PoP):</b> BLS public keys are currently exchanged via P2P
+    /// handshake rather than committed on-chain during ValidatorRegister transactions.
+    /// A future protocol upgrade should require BLS Proof-of-Possession in registration
+    /// transactions and store verified BLS keys on-chain in StakeInfo to eliminate the
+    /// theoretical rogue-key attack vector. The current P2P-based key exchange mitigates
+    /// this risk in practice since BLS keys are authenticated during the handshake.</para>
+    /// </remarks>
     public ValidatorSet BuildValidatorSetFromStaking()
     {
         var activeValidators = _stakingState.GetActiveValidators(); // sorted by TotalStake desc

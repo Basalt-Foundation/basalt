@@ -219,23 +219,19 @@ public static class FaucetEndpoint
         });
 
         // M-8: Status endpoint — expose public-facing faucet state
+        // R3-NEW-5: PendingNonce removed — it exposes internal nonce state that could
+        // aid nonce-prediction attacks. On-chain Nonce is sufficient (publicly observable).
         app.MapGet("/v1/faucet/status", () =>
         {
             var faucetAccount = stateDb.GetAccount(FaucetAddress);
             var balance = faucetAccount?.Balance ?? UInt256.Zero;
             var onChainNonce = faucetAccount?.Nonce ?? 0UL;
-            ulong pendingNonce;
-            lock (_nonceLock)
-            {
-                pendingNonce = _nonceInitialized ? _pendingNonce : onChainNonce;
-            }
             return Results.Ok(new FaucetStatusResponse
             {
                 FaucetAddress = FaucetAddress.ToHexString(),
                 Available = balance > UInt256.Zero,
                 Balance = balance.ToString(),
                 Nonce = onChainNonce,
-                PendingNonce = pendingNonce,
                 CooldownSeconds = CooldownSeconds,
             });
         });
@@ -261,6 +257,5 @@ public sealed class FaucetStatusResponse
     [JsonPropertyName("available")] public bool Available { get; set; }
     [JsonPropertyName("balance")] public string Balance { get; set; } = "0";
     [JsonPropertyName("nonce")] public ulong Nonce { get; set; }
-    [JsonPropertyName("pendingNonce")] public ulong PendingNonce { get; set; }
     [JsonPropertyName("cooldownSeconds")] public int CooldownSeconds { get; set; }
 }

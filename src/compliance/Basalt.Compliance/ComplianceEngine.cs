@@ -101,7 +101,7 @@ public sealed class ComplianceEngine : IComplianceVerifier
         lock (_lock)
         {
             if (_policies.TryGetValue(ToHex(contractAddress.ToArray()), out var policy))
-                return policy.RequiredProofs;
+                return [..policy.RequiredProofs]; // LOW-01: Defensive copy to prevent caller mutation
             return [];
         }
     }

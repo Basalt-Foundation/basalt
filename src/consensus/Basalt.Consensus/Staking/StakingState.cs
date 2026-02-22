@@ -173,35 +173,65 @@ public sealed class StakingState : IStakingState
     {
         lock (_lock)
         {
+            return ApplySlashCore(validatorAddress, penalty);
+        }
+    }
+
+    /// <summary>
+    /// Atomically read the current stake and apply a percentage-based slash
+    /// under a single lock acquisition (LOW-05).
+    /// This eliminates the TOCTOU race where TotalStake is read outside the lock,
+    /// the penalty is computed, and then ApplySlash is called — by which time
+    /// a concurrent slash may have already reduced the stake.
+    /// </summary>
+    /// <param name="validatorAddress">The validator to slash.</param>
+    /// <param name="percent">The percentage of TotalStake to slash (1-100).</param>
+    /// <returns>The actual penalty applied, or null if validator not found.</returns>
+    public UInt256? ApplySlashPercent(Address validatorAddress, int percent)
+    {
+        lock (_lock)
+        {
             if (!_stakes.TryGetValue(validatorAddress, out var info))
                 return null;
 
-            // Cap penalty at total stake
-            if (penalty > info.TotalStake)
-                penalty = info.TotalStake;
-
-            // Apply penalty to self-stake first, then delegated
-            if (penalty <= info.SelfStake)
-            {
-                info.SelfStake -= penalty;
-            }
-            else
-            {
-                var remaining = penalty - info.SelfStake;
-                info.SelfStake = UInt256.Zero;
-                info.DelegatedStake = info.DelegatedStake > remaining
-                    ? info.DelegatedStake - remaining
-                    : UInt256.Zero;
-            }
-
-            info.TotalStake = info.SelfStake + info.DelegatedStake;
-
-            // Deactivate if stake is too low
-            if (info.TotalStake < MinValidatorStake)
-                info.IsActive = false;
-
-            return penalty;
+            var penalty = info.TotalStake * new UInt256((ulong)percent) / new UInt256(100);
+            return ApplySlashCore(validatorAddress, penalty);
         }
+    }
+
+    /// <summary>
+    /// Core slash logic. Must be called under <see cref="_lock"/>.
+    /// </summary>
+    private UInt256? ApplySlashCore(Address validatorAddress, UInt256 penalty)
+    {
+        if (!_stakes.TryGetValue(validatorAddress, out var info))
+            return null;
+
+        // Cap penalty at total stake
+        if (penalty > info.TotalStake)
+            penalty = info.TotalStake;
+
+        // Apply penalty to self-stake first, then delegated
+        if (penalty <= info.SelfStake)
+        {
+            info.SelfStake -= penalty;
+        }
+        else
+        {
+            var remaining = penalty - info.SelfStake;
+            info.SelfStake = UInt256.Zero;
+            info.DelegatedStake = info.DelegatedStake > remaining
+                ? info.DelegatedStake - remaining
+                : UInt256.Zero;
+        }
+
+        info.TotalStake = info.SelfStake + info.DelegatedStake;
+
+        // Deactivate if stake is too low
+        if (info.TotalStake < MinValidatorStake)
+            info.IsActive = false;
+
+        return penalty;
     }
 
     /// <summary>

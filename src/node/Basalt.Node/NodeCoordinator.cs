@@ -468,7 +468,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
-            // COMPL-07: Reset nullifiers at block boundary to bound memory and prevent same-block replay
+            // COMPL-07: Reset nullifiers at block boundary to bound memory and prevent same-block replay.
+            // LOW-03 R3: This runs before executing the finalized block's transactions. Safe because
+            // HandleBlockFinalized and block building run on the same thread (consensus callback path),
+            // so no concurrent block proposal can observe cleared nullifiers mid-finalization.
             _complianceVerifier?.ResetNullifiers();
 
             // All validators execute finalized transactions against canonical state.
@@ -565,13 +568,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
             ? _config.ValidatorAddress
             : $"0x{_config.ValidatorIndex:X40}");
 
-        _blockBuilder = new BlockBuilder(_chainParams, _loggerFactory.CreateLogger<BlockBuilder>());
-
         IContractRuntime contractRuntime = _config.UseSandbox
             ? new SandboxedContractRuntime(new SandboxConfiguration())
             : new ManagedContractRuntime();
 
         _txExecutor = new TransactionExecutor(_chainParams, contractRuntime, _stakingState, _complianceVerifier);
+
+        // HIGH-01 R3: Pass the fully-configured _txExecutor to BlockBuilder so that
+        // the leader's block building uses the same staking/compliance-aware executor.
+        _blockBuilder = new BlockBuilder(_chainParams, _txExecutor, _loggerFactory.CreateLogger<BlockBuilder>());
 
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");

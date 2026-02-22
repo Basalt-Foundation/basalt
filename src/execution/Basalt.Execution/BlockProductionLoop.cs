@@ -28,13 +28,17 @@ public sealed class BlockProductionLoop
         Mempool mempool,
         IStateDatabase stateDb,
         Address proposer,
-        ILogger<BlockProductionLoop> logger)
+        ILogger<BlockProductionLoop> logger,
+        TransactionExecutor? executor = null)
     {
         _chainParams = chainParams;
         _chainManager = chainManager;
         _mempool = mempool;
         _stateDb = stateDb;
-        _blockBuilder = new BlockBuilder(chainParams);
+        // HIGH-01 R3: Accept a shared TransactionExecutor with staking/compliance deps.
+        _blockBuilder = executor != null
+            ? new BlockBuilder(chainParams, executor)
+            : new BlockBuilder(chainParams);
         _proposer = proposer;
         _logger = logger;
     }

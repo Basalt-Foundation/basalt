@@ -63,8 +63,13 @@ public sealed class ValidatorSet
     /// <summary>
     /// Get validator by address.
     /// </summary>
-    public ValidatorInfo? GetByAddress(Address address) =>
-        _byAddress.TryGetValue(address, out var v) ? v : null;
+    // LOW-06 R3: Acquire _lock to prevent reading a partially-updated ValidatorInfo
+    // during concurrent UpdateValidatorIdentity or TransferIdentities calls.
+    public ValidatorInfo? GetByAddress(Address address)
+    {
+        lock (_lock)
+            return _byAddress.TryGetValue(address, out var v) ? v : null;
+    }
 
     /// <summary>
     /// Check if a peer ID belongs to a validator. Thread-safe.

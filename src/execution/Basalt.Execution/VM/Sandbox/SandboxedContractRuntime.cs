@@ -166,6 +166,8 @@ public sealed class SandboxedContractRuntime : IContractRuntime
             if (ContractRegistry.IsSdkContract(code))
             {
                 using var sdkCts = new CancellationTokenSource(_config.ExecutionTimeout);
+                // HIGH-02 R3: Declare dispatchTask outside try so it's accessible in catch.
+                Task<byte[]>? dispatchTask = null;
                 try
                 {
                     var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
@@ -181,13 +183,19 @@ public sealed class SandboxedContractRuntime : IContractRuntime
                     var argBytes = callData.Length > 4 ? callData[4..] : Array.Empty<byte>();
 
                     // Preemptive timeout: run Dispatch on a thread pool thread and cancel via WaitAsync
-                    var dispatchTask = Task.Run(() => contract.Dispatch(selectorBytes, argBytes));
+                    dispatchTask = Task.Run(() => contract.Dispatch(selectorBytes, argBytes));
                     var result = dispatchTask.WaitAsync(sdkCts.Token).GetAwaiter().GetResult();
 
                     return new ContractCallResult { Success = true, ReturnData = result, Logs = [.. ctx.EmittedLogs] };
                 }
                 catch (OperationCanceledException) when (sdkCts.IsCancellationRequested)
                 {
+                    // HIGH-02 R3: Wait for the dispatch task to complete before disposing the scope.
+                    // Without this, the orphaned task continues accessing shared static Context.*
+                    // fields after the scope restores them, causing cross-contract state corruption
+                    // if another execution acquires the lock immediately.
+                    if (dispatchTask != null)
+                        try { dispatchTask.Wait(TimeSpan.FromSeconds(5)); } catch { /* swallow */ }
                     throw new SandboxTimeoutException(_config.ExecutionTimeout);
                 }
             }

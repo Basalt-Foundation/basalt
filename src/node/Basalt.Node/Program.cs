@@ -25,6 +25,8 @@ Log.Logger = new LoggerConfiguration()
 RocksDbStore? rocksDbStore = null;
 IStateDatabase? stateDb = null;
 StateDbRef? stateDbRef = null;
+// LOW-N05: Declare outside try so finally can zero it on all exit paths.
+byte[]? faucetPrivateKey = null;
 try
 {
     var config = NodeConfiguration.FromEnvironment();
@@ -41,7 +43,6 @@ try
 
     // N-06: Load faucet key from environment or fallback with warning
     var faucetKeyHex = Environment.GetEnvironmentVariable("BASALT_FAUCET_KEY");
-    byte[] faucetPrivateKey;
     if (!string.IsNullOrEmpty(faucetKeyHex))
     {
         faucetPrivateKey = Convert.FromHexString(faucetKeyHex);
@@ -187,11 +188,13 @@ try
     builder.Services.AddSingleton(validator);
     builder.Services.AddGrpc();
 
-    // NEW-5: Add per-IP rate limiting (100 requests per minute fixed window)
+    // R3-NEW-1: Use GlobalLimiter instead of named policy. Named policies require
+    // explicit .RequireRateLimiting("per-ip") on each endpoint group; a global limiter
+    // applies to all requests automatically without per-endpoint opt-in.
     builder.Services.AddRateLimiter(options =>
     {
         options.RejectionStatusCode = 429;
-        options.AddPolicy("per-ip", context =>
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             RateLimitPartition.GetFixedWindowLimiter(
                 partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 factory: _ => new FixedWindowRateLimiterOptions
@@ -201,11 +204,24 @@ try
                 }));
     });
 
-    // NEW-6: Add CORS policy
+    // R3-NEW-2: Restrict CORS to known origins. AllowAnyOrigin enables localhost CSRF where
+    // a malicious website uses a visitor's browser as a proxy to a locally-running node.
+    // Allow any origin only when BASALT_DEBUG=1 is set (development mode).
     builder.Services.AddCors(options =>
     {
         options.AddDefaultPolicy(policy =>
-            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+        {
+            if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1")
+            {
+                policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+            }
+            else
+            {
+                policy.WithOrigins("https://explorer.basalt.network")
+                      .AllowAnyHeader()
+                      .WithMethods("GET", "POST");
+            }
+        });
     });
 
     var app = builder.Build();
@@ -215,6 +231,10 @@ try
 
     // NEW-6: Wire CORS middleware
     app.UseCors();
+
+    // R3-NEW-3: GraphQL API (AddBasaltGraphQL / MapBasaltGraphQL) is intentionally not registered.
+    // The GraphQL schema (Basalt.Api.GraphQL) exists but is not yet fully integrated with the
+    // node's consensus and state layers. Enable it once subscriptions and auth are wired up.
 
     // Map REST endpoints (with read-only call support via ManagedContractRuntime)
     var contractRuntime = new ManagedContractRuntime();
@@ -383,9 +403,6 @@ try
             {
                 Log.Warning("Block production did not stop within 10 seconds; forcing exit");
             }
-
-            // MED-N01: Zero faucet private key on shutdown to prevent memory scraping
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(faucetPrivateKey);
         });
     }
 
@@ -398,6 +415,10 @@ catch (Exception ex)
 }
 finally
 {
+    // LOW-N05: Zero faucet private key on shutdown for both consensus and standalone modes
+    if (faucetPrivateKey != null)
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(faucetPrivateKey);
+
     // Flush the current canonical state — after sync swaps this may differ
     // from the original stateDb variable.
     var canonical = stateDbRef?.Inner ?? stateDb;
