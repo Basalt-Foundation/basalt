@@ -55,7 +55,8 @@ public partial class BST1155Token : IBST1155
 
         _balances.Set(BalanceKey(from, tokenId), fromBalance - amount);
         var toBalance = _balances.Get(BalanceKey(to, tokenId));
-        _balances.Set(BalanceKey(to, tokenId), toBalance + amount);
+        // N-1: Use checked addition to prevent silent overflow
+        _balances.Set(BalanceKey(to, tokenId), UInt256.CheckedAdd(toBalance, amount));
 
         Context.Emit(new TransferSingleEvent
         {
@@ -86,7 +87,8 @@ public partial class BST1155Token : IBST1155
             _balances.Set(BalanceKey(from, tokenIds[i]), fromBal - amount);
 
             var toBal = _balances.Get(BalanceKey(to, tokenIds[i]));
-            _balances.Set(BalanceKey(to, tokenIds[i]), toBal + amount);
+            // N-1: Use checked addition to prevent silent overflow
+            _balances.Set(BalanceKey(to, tokenIds[i]), UInt256.CheckedAdd(toBal, amount));
         }
 
         Context.Emit(new TransferBatchEvent

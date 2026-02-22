@@ -239,6 +239,43 @@ public partial class BridgeETH
         });
     }
 
+    // --- Expire Confirmed Deposit (N-3) ---
+
+    /// <summary>
+    /// N-3: Expire a confirmed deposit that has not been finalized.
+    /// Only the original sender can expire, and only after 2x DepositExpiryBlocks.
+    /// Refunds the locked amount back to the sender.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void ExpireDeposit(ulong nonce)
+    {
+        RequireNotPaused();
+        var key = nonce.ToString();
+
+        var status = _depositStatus.Get(key);
+        Context.Require(status == "confirmed", "BRIDGE: deposit not confirmed");
+
+        var senderHex = _depositSenders.Get(key);
+        Context.Require(senderHex == Convert.ToHexString(Context.Caller), "BRIDGE: not deposit sender");
+
+        var depositBlock = _depositBlockHeights.Get(key);
+        Context.Require(Context.BlockHeight >= depositBlock + (DepositExpiryBlocks * 2),
+            "BRIDGE: confirmed deposit not expired");
+
+        _depositStatus.Set(key, "expired");
+
+        var amount = _depositAmounts.Get(key);
+        Context.TransferNative(Context.Caller, amount);
+        _totalLocked.Set(_totalLocked.Get() - amount);
+
+        Context.Emit(new DepositCancelledEvent
+        {
+            Nonce = nonce,
+            Sender = Context.Caller,
+            Amount = amount,
+        });
+    }
+
     // --- Unlock (Ethereum → Basalt) ---
 
     /// <summary>

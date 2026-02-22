@@ -171,8 +171,10 @@ public partial class BST4626Vault : BST20Token, IBST4626
             "VAULT: not admin");
 
         // C-6: Require actual asset transfer — prevents phantom yield injection
-        Context.CallContract(_assetAddress, "TransferFrom",
+        // N-4: Check TransferFrom return value to prevent phantom yield on failed transfer
+        var transferred = Context.CallContract<bool>(_assetAddress, "TransferFrom",
             Context.Caller, Context.Self, yieldAmount);
+        Context.Require(transferred, "VAULT: harvest transfer failed");
 
         var newTotal = TotalAssets() + yieldAmount;
         _totalAssets.Set(newTotal);
