@@ -45,6 +45,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends librocksdb-dev 
 WORKDIR /app
 COPY --from=build /app .
 
+# LOW-N02: Run as non-root user for defense-in-depth
+RUN adduser --disabled-password --gecos "" --home /data basalt && \
+    mkdir -p /data/basalt && chown -R basalt:basalt /data
+USER basalt
+
 # Expose ports: REST API (5000), gRPC (5001), P2P (30303)
 EXPOSE 5000 5001 30303
 

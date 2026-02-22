@@ -354,6 +354,9 @@ try
             {
                 Log.Warning("Block production did not stop within 10 seconds; forcing exit");
             }
+
+            // MED-N01: Zero faucet private key on shutdown to prevent memory scraping
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(faucetPrivateKey);
         });
     }
 
