@@ -60,9 +60,11 @@ public sealed class Mempool
     public bool Add(Transaction tx, bool raiseEvent = true)
     {
         // M-2: Pre-admission validation (signature, nonce, balance, gas)
+        // MED-01: Fork the state DB to isolate validation reads from concurrent block execution writes.
         if (_validator != null && _validationStateDb != null)
         {
-            var validation = _validator.Validate(tx, _validationStateDb);
+            var snapshot = _validationStateDb.Fork();
+            var validation = _validator.Validate(tx, snapshot);
             if (!validation.IsSuccess)
                 return false;
         }

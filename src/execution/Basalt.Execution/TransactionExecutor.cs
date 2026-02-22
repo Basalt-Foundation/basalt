@@ -206,6 +206,11 @@ public sealed class TransactionExecutor
             // Refund unused gas to sender on canonical state
             var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
+
+            // CRIT-02: Refund tx.Value when fork is not merged (deploy failed)
+            if (!result.Success && tx.Value > UInt256.Zero)
+                refund = UInt256.CheckedAdd(refund, tx.Value);
+
             if (refund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
@@ -227,7 +232,7 @@ public sealed class TransactionExecutor
                 GasUsed = effectiveGas,
                 Success = result.Success,
                 ErrorCode = result.Success ? BasaltErrorCode.Success : BasaltErrorCode.ContractDeployFailed,
-                PostStateRoot = stateDb.ComputeStateRoot(),
+                PostStateRoot = Hash256.Zero,
                 Logs = result.Logs,
                 EffectiveGasPrice = effectiveGasPrice,
             };
@@ -236,9 +241,13 @@ public sealed class TransactionExecutor
         {
             // C-1: Fork is discarded — no storage mutations leak to canonical state.
             // C-2: Nonce already incremented, max gas fee already debited.
-            // Refund (maxGasFee - fullGasCharge) where fullGasCharge = effectiveGasPrice * gasLimit
             var fullGasCharge = effectiveGasPrice * new UInt256(tx.GasLimit);
             var oogRefund = maxGasFee - fullGasCharge;
+
+            // CRIT-02: Refund tx.Value since fork was discarded
+            if (tx.Value > UInt256.Zero)
+                oogRefund = UInt256.CheckedAdd(oogRefund, tx.Value);
+
             if (oogRefund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
@@ -263,7 +272,9 @@ public sealed class TransactionExecutor
             // C-2: Still charge gas + increment nonce
             var sState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
             ChargeGasAndIncrementNonce(stateDb, tx.Sender, sState, maxGasFee, effectiveGasPrice, blockHeader);
-            return CreateReceipt(tx, blockHeader, txIndex, gasMeter.GasUsed, false,
+            // HIGH-03: Report tx.GasLimit as GasUsed (not 0) since the sender was charged maxGasFee.
+            // This ensures totalGasUsed in the block header is accurate.
+            return CreateReceipt(tx, blockHeader, txIndex, tx.GasLimit, false,
                 BasaltErrorCode.ContractNotFound, stateDb, effectiveGasPrice);
         }
 
@@ -334,6 +345,11 @@ public sealed class TransactionExecutor
             // Refund unused gas to sender on canonical state
             var actualFee = effectiveGasPrice * new UInt256(effectiveGas);
             var refund = maxGasFee - actualFee;
+
+            // CRIT-02: Refund tx.Value when fork is not merged (contract reverted/failed)
+            if (!result.Success && tx.Value > UInt256.Zero)
+                refund = UInt256.CheckedAdd(refund, tx.Value);
+
             if (refund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
@@ -355,7 +371,7 @@ public sealed class TransactionExecutor
                 GasUsed = effectiveGas,
                 Success = result.Success,
                 ErrorCode = result.Success ? BasaltErrorCode.Success : BasaltErrorCode.ContractCallFailed,
-                PostStateRoot = stateDb.ComputeStateRoot(),
+                PostStateRoot = Hash256.Zero,
                 Logs = result.Logs,
                 EffectiveGasPrice = effectiveGasPrice,
             };
@@ -366,6 +382,11 @@ public sealed class TransactionExecutor
             // C-2: Nonce incremented, max gas fee debited already.
             var fullGasCharge = effectiveGasPrice * new UInt256(tx.GasLimit);
             var oogRefund = maxGasFee - fullGasCharge;
+
+            // CRIT-02: Refund tx.Value since fork was discarded
+            if (tx.Value > UInt256.Zero)
+                oogRefund = UInt256.CheckedAdd(oogRefund, tx.Value);
+
             if (oogRefund > UInt256.Zero)
             {
                 senderState = stateDb.GetAccount(tx.Sender)!.Value;
@@ -636,14 +657,16 @@ public sealed class TransactionExecutor
         };
         stateDb.SetAccount(sender, senderState);
 
-        // Credit proposer tip from actual charge
+        // HIGH-02: Credit proposer tip using at least TxBase gas so the charged amount
+        // is properly accounted for. Previously gasUsed=0 meant no tip was credited,
+        // causing a protocol-level supply leak on failed transactions.
         if (!actualCharge.IsZero)
-            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, 0); // Tip from base gas only
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, GasTable.TxBase);
     }
 
     /// <summary>
     /// C-1: Merge contract state from a fork back into canonical state.
-    /// Copies the contract account and any storage that was modified on the fork.
+    /// Copies the contract account and all storage mutations made on the fork.
     /// </summary>
     private static void MergeForkState(IStateDatabase fork, IStateDatabase canonical, Address contractAddress)
     {
@@ -651,6 +674,20 @@ public sealed class TransactionExecutor
         var contractAccount = fork.GetAccount(contractAddress);
         if (contractAccount.HasValue)
             canonical.SetAccount(contractAddress, contractAccount.Value);
+
+        // CRIT-01: Merge storage mutations from the fork back to canonical.
+        // Without this, all SetStorage() calls during contract execution are silently lost.
+        foreach (var (contract, key) in fork.GetModifiedStorageKeys())
+        {
+            if (contract != contractAddress)
+                continue;
+
+            var value = fork.GetStorage(contract, key);
+            if (value != null)
+                canonical.SetStorage(contract, key, value);
+            else
+                canonical.DeleteStorage(contract, key);
+        }
     }
 
     /// <summary>
@@ -676,6 +713,8 @@ public sealed class TransactionExecutor
         ulong gasUsed, bool success, BasaltErrorCode errorCode, IStateDatabase stateDb,
         UInt256 effectiveGasPrice = default)
     {
+        // MED-03: PostStateRoot set to Hash256.Zero per-receipt to avoid O(n^2) ComputeStateRoot().
+        // The final state root is computed once in BlockBuilder after all txs execute.
         return new TransactionReceipt
         {
             TransactionHash = tx.Hash,
@@ -687,7 +726,7 @@ public sealed class TransactionExecutor
             GasUsed = gasUsed,
             Success = success,
             ErrorCode = errorCode,
-            PostStateRoot = stateDb.ComputeStateRoot(),
+            PostStateRoot = Hash256.Zero,
             EffectiveGasPrice = effectiveGasPrice,
         };
     }

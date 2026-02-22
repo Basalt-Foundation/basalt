@@ -14,6 +14,7 @@ public sealed class TrieStateDb : IStateDatabase
     private readonly ITrieNodeStore _nodeStore;
     private MerklePatriciaTrie _worldTrie;
     private readonly Dictionary<Address, MerklePatriciaTrie> _storageTries = new();
+    private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys = new();
 
     public TrieStateDb(ITrieNodeStore nodeStore) : this(nodeStore, Hash256.Zero) { }
 
@@ -120,6 +121,7 @@ public sealed class TrieStateDb : IStateDatabase
         var storageKey = new byte[Hash256.Size];
         key.WriteTo(storageKey);
         trie.Put(storageKey, value);
+        _dirtyStorageKeys.Add((contract, key));
     }
 
     public void DeleteStorage(Address contract, Hash256 key)
@@ -128,7 +130,10 @@ public sealed class TrieStateDb : IStateDatabase
         var storageKey = new byte[Hash256.Size];
         key.WriteTo(storageKey);
         trie.Delete(storageKey);
+        _dirtyStorageKeys.Add((contract, key));
     }
+
+    public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;
 
     /// <summary>
     /// Generate a Merkle proof for an account.

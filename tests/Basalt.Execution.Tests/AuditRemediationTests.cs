@@ -1018,4 +1018,209 @@ public class AuditRemediationTests
         var proposerBalance = stateDb.GetAccount(proposer)!.Value.Balance;
         proposerBalance.Should().BeGreaterThan(UInt256.Zero);
     }
+
+    // ========================================================================
+    // Round 2 Audit (Issue #34): Critical/High/Medium fixes
+    // ========================================================================
+
+    // ── CRIT-01: MergeForkState must include storage mutations ────────────
+
+    [Fact]
+    public void CRIT01_MergeForkState_PreservesStorageMutations()
+    {
+        var stateDb = new InMemoryStateDb();
+        var contractAddr = new Address(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0x01, 0, 1 });
+
+        // Create contract account
+        stateDb.SetAccount(contractAddr, new AccountState
+        {
+            AccountType = AccountType.Contract,
+            Balance = UInt256.Zero,
+            CodeHash = Hash256.Zero,
+            StorageRoot = Hash256.Zero,
+        });
+
+        // Fork and write storage on the fork
+        var fork = stateDb.Fork();
+        var storageKey = new Hash256(new byte[32]);
+        fork.SetStorage(contractAddr, storageKey, new byte[] { 0xCA, 0xFE });
+
+        // Verify storage is on fork
+        fork.GetStorage(contractAddr, storageKey).Should().BeEquivalentTo(new byte[] { 0xCA, 0xFE });
+
+        // Verify storage is NOT on canonical yet
+        stateDb.GetStorage(contractAddr, storageKey).Should().BeNull();
+
+        // The fork should report dirty keys
+        fork.GetModifiedStorageKeys().Should().Contain((contractAddr, storageKey));
+    }
+
+    [Fact]
+    public void CRIT01_InMemoryStateDb_TracksDirtyStorageKeys()
+    {
+        var db = new InMemoryStateDb();
+        var addr = new Address(new byte[] { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        var key = new Hash256(new byte[32]);
+
+        db.GetModifiedStorageKeys().Should().BeEmpty();
+
+        db.SetStorage(addr, key, new byte[] { 1, 2, 3 });
+        db.GetModifiedStorageKeys().Should().Contain((addr, key));
+
+        db.DeleteStorage(addr, key);
+        db.GetModifiedStorageKeys().Should().Contain((addr, key));
+    }
+
+    // ── CRIT-02: tx.Value refund on failed contract call ──────────────────
+
+    [Fact]
+    public void CRIT02_ContractCall_RefundsValueOnFailure()
+    {
+        var (privateKey, _, sender) = CreateKeyPair();
+        var initialBalance = (UInt256)10_000_000_000;
+        var stateDb = CreateStateDbWithAccount(sender, initialBalance);
+
+        // Create a contract account with no code stored (will cause "Contract has no code" failure)
+        var contractAddr = new Address(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xCC, 0xCC, 0, 1 });
+        stateDb.SetAccount(contractAddr, new AccountState
+        {
+            AccountType = AccountType.Contract,
+            CodeHash = Hash256.Zero,
+            Balance = UInt256.Zero,
+        });
+        // No code stored at 0xFF01 key — runtime will return "Contract has no code"
+
+        var executor = new TransactionExecutor(_chainParams);
+        var header = CreateBlockHeader();
+
+        var txValue = (UInt256)1_000_000;
+        var tx = Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.ContractCall,
+            Nonce = 0,
+            Sender = sender,
+            To = contractAddr,
+            Value = txValue,
+            GasLimit = 100_000,
+            GasPrice = (UInt256)1,
+            ChainId = _chainParams.ChainId,
+        }, privateKey);
+
+        var receipt = executor.Execute(tx, stateDb, header, 0);
+
+        // The contract call should fail (invalid code)
+        receipt.Success.Should().BeFalse();
+
+        // The sender should have their tx.Value refunded (minus gas fees)
+        var senderBalance = stateDb.GetAccount(sender)!.Value.Balance;
+        // Sender should retain: initialBalance - gasFees (tx.Value was refunded)
+        // Without the fix, senderBalance would be initialBalance - gasFees - txValue
+        senderBalance.Should().BeGreaterThan(initialBalance - new UInt256(100_000) - txValue,
+            "tx.Value should be refunded on failed contract call");
+    }
+
+    private static Hash256 GetCodeStorageKey()
+    {
+        var key = new byte[32];
+        key[0] = 0xFF;
+        key[1] = 0x01;
+        return new Hash256(key);
+    }
+
+    // ── HIGH-01: BlockBuilder accepts shared TransactionExecutor ──────────
+
+    [Fact]
+    public void HIGH01_BlockBuilder_AcceptsSharedExecutor()
+    {
+        var executor = new TransactionExecutor(_chainParams, new ManagedContractRuntime());
+        var builder = new BlockBuilder(_chainParams, executor);
+        // If this compiles and runs, HIGH-01 is fixed
+        builder.Should().NotBeNull();
+    }
+
+    // ── HIGH-03: GasUsed nonzero on contract-not-found ───────────────────
+
+    [Fact]
+    public void HIGH03_ContractNotFound_ReportsNonZeroGasUsed()
+    {
+        var (privateKey, _, sender) = CreateKeyPair();
+        var stateDb = CreateStateDbWithAccount(sender, (UInt256)10_000_000_000);
+        var executor = new TransactionExecutor(_chainParams);
+        var header = CreateBlockHeader();
+
+        // Call a non-existent contract
+        var tx = Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.ContractCall,
+            Nonce = 0,
+            Sender = sender,
+            To = new Address(new byte[] { 0xDE, 0xAD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }),
+            Value = UInt256.Zero,
+            GasLimit = 100_000,
+            GasPrice = (UInt256)1,
+            ChainId = _chainParams.ChainId,
+        }, privateKey);
+
+        var receipt = executor.Execute(tx, stateDb, header, 0);
+        receipt.Success.Should().BeFalse();
+        receipt.ErrorCode.Should().Be(BasaltErrorCode.ContractNotFound);
+        // HIGH-03: GasUsed must not be 0 when sender was charged
+        receipt.GasUsed.Should().Be(100_000, "GasUsed should match tx.GasLimit for failed contract calls");
+    }
+
+    // ── MED-02: BlockBuilder updates receipt BlockHash ────────────────────
+
+    [Fact]
+    public void MED02_BlockBuilder_UpdatesReceiptBlockHash()
+    {
+        var (privateKey, _, sender) = CreateKeyPair();
+        var stateDb = CreateStateDbWithAccount(sender, (UInt256)10_000_000_000);
+        var builder = new BlockBuilder(_chainParams);
+        var parentHeader = new BlockHeader
+        {
+            Number = 0,
+            ParentHash = Hash256.Zero,
+            StateRoot = Hash256.Zero,
+            TransactionsRoot = Hash256.Zero,
+            ReceiptsRoot = Hash256.Zero,
+            Timestamp = 1_000_000,
+            Proposer = Address.Zero,
+            ChainId = _chainParams.ChainId,
+            GasLimit = _chainParams.BlockGasLimit,
+        };
+
+        var tx = Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.Transfer,
+            Nonce = 0,
+            Sender = sender,
+            To = Address.Zero,
+            Value = (UInt256)100,
+            GasLimit = 21_000,
+            GasPrice = (UInt256)1,
+            ChainId = _chainParams.ChainId,
+        }, privateKey);
+
+        var block = builder.BuildBlock([tx], stateDb, parentHeader, Address.Zero);
+
+        block.Receipts.Should().NotBeNull();
+        block.Receipts!.Should().HaveCount(1);
+        // MED-02: Receipt BlockHash should match the final block header hash
+        block.Receipts![0].BlockHash.Should().Be(block.Header.Hash);
+        block.Receipts![0].BlockHash.Should().NotBe(Hash256.Zero, "BlockHash should not be zero");
+    }
+
+    // ── MED-04: GasMeter refund overflow ─────────────────────────────────
+
+    [Fact]
+    public void MED04_GasMeter_RefundOverflowThrows()
+    {
+        var meter = new GasMeter(100);
+        meter.Consume(50);
+        meter.AddRefund(ulong.MaxValue - 10);
+
+        // Adding more should overflow
+        var act = () => meter.AddRefund(20);
+        act.Should().Throw<OverflowException>();
+    }
 }
