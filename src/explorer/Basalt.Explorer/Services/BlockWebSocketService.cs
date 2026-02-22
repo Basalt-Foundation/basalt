@@ -10,6 +10,10 @@ public sealed class BlockWebSocketService : IAsyncDisposable
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _cts;
 
+    /// <summary>LOW-03: Maximum reconnect attempts before giving up.</summary>
+    private const int MaxReconnectAttempts = 10;
+    private int _reconnectAttempts;
+
     public event Action<WebSocketBlockEvent>? OnNewBlock;
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -28,6 +32,7 @@ public sealed class BlockWebSocketService : IAsyncDisposable
         try
         {
             await _ws.ConnectAsync(new Uri(_wsUrl), _cts.Token);
+            _reconnectAttempts = 0; // LOW-03: Reset on successful connection
             _ = ReceiveLoop(_cts.Token);
         }
         catch
@@ -74,15 +79,17 @@ public sealed class BlockWebSocketService : IAsyncDisposable
             catch { break; }
         }
 
-        // Auto-reconnect after 3 seconds
-        if (!ct.IsCancellationRequested)
+        // LOW-03: Auto-reconnect with bounded attempts
+        if (!ct.IsCancellationRequested && _reconnectAttempts < MaxReconnectAttempts)
         {
+            _reconnectAttempts++;
             try
             {
                 await Task.Delay(3000, ct);
                 _ws?.Dispose();
                 _ws = new ClientWebSocket();
                 await _ws.ConnectAsync(new Uri(_wsUrl), ct);
+                _reconnectAttempts = 0; // Reset on successful reconnect
                 _ = ReceiveLoop(ct);
             }
             catch { /* give up reconnecting */ }

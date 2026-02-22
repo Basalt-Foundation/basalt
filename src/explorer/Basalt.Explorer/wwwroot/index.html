@@ -3,7 +3,9 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:;" />
+    <!-- LOW-01: connect-src uses broad ws:/wss: for dev flexibility (node URL varies per deployment).
+         LOW-02: frame-ancestors 'none' prevents clickjacking via iframe embedding. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none';" />
     <title>Basalt Explorer</title>
     <base href="/" />
     <link rel="stylesheet" href="css/app.css" />
