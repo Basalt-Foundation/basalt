@@ -149,13 +149,26 @@ public sealed class IdentityRegistry
 
     /// <summary>
     /// Get the identity attestation for an address, if any.
+    /// MED-02: Returns a defensive copy to prevent callers from mutating shared internal state.
     /// </summary>
     public IdentityAttestation? GetAttestation(byte[] subject)
     {
         lock (_lock)
         {
-            _attestations.TryGetValue(ToHex(subject), out var att);
-            return att;
+            if (!_attestations.TryGetValue(ToHex(subject), out var att))
+                return null;
+
+            return new IdentityAttestation
+            {
+                Subject = att.Subject,
+                Issuer = att.Issuer,
+                IssuedAt = att.IssuedAt,
+                ExpiresAt = att.ExpiresAt,
+                Level = att.Level,
+                CountryCode = att.CountryCode,
+                ClaimHash = att.ClaimHash,
+                Revoked = att.Revoked,
+            };
         }
     }
 
@@ -216,11 +229,15 @@ public sealed class IdentityRegistry
             return _auditLog.Where(e => e.EventType == eventType).ToList();
     }
 
+    /// <summary>
+    /// LOW-01: Uses single RemoveAt(0) instead of RemoveRange(0, excess) since we
+    /// add one event at a time, so at most one excess entry needs eviction.
+    /// </summary>
     private void AddAuditEvent(ComplianceEvent evt)
     {
-        if (_auditLog.Count >= MaxAuditLogSize)
-            _auditLog.RemoveRange(0, _auditLog.Count - MaxAuditLogSize + 1);
         _auditLog.Add(evt);
+        if (_auditLog.Count > MaxAuditLogSize)
+            _auditLog.RemoveAt(0);
     }
 
     private static string ToHex(byte[] data) => Convert.ToHexString(data);
