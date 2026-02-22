@@ -170,10 +170,14 @@ public ref struct BasaltWriter
         _position += BlsPublicKey.Size;
     }
 
+    /// <summary>
+    /// LOW-04: Uses subtraction to avoid integer overflow when _position + bytes
+    /// could exceed int.MaxValue for extreme values.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureCapacity(int bytes)
     {
-        if (_position + bytes > _buffer.Length)
+        if (bytes > _buffer.Length - _position)
             ThrowBufferTooSmall();
     }
 

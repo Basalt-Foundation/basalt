@@ -83,6 +83,16 @@ public static class Keystore
 
         var crypto = keystore.Crypto;
 
+        // LOW-01: Validate cipher algorithm before decryption
+        if (crypto.Cipher != "aes-256-gcm")
+            throw new ArgumentException(
+                $"Unsupported cipher algorithm: '{crypto.Cipher}'. Only 'aes-256-gcm' is supported.");
+
+        // LOW-02: Validate KDF algorithm before key derivation
+        if (crypto.Kdf != "argon2id")
+            throw new ArgumentException(
+                $"Unsupported KDF algorithm: '{crypto.Kdf}'. Only 'argon2id' is supported.");
+
         // AUDIT M-07: Validate KDF parameters before use
         if (crypto.KdfParams.Iterations <= 0)
             throw new ArgumentException("Invalid KDF parameter: iterations must be positive.");
