@@ -107,8 +107,11 @@ public sealed class BridgeState
             if (_processedWithdrawals.Contains(withdrawal.DepositNonce))
                 return false;
 
-            // CRIT-01: Verify Merkle proof when provided
-            if (withdrawal.Proof.Length > 0)
+            // LOW-06: Reject empty proof arrays — an empty proof would trivially pass verification
+            if (withdrawal.Proof.Length == 0)
+                return false;
+
+            // CRIT-01: Verify Merkle proof
             {
                 var depositLeaf = ComputeDepositLeaf(withdrawal.DepositNonce, withdrawal.Recipient, withdrawal.Amount);
                 if (!BridgeProofVerifier.VerifyMerkleProof(
@@ -121,13 +124,14 @@ public sealed class BridgeState
             if (!relayer.VerifyMessage(withdrawalHash, withdrawal.Signatures))
                 return false;
 
-            // HIGH-02: Decrement locked balance
+            // MED-06: Validate withdrawal amount does not exceed locked balance
             var token = tokenAddress ?? new byte[20];
             var tokenKey = Convert.ToHexString(token);
-            if (_lockedBalances.TryGetValue(tokenKey, out var locked) && locked >= withdrawal.Amount)
-            {
-                _lockedBalances[tokenKey] = locked - withdrawal.Amount;
-            }
+            if (!_lockedBalances.TryGetValue(tokenKey, out var locked) || locked < withdrawal.Amount)
+                return false;
+
+            // HIGH-02: Decrement locked balance
+            _lockedBalances[tokenKey] = locked - withdrawal.Amount;
 
             _processedWithdrawals.Add(withdrawal.DepositNonce);
             return true;
@@ -263,6 +267,11 @@ public sealed class BridgeState
     /// Format: nonce (8 bytes LE) || recipient (20 bytes) || amount (32 bytes LE).
     /// This is used as the leaf data in the Merkle tree of deposits.
     /// </summary>
+    /// <remarks>
+    /// INFO-01: Oversized recipients are silently truncated to 20 bytes via
+    /// <c>Math.Min(recipient.Length, 20)</c>. Callers must ensure recipients are exactly
+    /// 20 bytes; shorter inputs are zero-padded by the fixed-size destination span.
+    /// </remarks>
     public static byte[] ComputeDepositLeaf(ulong nonce, byte[] recipient, UInt256 amount)
     {
         var data = new byte[8 + 20 + 32];
