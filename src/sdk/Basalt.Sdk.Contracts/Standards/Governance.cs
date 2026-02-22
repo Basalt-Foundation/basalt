@@ -209,6 +209,27 @@ public partial class Governance
     }
 
     /// <summary>
+    /// N-2: Refresh delegated power from current staking balance.
+    /// Call after stake changes to ensure delegated voting power stays accurate.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void RefreshDelegation(ulong poolId)
+    {
+        var callerHex = Convert.ToHexString(Context.Caller);
+        var delegateeHex = _delegates.Get(callerHex);
+        Context.Require(!string.IsNullOrEmpty(delegateeHex), "GOV: not delegated");
+
+        var oldStake = _delegatorStake.Get(callerHex);
+        var newStake = Context.CallContract<UInt256>(_stakingPoolAddress, "GetDelegation", poolId, Context.Caller);
+
+        // Update delegated power: remove old, add new
+        var currentPower = _delegatedPower.Get(delegateeHex);
+        var adjusted = currentPower >= oldStake ? currentPower - oldStake : UInt256.Zero;
+        _delegatedPower.Set(delegateeHex, adjusted + newStake);
+        _delegatorStake.Set(callerHex, newStake);
+    }
+
+    /// <summary>
     /// Queue a passed proposal for timelock execution.
     /// </summary>
     [BasaltEntrypoint]
