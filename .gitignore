@@ -66,6 +66,13 @@ desktop.ini
 *.swp
 *~
 
+# Audit reports (kept locally, not in repo)
+audit/
+
+# Discord scripts (local tooling)
+tools/discord_messages.sh
+tools/discord_setup.sh
+
 # Secrets
 *.key
 *.pem
