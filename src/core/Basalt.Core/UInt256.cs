@@ -344,6 +344,9 @@ public readonly struct UInt256 : IEquatable<UInt256>, IComparable<UInt256>
     /// <summary>
     /// Implicit conversion from int. Negative values are rejected at runtime.
     /// This is intentionally implicit to allow convenient use of integer literals (e.g., <c>UInt256 x = 0</c>).
+    /// LOW-05: Note that compile-time negative literals (e.g., <c>UInt256 x = -1</c>) are accepted
+    /// by the compiler but will throw OverflowException at runtime. This is a .NET limitation
+    /// with implicit conversions — the check cannot be enforced at compile time.
     /// </summary>
     public static implicit operator UInt256(int value)
     {

@@ -131,6 +131,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         SlashingEngine? slashingEngine = null,
         IComplianceVerifier? complianceVerifier = null)
     {
+        // MEDIUM-01: Validate chain parameters at startup to catch misconfigurations early.
+        chainParams.Validate();
+
         _config = config;
         _chainParams = chainParams;
         _chainManager = chainManager;
