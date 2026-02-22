@@ -78,8 +78,19 @@ public sealed class PeerInfo
 
     /// <summary>
     /// NET-H13: Time until which this peer is banned. Null if not banned.
+    /// MEDIUM-02: Uses atomic long ticks for thread-safe read/write of nullable DateTimeOffset.
+    /// Value of 0 means not banned.
     /// </summary>
-    public DateTimeOffset? BannedUntil { get; set; }
+    private long _bannedUntilTicks;
+    public DateTimeOffset? BannedUntil
+    {
+        get
+        {
+            var ticks = Volatile.Read(ref _bannedUntilTicks);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+        set => Volatile.Write(ref _bannedUntilTicks, value?.UtcTicks ?? 0);
+    }
 
     /// <summary>
     /// Endpoint string (host:port).
