@@ -74,6 +74,17 @@ public sealed class TransactionInput
 
     public Transaction ToTransaction()
     {
+        // NEW-1: Validate signature and public key lengths (same as REST TransactionRequest)
+        var sigHex = Signature.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? Signature[2..] : Signature;
+        var sigBytes = Convert.FromHexString(sigHex);
+        if (sigBytes.Length != 64)
+            throw new ArgumentException("Signature must be exactly 64 bytes");
+
+        var pkHex = SenderPublicKey.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? SenderPublicKey[2..] : SenderPublicKey;
+        var pkBytes = Convert.FromHexString(pkHex);
+        if (pkBytes.Length != 32)
+            throw new ArgumentException("SenderPublicKey must be exactly 32 bytes");
+
         return new Transaction
         {
             Type = (TransactionType)Type,
@@ -88,8 +99,8 @@ public sealed class TransactionInput
             Data = string.IsNullOrEmpty(Data) ? [] : Convert.FromHexString(Data.StartsWith("0x") ? Data[2..] : Data),
             Priority = Priority,
             ChainId = ChainId,
-            Signature = new Basalt.Core.Signature(Convert.FromHexString(Signature.StartsWith("0x") ? Signature[2..] : Signature)),
-            SenderPublicKey = new PublicKey(Convert.FromHexString(SenderPublicKey.StartsWith("0x") ? SenderPublicKey[2..] : SenderPublicKey)),
+            Signature = new Basalt.Core.Signature(sigBytes),
+            SenderPublicKey = new PublicKey(pkBytes),
         };
     }
 }

@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using Basalt.Core;
 using Basalt.Consensus.Staking;
 using Basalt.Crypto;
@@ -9,6 +10,7 @@ using Basalt.Storage.RocksDb;
 using Basalt.Api.Grpc;
 using Basalt.Api.Rest;
 using Basalt.Node;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -185,11 +187,38 @@ try
     builder.Services.AddSingleton(validator);
     builder.Services.AddGrpc();
 
+    // NEW-5: Add per-IP rate limiting (100 requests per minute fixed window)
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = 429;
+        options.AddPolicy("per-ip", context =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 100,
+                    Window = TimeSpan.FromMinutes(1),
+                }));
+    });
+
+    // NEW-6: Add CORS policy
+    builder.Services.AddCors(options =>
+    {
+        options.AddDefaultPolicy(policy =>
+            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+    });
+
     var app = builder.Build();
+
+    // NEW-5: Wire rate limiter middleware
+    app.UseRateLimiter();
+
+    // NEW-6: Wire CORS middleware
+    app.UseCors();
 
     // Map REST endpoints (with read-only call support via ManagedContractRuntime)
     var contractRuntime = new ManagedContractRuntime();
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore);
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");

@@ -317,10 +317,10 @@ public class AuditRemediationTests
         result.BaseFee.Should().Be("42");
     }
 
-    // ── L-1: GraphQL mutation error includes exception type ─────────────
+    // ── NEW-7: GraphQL mutation error does NOT leak exception type ──────
 
     [Fact]
-    public void SubmitTransaction_InvalidInput_ErrorIncludesExceptionType()
+    public void SubmitTransaction_InvalidInput_ReturnsGenericError()
     {
         var chainManager = new ChainManager();
         var mempool = new Mempool(100);
@@ -343,8 +343,9 @@ public class AuditRemediationTests
 
         var result = mutation.SubmitTransaction(input, chainManager, mempool, validator, stateDb);
         result.Success.Should().BeFalse();
-        // L-1: Error message should include the exception type name
-        result.ErrorMessage.Should().Contain("Exception");
+        // NEW-7: Error message must NOT leak exception type name
+        result.ErrorMessage.Should().Be("Transaction submission failed");
+        result.ErrorMessage.Should().NotContain("Exception");
     }
 
     // ── M-3: TransactionInput EIP-1559 fields ──────────────────────────
