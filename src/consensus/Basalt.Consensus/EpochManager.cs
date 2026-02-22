@@ -223,6 +223,11 @@ public sealed class EpochManager
         if (totalBlocks == 0)
             return;
 
+        // LOW-01: When InactivityThresholdPercent=0, threshold would be 0 blocks,
+        // causing ALL validators to be slashed. Skip inactivity slashing entirely.
+        if (_chainParams.InactivityThresholdPercent == 0)
+            return;
+
         // Clamp to [0, 100] to prevent overflow or slashing-all with invalid values
         var percent = Math.Min(_chainParams.InactivityThresholdPercent, 100u);
         // Ceiling division: validators must sign >= InactivityThresholdPercent of blocks

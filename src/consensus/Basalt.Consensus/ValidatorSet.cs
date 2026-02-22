@@ -117,13 +117,20 @@ public sealed class ValidatorSet
 
     /// <summary>
     /// Returns validators whose bit is set in the bitmap (bit i = validator at index i).
+    /// MED-02: Materializes to list under lock to prevent inconsistent reads during
+    /// concurrent UpdateValidatorIdentity() calls.
     /// </summary>
-    public IEnumerable<ValidatorInfo> GetValidatorsFromBitmap(ulong bitmap)
+    public IReadOnlyList<ValidatorInfo> GetValidatorsFromBitmap(ulong bitmap)
     {
-        for (int i = 0; i < _validators.Count && i < 64; i++)
+        lock (_lock)
         {
-            if ((bitmap & (1UL << i)) != 0)
-                yield return _validators[i];
+            var result = new List<ValidatorInfo>();
+            for (int i = 0; i < _validators.Count && i < 64; i++)
+            {
+                if ((bitmap & (1UL << i)) != 0)
+                    result.Add(_validators[i]);
+            }
+            return result;
         }
     }
 
@@ -180,12 +187,16 @@ public sealed class ValidatorSet
     /// Select the leader for a given view number.
     /// Phase 1: Equal-weight round-robin.
     /// Phase 2: Weighted by stake * reputation.
+    /// MED-02: Acquires lock to prevent inconsistent reads during identity updates.
     /// </summary>
     public ValidatorInfo GetLeader(ulong viewNumber)
     {
-        if (_leaderSelector != null)
-            return _leaderSelector(viewNumber);
-        int index = (int)(viewNumber % (ulong)_validators.Count);
-        return _validators[index];
+        lock (_lock)
+        {
+            if (_leaderSelector != null)
+                return _leaderSelector(viewNumber);
+            int index = (int)(viewNumber % (ulong)_validators.Count);
+            return _validators[index];
+        }
     }
 }

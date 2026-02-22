@@ -273,6 +273,13 @@ public sealed class PipelinedConsensus
         if (!_validatorSet.IsValidator(vote.SenderId))
             return null;
 
+        // MED-01: Verify VoterPublicKey matches the registered BLS public key for the voter.
+        // Without this check, an attacker could submit votes with valid signatures from a
+        // different key than the one registered for their validator identity.
+        var voterInfo = _validatorSet.GetByPeerId(vote.SenderId);
+        if (voterInfo == null || voterInfo.BlsPublicKey.ToArray().AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()) == false)
+            return null;
+
         // F-CON-02: Verify vote is for the correct block hash
         if (vote.BlockHash != round.BlockHash)
             return null;
@@ -702,16 +709,30 @@ public sealed class PipelinedConsensus
 
     /// <summary>
     /// Internal state for a single consensus round.
+    /// LOW-04: State and ViewChangeRequested use volatile backing fields for thread-safe access.
     /// </summary>
     private sealed class ConsensusRound
     {
         public ulong BlockNumber { get; init; }
         public ulong View { get; set; }
-        public ConsensusState State { get; set; }
+
+        private int _state;
+        public ConsensusState State
+        {
+            get => (ConsensusState)Volatile.Read(ref _state);
+            set => Volatile.Write(ref _state, (int)value);
+        }
+
         public Hash256 BlockHash { get; set; }
         public byte[]? BlockData { get; set; }
         public DateTimeOffset StartTime { get; set; }
-        public bool ViewChangeRequested { get; set; }
+
+        private int _viewChangeRequested;
+        public bool ViewChangeRequested
+        {
+            get => Volatile.Read(ref _viewChangeRequested) != 0;
+            set => Volatile.Write(ref _viewChangeRequested, value ? 1 : 0);
+        }
         public HashSet<PeerId> PrepareVotes { get; } = new();
         public HashSet<PeerId> PreCommitVotes { get; } = new();
         public HashSet<PeerId> CommitVotes { get; } = new();
