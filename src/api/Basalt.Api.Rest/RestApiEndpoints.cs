@@ -679,6 +679,9 @@ public static class RestApiEndpoints
         // If the contract storage format changes, this endpoint must be updated accordingly.
         app.MapGet("/v1/pools", () =>
         {
+            // S2-03: Fork state for consistent multi-read snapshot
+            var snapshot = stateDb.Fork();
+
             var contractAddr = new Address(new byte[]
             {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -686,7 +689,7 @@ public static class RestApiEndpoints
             });
 
             // Read _nextPoolId (key "sp_next")
-            var nextIdRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_next")));
+            var nextIdRaw = snapshot.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_next")));
             ulong poolCount = 0;
             if (nextIdRaw is { Length: >= 9 } && nextIdRaw[0] == 0x01)
                 poolCount = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(nextIdRaw.AsSpan(1));
@@ -697,19 +700,19 @@ public static class RestApiEndpoints
                 var idStr = i.ToString();
 
                 // Operator (key "sp_ops:{id}", tag 0x07 = string)
-                var opsRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_ops:" + idStr)));
+                var opsRaw = snapshot.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_ops:" + idStr)));
                 var operatorHex = opsRaw is { Length: > 1 } && opsRaw[0] == 0x07
                     ? Encoding.UTF8.GetString(opsRaw.AsSpan(1))
                     : "";
 
                 // Total stake (key "sp_total:{id}", tag 0x0A = UInt256)
-                var stakeRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_total:" + idStr)));
+                var stakeRaw = snapshot.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_total:" + idStr)));
                 var totalStake = stakeRaw is { Length: >= 33 } && stakeRaw[0] == 0x0A
                     ? new UInt256(stakeRaw.AsSpan(1, 32)).ToString()
                     : "0";
 
                 // Total rewards (key "sp_rewards:{id}", tag 0x0A = UInt256)
-                var rewardsRaw = stateDb.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_rewards:" + idStr)));
+                var rewardsRaw = snapshot.GetStorage(contractAddr, Blake3Hasher.Hash(Encoding.UTF8.GetBytes("sp_rewards:" + idStr)));
                 var totalRewards = rewardsRaw is { Length: >= 33 } && rewardsRaw[0] == 0x0A
                     ? new UInt256(rewardsRaw.AsSpan(1, 32)).ToString()
                     : "0";

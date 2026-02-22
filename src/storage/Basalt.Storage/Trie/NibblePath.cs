@@ -24,11 +24,15 @@ public readonly struct NibblePath : IEquatable<NibblePath>
 
     /// <summary>
     /// Get the nibble at the specified index.
+    /// S2-05: Validates index is within bounds.
     /// </summary>
     public byte this[int index]
     {
         get
         {
+            if ((uint)index >= (uint)_length)
+                throw new ArgumentOutOfRangeException(nameof(index), index,
+                    $"Index must be in range [0, {_length}).");
             int absoluteIndex = _offset + index;
             int byteIndex = absoluteIndex / 2;
             return (absoluteIndex % 2 == 0)
@@ -39,17 +43,23 @@ public readonly struct NibblePath : IEquatable<NibblePath>
 
     /// <summary>
     /// Create a sub-path starting from the given offset.
+    /// S2-05: Validates start is within bounds.
     /// </summary>
     public NibblePath Slice(int start)
     {
+        if (start < 0 || start > _length)
+            throw new ArgumentOutOfRangeException(nameof(start));
         return new NibblePath(_data, _offset + start, _length - start);
     }
 
     /// <summary>
     /// Create a sub-path with specified offset and length.
+    /// S2-05: Validates start and length are within bounds.
     /// </summary>
     public NibblePath Slice(int start, int length)
     {
+        if (start < 0 || length < 0 || start + length > _length)
+            throw new ArgumentOutOfRangeException(nameof(start));
         return new NibblePath(_data, _offset + start, length);
     }
 
