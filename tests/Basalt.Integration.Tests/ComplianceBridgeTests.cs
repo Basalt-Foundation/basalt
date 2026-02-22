@@ -107,13 +107,18 @@ public class ComplianceBridgeTests
         // Step 3: Finalize deposit
         bridgeState.FinalizeDeposit(0).Should().BeTrue();
 
-        // Step 4: Process withdrawal with multisig
+        // Step 4: Process withdrawal with multisig — build valid Merkle proof (LOW-06)
+        var depositLeaf = BridgeState.ComputeDepositLeaf(0, recipient, 5000);
+        var dummyLeaf = BridgeState.ComputeDepositLeaf(ulong.MaxValue, new byte[20], (UInt256)1);
+        var (root, proof) = BridgeProofVerifier.BuildMerkleProof([depositLeaf, dummyLeaf], 0);
+
         var withdrawal = new BridgeWithdrawal
         {
             DepositNonce = 0,
             Recipient = recipient,
             Amount = 5000,
-            StateRoot = new byte[32],
+            StateRoot = root,
+            Proof = proof,
         };
 
         var msgHash = BridgeState.ComputeWithdrawalHash(withdrawal, 1);
