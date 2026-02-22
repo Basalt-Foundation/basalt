@@ -29,7 +29,8 @@ public static class RestApiEndpoints
         Storage.IStateDatabase stateDb,
         IContractRuntime? contractRuntime = null,
         Storage.RocksDb.ReceiptStore? receiptStore = null,
-        Microsoft.Extensions.Logging.ILogger? logger = null)
+        Microsoft.Extensions.Logging.ILogger? logger = null,
+        ChainParameters? chainParams = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -431,7 +432,12 @@ public static class RestApiEndpoints
                         caller = fromAddr;
 
                     var latestBlock = chainManager.LatestBlock;
-                    var gasMeter = new GasMeter(request.GasLimit > 0 ? request.GasLimit : 1_000_000);
+                    // NEW-2: Cap gas limit at BlockGasLimit to prevent unbounded compute
+                    var maxGas = chainParams?.BlockGasLimit ?? 100_000_000UL;
+                    var effectiveGasLimit = request.GasLimit > 0
+                        ? Math.Min(request.GasLimit, maxGas)
+                        : Math.Min(1_000_000UL, maxGas);
+                    var gasMeter = new GasMeter(effectiveGasLimit);
 
                     // Fork state to prevent read-only calls from mutating canonical state
                     var forkedDb = stateDb.Fork();
@@ -677,8 +683,11 @@ public static class RestApiEndpoints
         // Tags: 0x01 = UInt64, 0x07 = String, 0x0A = UInt256.
         // This is a read-only convenience endpoint that mirrors StakingPool internal layout.
         // If the contract storage format changes, this endpoint must be updated accordingly.
-        app.MapGet("/v1/pools", () =>
+        // NEW-3: Accept maxPools parameter to bound iteration (default 100, max 1000)
+        app.MapGet("/v1/pools", (int? maxPools) =>
         {
+            var limit = Math.Clamp(maxPools ?? 100, 1, 1000);
+
             var contractAddr = new Address(new byte[]
             {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -691,8 +700,11 @@ public static class RestApiEndpoints
             if (nextIdRaw is { Length: >= 9 } && nextIdRaw[0] == 0x01)
                 poolCount = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(nextIdRaw.AsSpan(1));
 
+            // NEW-3: Cap iteration at limit
+            var effectiveCount = Math.Min(poolCount, (ulong)limit);
+
             var pools = new List<PoolInfoResponse>();
-            for (ulong i = 0; i < poolCount; i++)
+            for (ulong i = 0; i < effectiveCount; i++)
             {
                 var idStr = i.ToString();
 

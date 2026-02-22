@@ -164,14 +164,38 @@ public static class FaucetEndpoint
                 chainParams.ChainId, mempool.Count);
 
             // Submit to mempool (will be picked up by consensus and included in a block)
+            // NEW-4: Retry once with incremented nonce on mempool rejection (nonce conflict)
             if (!mempool.Add(signedTx))
             {
-                _logger?.LogWarning("Faucet tx {Hash} rejected by mempool", signedTx.Hash.ToHexString()[..18] + "...");
-                return Results.BadRequest(new FaucetResponse
+                _logger?.LogWarning("Faucet tx {Hash} rejected by mempool, retrying with nonce+1",
+                    signedTx.Hash.ToHexString()[..18] + "...");
+
+                nonce++;
+                var retryTx = new Transaction
                 {
-                    Success = false,
-                    Message = "Transaction rejected by mempool.",
-                });
+                    Type = unsignedTx.Type,
+                    Nonce = nonce,
+                    Sender = unsignedTx.Sender,
+                    To = unsignedTx.To,
+                    Value = unsignedTx.Value,
+                    GasLimit = unsignedTx.GasLimit,
+                    GasPrice = unsignedTx.GasPrice,
+                    Data = unsignedTx.Data,
+                    Priority = unsignedTx.Priority,
+                    ChainId = unsignedTx.ChainId,
+                };
+                signedTx = Transaction.Sign(retryTx, _faucetPrivateKey);
+
+                if (!mempool.Add(signedTx))
+                {
+                    _logger?.LogWarning("Faucet tx {Hash} rejected by mempool on retry",
+                        signedTx.Hash.ToHexString()[..18] + "...");
+                    return Results.BadRequest(new FaucetResponse
+                    {
+                        Success = false,
+                        Message = "Transaction rejected by mempool.",
+                    });
+                }
             }
 
             // HIGH-5: Only increment nonce after successful mempool addition
