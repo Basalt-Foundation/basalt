@@ -83,6 +83,32 @@ public enum BasaltErrorCode
     ValidatorNotRegistered = 8003,
     StakingNotAvailable = 8004,
 
+    // DEX errors (10xxx)
+    /// <summary>Pool does not exist for the given ID.</summary>
+    DexPoolNotFound = 10001,
+    /// <summary>Pool already exists for this token pair and fee tier.</summary>
+    DexPoolAlreadyExists = 10002,
+    /// <summary>Token pair is invalid (e.g. identical addresses).</summary>
+    DexInvalidPair = 10003,
+    /// <summary>Fee tier not in allowed set.</summary>
+    DexInvalidFeeTier = 10004,
+    /// <summary>Pool has insufficient liquidity for the operation.</summary>
+    DexInsufficientLiquidity = 10005,
+    /// <summary>Output amount is below the specified minimum (slippage protection).</summary>
+    DexSlippageExceeded = 10006,
+    /// <summary>Amount or price is invalid (e.g. zero).</summary>
+    DexInvalidAmount = 10007,
+    /// <summary>Limit order does not exist.</summary>
+    DexOrderNotFound = 10008,
+    /// <summary>Caller is not authorized for this operation.</summary>
+    DexUnauthorized = 10009,
+    /// <summary>Swap intent deadline has passed.</summary>
+    DexDeadlineExpired = 10010,
+    /// <summary>Transaction data is malformed for the specified DEX operation.</summary>
+    DexInvalidData = 10011,
+    /// <summary>Limit order has expired.</summary>
+    DexOrderExpired = 10012,
+
     // Internal errors (9xxx)
     InternalError = 9001,
     NotImplemented = 9002,

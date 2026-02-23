@@ -16,6 +16,21 @@ public enum TransactionType : byte
     StakeWithdraw = 4,
     ValidatorRegister = 5,
     ValidatorExit = 6,
+
+    // ── Caldera Fusion DEX ──
+
+    /// <summary>Create a new liquidity pool. Data: [20B token0][20B token1][4B feeBps]</summary>
+    DexCreatePool = 7,
+    /// <summary>Add liquidity to a pool. Data: [8B poolId][32B amt0Desired][32B amt1Desired][32B amt0Min][32B amt1Min]</summary>
+    DexAddLiquidity = 8,
+    /// <summary>Remove liquidity from a pool. Data: [8B poolId][32B shares][32B amt0Min][32B amt1Min]</summary>
+    DexRemoveLiquidity = 9,
+    /// <summary>Batch-auctionable swap intent. Data: [1B version][20B tokenIn][20B tokenOut][32B amountIn][32B minAmountOut][8B deadline][1B flags]</summary>
+    DexSwapIntent = 10,
+    /// <summary>Place a persistent limit order. Data: [8B poolId][32B price][32B amount][1B isBuy][8B expiryBlock]</summary>
+    DexLimitOrder = 11,
+    /// <summary>Cancel a limit order. Data: [8B orderId]</summary>
+    DexCancelOrder = 12,
 }
 
 /// <summary>

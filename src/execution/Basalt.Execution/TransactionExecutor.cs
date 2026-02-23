@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Crypto;
+using Basalt.Execution.Dex;
 using Basalt.Execution.VM;
 using Basalt.Storage;
 
@@ -9,7 +10,7 @@ namespace Basalt.Execution;
 /// Executes transactions and applies state changes.
 /// Supports Transfer (Type=0), ContractDeploy (Type=1), ContractCall (Type=2),
 /// StakeDeposit (Type=3), StakeWithdraw (Type=4), ValidatorRegister (Type=5),
-/// and ValidatorExit (Type=6).
+/// ValidatorExit (Type=6), and DEX operations (Types 7-12).
 /// </summary>
 public sealed class TransactionExecutor
 {
@@ -65,6 +66,12 @@ public sealed class TransactionExecutor
             TransactionType.StakeWithdraw => ExecuteStakeWithdraw(tx, stateDb, blockHeader, txIndex),
             TransactionType.ValidatorRegister => ExecuteValidatorRegister(tx, stateDb, blockHeader, txIndex),
             TransactionType.ValidatorExit => ExecuteValidatorExit(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexCreatePool => ExecuteDexCreatePool(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexAddLiquidity => ExecuteDexAddLiquidity(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexRemoveLiquidity => ExecuteDexRemoveLiquidity(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexSwapIntent => ExecuteDexSwapIntent(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexLimitOrder => ExecuteDexLimitOrder(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexCancelOrder => ExecuteDexCancelOrder(tx, stateDb, blockHeader, txIndex),
             _ => ExecuteStub(tx, stateDb, blockHeader, txIndex, BasaltErrorCode.InvalidTransactionType),
         };
     }
@@ -586,6 +593,415 @@ public sealed class TransactionExecutor
         CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
 
         return CreateReceipt(tx, blockHeader, txIndex, gasUsed, true, BasaltErrorCode.Success, stateDb, effectiveGasPrice);
+    }
+
+    // ────────── DEX Transaction Handlers ──────────
+
+    private TransactionReceipt ExecuteDexCreatePool(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        var gasUsed = _chainParams.DexCreatePoolGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [20B token0][20B token1][4B feeBps] = 44 bytes
+        if (tx.Data.Length < 44)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        var tokenA = new Address(tx.Data.AsSpan(0, 20));
+        var tokenB = new Address(tx.Data.AsSpan(20, 20));
+        var feeBps = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(tx.Data.AsSpan(40, 4));
+
+        // Fork state for atomicity
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var engine = new DexEngine(dexState);
+
+        var result = engine.CreatePool(tx.Sender, tokenA, tokenB, feeBps);
+        if (!result.Success)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        // Commit: charge gas, increment nonce, merge fork
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexAddLiquidity(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        var gasUsed = _chainParams.DexLiquidityGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [8B poolId][32B amt0Desired][32B amt1Desired][32B amt0Min][32B amt1Min] = 136 bytes
+        if (tx.Data.Length < 136)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        var poolId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(0, 8));
+        var amt0Desired = new UInt256(tx.Data.AsSpan(8, 32));
+        var amt1Desired = new UInt256(tx.Data.AsSpan(40, 32));
+        var amt0Min = new UInt256(tx.Data.AsSpan(72, 32));
+        var amt1Min = new UInt256(tx.Data.AsSpan(104, 32));
+
+        // Charge gas first, then fork for DEX operations
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var engine = new DexEngine(dexState);
+
+        var result = engine.AddLiquidity(tx.Sender, poolId, amt0Desired, amt1Desired, amt0Min, amt1Min, fork);
+        if (!result.Success)
+        {
+            // Don't merge fork — gas already charged
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexRemoveLiquidity(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        var gasUsed = _chainParams.DexLiquidityGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [8B poolId][32B shares][32B amt0Min][32B amt1Min] = 104 bytes
+        if (tx.Data.Length < 104)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        var poolId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(0, 8));
+        var shares = new UInt256(tx.Data.AsSpan(8, 32));
+        var amt0Min = new UInt256(tx.Data.AsSpan(40, 32));
+        var amt1Min = new UInt256(tx.Data.AsSpan(72, 32));
+
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var engine = new DexEngine(dexState);
+
+        var result = engine.RemoveLiquidity(tx.Sender, poolId, shares, amt0Min, amt1Min, fork);
+        if (!result.Success)
+        {
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexSwapIntent(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        // DexSwapIntent txs are normally collected and batch-settled in BlockBuilder Phase B.
+        // If executed individually (fallback path), route through the AMM directly.
+        var gasUsed = _chainParams.DexSwapGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [1B version][20B tokenIn][20B tokenOut][32B amountIn][32B minAmountOut][8B deadline][1B flags] = 114 bytes
+        if (tx.Data.Length < 114)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        // var version = tx.Data[0]; // reserved for future use
+        var tokenIn = new Address(tx.Data.AsSpan(1, 20));
+        var tokenOut = new Address(tx.Data.AsSpan(21, 20));
+        var amountIn = new UInt256(tx.Data.AsSpan(41, 32));
+        var minAmountOut = new UInt256(tx.Data.AsSpan(73, 32));
+        var deadline = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(105, 8));
+        // var flags = tx.Data[113]; // bit0 = allowPartialFill
+
+        // Check deadline
+        if (deadline > 0 && blockHeader.Number > deadline)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexDeadlineExpired, stateDb, effectiveGasPrice);
+        }
+
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        // Find pool for this pair (try all fee tiers)
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var (t0, t1) = DexEngine.SortTokens(tokenIn, tokenOut);
+
+        ulong? poolId = null;
+        foreach (var tier in Dex.Math.DexLibrary.AllowedFeeTiers)
+        {
+            poolId = dexState.LookupPool(t0, t1, tier);
+            if (poolId != null) break;
+        }
+
+        if (poolId == null)
+        {
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexPoolNotFound, stateDb, effectiveGasPrice);
+        }
+
+        var engine = new DexEngine(dexState);
+        var result = engine.ExecuteSwap(tx.Sender, poolId.Value, tokenIn, amountIn, minAmountOut, fork);
+
+        if (!result.Success)
+        {
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexLimitOrder(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        var gasUsed = _chainParams.DexLimitOrderGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [8B poolId][32B price][32B amount][1B isBuy][8B expiryBlock] = 81 bytes
+        if (tx.Data.Length < 81)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        var poolId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(0, 8));
+        var price = new UInt256(tx.Data.AsSpan(8, 32));
+        var amount = new UInt256(tx.Data.AsSpan(40, 32));
+        var isBuy = tx.Data[72] == 1;
+        var expiryBlock = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(73, 8));
+
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var engine = new DexEngine(dexState);
+
+        var result = engine.PlaceOrder(tx.Sender, poolId, price, amount, isBuy, expiryBlock, fork);
+        if (!result.Success)
+        {
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexCancelOrder(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        var gasUsed = _chainParams.DexCancelOrderGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Parse tx.Data: [8B orderId] = 8 bytes
+        if (tx.Data.Length < 8)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        var orderId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(tx.Data.AsSpan(0, 8));
+
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+
+        var fork = stateDb.Fork();
+        var dexState = new DexState(fork);
+        var engine = new DexEngine(dexState);
+
+        var result = engine.CancelOrder(tx.Sender, orderId, fork);
+        if (!result.Success)
+        {
+            CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, result.ErrorCode, stateDb, effectiveGasPrice);
+        }
+
+        MergeForkState(fork, stateDb, DexState.DexAddress);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
     }
 
     /// <summary>

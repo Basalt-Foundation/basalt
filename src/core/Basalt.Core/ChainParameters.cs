@@ -23,8 +23,8 @@ public sealed class ChainParameters
     /// <summary>Maximum transaction data size in bytes.</summary>
     public uint MaxTransactionDataBytes { get; init; } = 128 * 1024; // 128 KB
 
-    /// <summary>H-6: Maximum extra data size in block headers (bytes).</summary>
-    public uint MaxExtraDataBytes { get; init; } = 32;
+    /// <summary>H-6: Maximum extra data size in block headers (bytes). Increased to 256 for TWAP oracle data.</summary>
+    public uint MaxExtraDataBytes { get; init; } = 256;
 
     /// <summary>Minimum gas price in smallest unit.</summary>
     public UInt256 MinGasPrice { get; init; } = new(1);
@@ -72,6 +72,26 @@ public sealed class ChainParameters
     /// Validators signing fewer than this percentage of blocks in an epoch are slashed.
     /// </summary>
     public uint InactivityThresholdPercent { get; init; } = 50;
+
+    // ── Caldera Fusion DEX Parameters ──
+
+    /// <summary>Gas cost for DEX pool creation.</summary>
+    public ulong DexCreatePoolGas { get; init; } = 100_000;
+
+    /// <summary>Gas cost for DEX add/remove liquidity.</summary>
+    public ulong DexLiquidityGas { get; init; } = 80_000;
+
+    /// <summary>Gas cost for DEX single swap.</summary>
+    public ulong DexSwapGas { get; init; } = 80_000;
+
+    /// <summary>Gas cost for placing a limit order.</summary>
+    public ulong DexLimitOrderGas { get; init; } = 60_000;
+
+    /// <summary>Gas cost for canceling a limit order.</summary>
+    public ulong DexCancelOrderGas { get; init; } = 40_000;
+
+    /// <summary>Maximum number of swap intents per batch auction per block.</summary>
+    public uint DexMaxIntentsPerBatch { get; init; } = 500;
 
     /// <summary>Token decimals (18 like Ethereum).</summary>
     public byte TokenDecimals { get; init; } = 18;
