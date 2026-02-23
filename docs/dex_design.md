@@ -243,25 +243,77 @@ src/execution/Basalt.Execution/Dex/
     Math/
         FullMath.cs              256-bit safe multiplication
         DexLibrary.cs            AMM primitives
+        TickMath.cs              Tick ↔ sqrt price conversion (E2)
+        SqrtPriceMath.cs         Concentrated liquidity price math (E2)
+        LiquidityMath.cs         Signed liquidity delta arithmetic (E2)
     BatchAuctionSolver.cs        Clearing price computation
     BatchResult.cs               Settlement result + fill records
     BatchSettlementExecutor.cs   Applies settlements to state
-    DexEngine.cs                 Core pool/swap/order logic
+    ConcentratedPool.cs          Tick-based position management (E2)
+    DexEngine.cs                 Core pool/swap/order logic + BST-20 (E1)
     DexResult.cs                 Operation result type
-    DexState.cs                  State reader/writer
+    DexState.cs                  State reader/writer + LP allowances (E1)
     DynamicFeeCalculator.cs      Volatility-adjusted fees
+    EncryptedIntent.cs           BLS threshold encryption (E3)
     OrderBook.cs                 Limit order matching
     ParsedIntent.cs              Swap intent parsing
-    PoolMetadata.cs              Data structs (pool, order, TWAP)
+    PoolMetadata.cs              Data structs (pool, order, position, tick)
     TwapOracle.cs                Price oracle + block header serialization
+
+src/consensus/Basalt.Consensus/Dkg/
+    DkgProtocol.cs               Feldman VSS state machine (E3)
+    ThresholdCrypto.cs           BLS12-381 threshold cryptography (E3)
+
+src/node/Basalt.Node/Solver/
+    SolverManager.cs             Registration, window, selection (E4)
+    SolverScoring.cs             Surplus scoring + feasibility (E4)
+    SolverSolution.cs            Signed solution struct (E4)
+    SolverInfoAdapter.cs         REST API bridge (E4)
 
 tests/Basalt.Execution.Tests/Dex/
     BatchAuctionSolverTests.cs   Solver, parsing, mempool partitioning
-    DexEngineTests.cs            Engine + executor integration
+    ConcentratedPoolTests.cs     Concentrated liquidity positions (E2)
+    DexEngineTests.cs            Engine + executor + BST-20 integration
     DexMathTests.cs              FullMath + DexLibrary
-    DexStateTests.cs             State CRUD, serialization
+    DexStateTests.cs             State CRUD, serialization, LP allowances
     DynamicFeeTests.cs           Fee computation
+    EncryptedIntentTests.cs      Encrypted intent round-trip (E3)
     IntegrationTests.cs          End-to-end flows
+    LpTokenTests.cs              LP transfer/approve (E1)
     OrderBookTests.cs            Order matching
+    TickMathTests.cs             Tick math tests (E2)
     TwapOracleTests.cs           Oracle + serialization
+
+tests/Basalt.Consensus.Tests/Dkg/
+    DkgProtocolTests.cs          Full DKG lifecycle (E3)
+    ThresholdCryptoTests.cs      Polynomial, shares, reconstruction (E3)
+
+tests/Basalt.Node.Tests/Solver/
+    SolverManagerTests.cs        Registration, window, submission (E4)
+    SolverScoringTests.cs        Surplus scoring, selection (E4)
 ```
+
+## Phase E Features
+
+### E1: BST-20 Token Integration + LP Token Transfers
+- Trade any BST-20 token pair via `ManagedContractRuntime` dispatch
+- LP shares are transferable with standard `TransferLp`/`ApproveLp` pattern
+- Transaction types 13 (TransferLp), 14 (ApproveLp)
+
+### E2: Concentrated Liquidity
+- Uniswap v3-style tick-based positions for improved capital efficiency
+- Liquidity deployed within `[tickLower, tickUpper]` price ranges
+- Tick math, sqrt price math, position management
+- Transaction types 15 (MintPosition), 16 (BurnPosition), 17 (CollectFees)
+
+### E3: Encrypted Intents (BLS Threshold Encryption)
+- DKG (Feldman VSS) generates group public key shared by validators
+- Swap intents encrypted with group key — proposer cannot read before settlement
+- BlockBuilder decrypts in Phase B; batch auction proceeds normally
+- Transaction type 18 (DexEncryptedSwapIntent)
+
+### E4: Solver Network
+- External solvers compete to provide optimal batch settlements
+- Surplus-based scoring: highest sum(amountOut - minAmountOut) wins
+- Built-in solver fallback when no external solution is valid
+- REST API for solver registration and pending intent queries

@@ -97,7 +97,42 @@ effectiveFee = clamp(effectiveFee, 1 bps, 500 bps)
 | `DexLimitOrder` | 11 | Persistent limit order |
 | `DexCancelOrder` | 12 | Cancel an existing order |
 
-Types 8, 9, 11, 12 execute immediately in Phase A. Type 10 (swap intents) are collected and settled in batch in Phases B and C.
+| `DexTransferLp` | 13 | Transfer LP shares |
+| `DexApproveLp` | 14 | Approve LP spend allowance |
+| `DexMintPosition` | 15 | Mint concentrated liquidity position |
+| `DexBurnPosition` | 16 | Burn concentrated liquidity position |
+| `DexCollectFees` | 17 | Collect fees from concentrated position |
+| `DexEncryptedSwapIntent` | 18 | Encrypted batch-auctionable swap intent |
+
+Types 8, 9, 11–14 execute immediately in Phase A. Types 10 and 18 (swap intents) are collected and settled in batch in Phases B and C. Type 18 is decrypted using the DKG group public key before settlement.
+
+## Phase E: Advanced Features
+
+### BST-20 Token Integration (E1)
+Full support for trading BST-20 tokens via `ManagedContractRuntime`. Token transfers dispatch through FNV-1a selector `Transfer(Address,UInt256)` and `TransferFrom(Address,Address,UInt256)`. LP shares are transferable via `DexTransferLp`/`DexApproveLp` with standard approve-transferFrom pattern.
+
+### Concentrated Liquidity (E2)
+Uniswap v3-style tick-based liquidity positions. LPs deploy capital within specific `[tickLower, tickUpper]` price ranges for dramatically improved capital efficiency.
+
+- **TickMath**: `GetSqrtRatioAtTick()`, `GetTickAtSqrtRatio()` using 1.0001^tick representation
+- **SqrtPriceMath**: `GetAmount0Delta()`, `GetAmount1Delta()`, price movement calculations
+- **ConcentratedPool**: Position minting/burning, fee collection, tick crossing during swaps
+
+### Encrypted Intents (E3)
+BLS threshold encryption eliminates information asymmetry — the block proposer cannot read swap intents before settlement.
+
+- **DKG Protocol**: Feldman VSS state machine (Deal → Complaint → Justify → Finalize) generates a group public key shared by validators
+- **ThresholdCrypto**: Polynomial evaluation, Lagrange interpolation, share encryption over BLS12-381 scalar field
+- **EncryptedIntent**: Encrypt swap intents with DKG group key; BlockBuilder decrypts in Phase B before batch settlement
+- Transaction type 18 with BLAKE3-derived symmetric key from `gpk || nonce`
+
+### Solver Network (E4)
+External solvers compete to provide optimal batch settlements. The proposer selects the solution with the highest surplus for users.
+
+- **SolverManager**: Registration, solution window (500ms default), signature verification, best-solution selection
+- **SolverScoring**: Surplus = sum(amountOut - minAmountOut) for all fills; feasibility validation
+- **Fallback**: If no valid external solution, built-in `BatchAuctionSolver` is used
+- REST API: `GET /v1/solvers`, `POST /v1/solvers/register`, `GET /v1/dex/intents/pending`
 
 ## MEV Elimination
 
@@ -105,6 +140,8 @@ Types 8, 9, 11, 12 execute immediately in Phase A. Type 10 (swap intents) are co
 2. **Uniform clearing price** — all intents receive the same price; no first-mover advantage
 3. **Peer-to-peer matching first** — reduces AMM price impact and loss-versus-rebalancing
 4. **Limit order depth** — adds liquidity at each price level, reducing slippage
+5. **Encrypted intents** — proposer cannot see intent contents before settlement (BLS threshold encryption)
+6. **Solver competition** — external solvers compete for best execution; surplus goes to users, not the proposer
 
 ## REST API Endpoints
 
@@ -115,6 +152,9 @@ Types 8, 9, 11, 12 execute immediately in Phase A. Type 10 (swap intents) are co
 | GET | `/v1/dex/pools/{poolId}/orders` | List orders for a pool |
 | GET | `/v1/dex/orders/{orderId}` | Get order details |
 | GET | `/v1/dex/pools/{poolId}/twap?window=100` | TWAP and volatility data |
+| GET | `/v1/solvers` | List registered solvers |
+| POST | `/v1/solvers/register` | Register an external solver |
+| GET | `/v1/dex/intents/pending` | Pending intent hashes (for solvers) |
 
 ## Integration
 
