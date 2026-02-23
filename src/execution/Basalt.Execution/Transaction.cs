@@ -31,6 +31,10 @@ public enum TransactionType : byte
     DexLimitOrder = 11,
     /// <summary>Cancel a limit order. Data: [8B orderId]</summary>
     DexCancelOrder = 12,
+    /// <summary>Transfer LP tokens to another address. Data: [8B poolId][20B recipient][32B amount]</summary>
+    DexTransferLp = 13,
+    /// <summary>Approve a spender for LP tokens. Data: [8B poolId][20B spender][32B amount]</summary>
+    DexApproveLp = 14,
 }
 
 /// <summary>

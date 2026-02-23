@@ -53,6 +53,8 @@ public static class GasTable
     public const ulong DexSwap = 80_000;
     public const ulong DexLimitOrder = 60_000;
     public const ulong DexCancelOrder = 40_000;
+    public const ulong DexTransferLp = 40_000;
+    public const ulong DexApproveLp = 30_000;
 
     // System
     public const ulong Balance = 400;

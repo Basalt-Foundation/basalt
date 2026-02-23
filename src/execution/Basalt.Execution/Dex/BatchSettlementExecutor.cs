@@ -1,6 +1,7 @@
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution.Dex.Math;
+using Basalt.Execution.VM;
 using Basalt.Storage;
 
 namespace Basalt.Execution.Dex;
@@ -35,7 +36,8 @@ public static class BatchSettlementExecutor
         IStateDatabase stateDb,
         DexState dexState,
         BlockHeader blockHeader,
-        Dictionary<Hash256, Transaction> intentTxMap)
+        Dictionary<Hash256, Transaction> intentTxMap,
+        IContractRuntime? runtime = null)
     {
         var receipts = new List<TransactionReceipt>();
 
@@ -59,10 +61,10 @@ public static class BatchSettlementExecutor
                     if (intent == null) continue;
 
                     // Debit input tokens from sender
-                    DexEngine.TransferSingleTokenIn(stateDb, fill.Participant, intent.Value.TokenIn, fill.AmountIn);
+                    DexEngine.TransferSingleTokenIn(stateDb, fill.Participant, intent.Value.TokenIn, fill.AmountIn, runtime);
 
                     // Credit output tokens to sender
-                    DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, intent.Value.TokenOut, fill.AmountOut);
+                    DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, intent.Value.TokenOut, fill.AmountOut, runtime);
 
                     // Generate receipt
                     var logs = new List<EventLog>
@@ -93,7 +95,7 @@ public static class BatchSettlementExecutor
                 // Credit the output tokens to the order owner
                 var m = meta.Value;
                 var outputToken = fill.AmountOut > UInt256.Zero ? m.Token0 : m.Token1;
-                DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut);
+                DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
             }
         }
 

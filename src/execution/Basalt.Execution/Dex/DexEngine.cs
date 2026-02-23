@@ -1,6 +1,8 @@
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution.Dex.Math;
+using Basalt.Execution.VM;
+using Basalt.Sdk.Contracts;
 using Basalt.Storage;
 
 namespace Basalt.Execution.Dex;
@@ -11,7 +13,8 @@ namespace Basalt.Execution.Dex;
 /// dispatch overhead, no reentrancy risks. The chain IS the exchange.
 ///
 /// For native BST token pairs, balance transfers happen via direct account state modification.
-/// For BST-20 token pairs, the engine delegates to the contract runtime.
+/// For BST-20 token pairs, the engine delegates to <see cref="IContractRuntime"/> for
+/// contract-level Transfer calls.
 ///
 /// This engine handles:
 /// <list type="bullet">
@@ -27,14 +30,23 @@ namespace Basalt.Execution.Dex;
 public sealed class DexEngine
 {
     private readonly DexState _state;
+    private readonly IContractRuntime? _runtime;
 
     /// <summary>
     /// Creates a new DEX engine backed by the given state.
     /// </summary>
     /// <param name="state">The DEX state reader/writer.</param>
-    public DexEngine(DexState state)
+    public DexEngine(DexState state) : this(state, null) { }
+
+    /// <summary>
+    /// Creates a new DEX engine backed by the given state, with optional BST-20 contract runtime.
+    /// </summary>
+    /// <param name="state">The DEX state reader/writer.</param>
+    /// <param name="runtime">Contract runtime for BST-20 token transfers. Null for native-only pools.</param>
+    public DexEngine(DexState state, IContractRuntime? runtime)
     {
         _state = state;
+        _runtime = runtime;
     }
 
     /// <summary>
@@ -146,7 +158,7 @@ public sealed class DexEngine
             return DexResult.Error(BasaltErrorCode.DexInsufficientLiquidity, "Zero LP shares minted");
 
         // Transfer tokens from sender to DEX
-        var transferResult = TransferTokensIn(stateDb, sender, meta.Value.Token0, meta.Value.Token1, amount0, amount1);
+        var transferResult = TransferTokensIn(stateDb, sender, meta.Value.Token0, meta.Value.Token1, amount0, amount1, _runtime);
         if (!transferResult.Success)
             return transferResult;
 
@@ -222,7 +234,7 @@ public sealed class DexEngine
         _state.SetPoolReserves(poolId, res);
 
         // Transfer tokens from DEX to sender
-        TransferTokensOut(stateDb, sender, meta.Value.Token0, meta.Value.Token1, amount0, amount1);
+        TransferTokensOut(stateDb, sender, meta.Value.Token0, meta.Value.Token1, amount0, amount1, _runtime);
 
         var logs = new List<EventLog>
         {
@@ -277,11 +289,11 @@ public sealed class DexEngine
             return DexResult.Error(BasaltErrorCode.DexSlippageExceeded, "Insufficient output amount");
 
         // Transfer input from sender to DEX
-        TransferSingleTokenIn(stateDb, sender, tokenIn, amountIn);
+        TransferSingleTokenIn(stateDb, sender, tokenIn, amountIn, _runtime);
 
         // Transfer output from DEX to sender
         var tokenOut = isToken0In ? m.Token1 : m.Token0;
-        TransferSingleTokenOut(stateDb, sender, tokenOut, amountOut);
+        TransferSingleTokenOut(stateDb, sender, tokenOut, amountOut, _runtime);
 
         // Update reserves
         if (isToken0In)
@@ -333,7 +345,7 @@ public sealed class DexEngine
 
         // Escrow input tokens: buy orders escrow token1, sell orders escrow token0
         var escrowToken = isBuy ? meta.Value.Token1 : meta.Value.Token0;
-        TransferSingleTokenIn(stateDb, sender, escrowToken, amount);
+        TransferSingleTokenIn(stateDb, sender, escrowToken, amount, _runtime);
 
         var orderId = _state.PlaceOrder(sender, poolId, price, amount, isBuy, expiryBlock);
 
@@ -368,7 +380,7 @@ public sealed class DexEngine
 
         // Return escrowed tokens
         var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
-        TransferSingleTokenOut(stateDb, sender, escrowToken, order.Value.Amount);
+        TransferSingleTokenOut(stateDb, sender, escrowToken, order.Value.Amount, _runtime);
 
         _state.DeleteOrder(orderId);
 
@@ -378,6 +390,96 @@ public sealed class DexEngine
         };
 
         return DexResult.OrderCanceled(orderId, logs);
+    }
+
+    // ────────── LP Token Operations ──────────
+
+    /// <summary>
+    /// Transfer LP tokens from sender to a recipient.
+    /// </summary>
+    public DexResult TransferLp(Address sender, ulong poolId, Address recipient, UInt256 amount)
+    {
+        if (amount.IsZero)
+            return DexResult.Error(BasaltErrorCode.DexInvalidAmount, "Transfer amount is zero");
+
+        if (sender == recipient)
+            return DexResult.Error(BasaltErrorCode.DexInvalidPair, "Cannot transfer to self");
+
+        var meta = _state.GetPoolMetadata(poolId);
+        if (meta == null)
+            return DexResult.Error(BasaltErrorCode.DexPoolNotFound, "Pool does not exist");
+
+        var balance = _state.GetLpBalance(poolId, sender);
+        if (balance < amount)
+            return DexResult.Error(BasaltErrorCode.DexInsufficientLpBalance, "Insufficient LP balance");
+
+        _state.SetLpBalance(poolId, sender, balance - amount);
+        var recipientBalance = _state.GetLpBalance(poolId, recipient);
+        _state.SetLpBalance(poolId, recipient, UInt256.CheckedAdd(recipientBalance, amount));
+
+        var logs = new List<EventLog>
+        {
+            MakeEventLog("LpTransfer", poolId, sender, recipient, amount),
+        };
+
+        return DexResult.PoolCreated(poolId, logs); // success with logs
+    }
+
+    /// <summary>
+    /// Approve a spender to transfer LP tokens on behalf of the owner.
+    /// </summary>
+    public DexResult ApproveLp(Address owner, ulong poolId, Address spender, UInt256 amount)
+    {
+        var meta = _state.GetPoolMetadata(poolId);
+        if (meta == null)
+            return DexResult.Error(BasaltErrorCode.DexPoolNotFound, "Pool does not exist");
+
+        _state.SetLpAllowance(poolId, owner, spender, amount);
+
+        var logs = new List<EventLog>
+        {
+            MakeEventLog("LpApproval", poolId, owner, spender, amount),
+        };
+
+        return DexResult.PoolCreated(poolId, logs); // success with logs
+    }
+
+    /// <summary>
+    /// Transfer LP tokens from an owner to a recipient, using the spender's allowance.
+    /// </summary>
+    public DexResult TransferLpFrom(Address spender, Address owner, ulong poolId, Address recipient, UInt256 amount)
+    {
+        if (amount.IsZero)
+            return DexResult.Error(BasaltErrorCode.DexInvalidAmount, "Transfer amount is zero");
+
+        var meta = _state.GetPoolMetadata(poolId);
+        if (meta == null)
+            return DexResult.Error(BasaltErrorCode.DexPoolNotFound, "Pool does not exist");
+
+        // Check allowance
+        var allowance = _state.GetLpAllowance(poolId, owner, spender);
+        if (allowance < amount)
+            return DexResult.Error(BasaltErrorCode.DexInsufficientLpAllowance, "Insufficient LP allowance");
+
+        // Check balance
+        var balance = _state.GetLpBalance(poolId, owner);
+        if (balance < amount)
+            return DexResult.Error(BasaltErrorCode.DexInsufficientLpBalance, "Insufficient LP balance");
+
+        // Update allowance
+        _state.SetLpAllowance(poolId, owner, spender, allowance - amount);
+
+        // Transfer
+        _state.SetLpBalance(poolId, owner, balance - amount);
+        var recipientBalance = _state.GetLpBalance(poolId, recipient);
+        _state.SetLpBalance(poolId, recipient, UInt256.CheckedAdd(recipientBalance, amount));
+
+        var logs = new List<EventLog>
+        {
+            MakeEventLog("LpTransfer", poolId, owner, recipient, amount),
+        };
+
+        return DexResult.PoolCreated(poolId, logs); // success with logs
     }
 
     // ────────── Token Transfers ──────────
@@ -390,20 +492,35 @@ public sealed class DexEngine
     private static DexResult TransferTokensIn(
         IStateDatabase stateDb, Address sender,
         Address token0, Address token1,
-        UInt256 amount0, UInt256 amount1)
+        UInt256 amount0, UInt256 amount1,
+        IContractRuntime? runtime = null)
     {
         // Debit sender for both tokens
         if (!amount0.IsZero)
         {
-            var result = DebitAccount(stateDb, sender, token0, amount0);
-            if (!result.Success) return result;
-            CreditDexAccount(stateDb, token0, amount0);
+            if (token0 == Address.Zero)
+            {
+                var result = DebitAccount(stateDb, sender, token0, amount0);
+                if (!result.Success) return result;
+                CreditDexAccount(stateDb, token0, amount0);
+            }
+            else if (runtime != null)
+            {
+                ExecuteBst20Transfer(stateDb, runtime, token0, sender, DexState.DexAddress, amount0);
+            }
         }
         if (!amount1.IsZero)
         {
-            var result = DebitAccount(stateDb, sender, token1, amount1);
-            if (!result.Success) return result;
-            CreditDexAccount(stateDb, token1, amount1);
+            if (token1 == Address.Zero)
+            {
+                var result = DebitAccount(stateDb, sender, token1, amount1);
+                if (!result.Success) return result;
+                CreditDexAccount(stateDb, token1, amount1);
+            }
+            else if (runtime != null)
+            {
+                ExecuteBst20Transfer(stateDb, runtime, token1, sender, DexState.DexAddress, amount1);
+            }
         }
         return DexResult.PoolCreated(0); // dummy success
     }
@@ -411,21 +528,36 @@ public sealed class DexEngine
     private static void TransferTokensOut(
         IStateDatabase stateDb, Address recipient,
         Address token0, Address token1,
-        UInt256 amount0, UInt256 amount1)
+        UInt256 amount0, UInt256 amount1,
+        IContractRuntime? runtime = null)
     {
         if (!amount0.IsZero)
         {
-            DebitDexAccount(stateDb, token0, amount0);
-            CreditAccount(stateDb, recipient, token0, amount0);
+            if (token0 == Address.Zero)
+            {
+                DebitDexAccount(stateDb, token0, amount0);
+                CreditAccount(stateDb, recipient, token0, amount0);
+            }
+            else if (runtime != null)
+            {
+                ExecuteBst20Transfer(stateDb, runtime, token0, DexState.DexAddress, recipient, amount0);
+            }
         }
         if (!amount1.IsZero)
         {
-            DebitDexAccount(stateDb, token1, amount1);
-            CreditAccount(stateDb, recipient, token1, amount1);
+            if (token1 == Address.Zero)
+            {
+                DebitDexAccount(stateDb, token1, amount1);
+                CreditAccount(stateDb, recipient, token1, amount1);
+            }
+            else if (runtime != null)
+            {
+                ExecuteBst20Transfer(stateDb, runtime, token1, DexState.DexAddress, recipient, amount1);
+            }
         }
     }
 
-    internal static void TransferSingleTokenIn(IStateDatabase stateDb, Address sender, Address token, UInt256 amount)
+    internal static void TransferSingleTokenIn(IStateDatabase stateDb, Address sender, Address token, UInt256 amount, IContractRuntime? runtime = null)
     {
         if (amount.IsZero) return;
         if (token == Address.Zero)
@@ -442,10 +574,15 @@ public sealed class DexEngine
                 Balance = UInt256.CheckedAdd(dexState.Balance, amount),
             });
         }
-        // BST-20: would call contract runtime TransferFrom here (Phase D)
+        else if (runtime != null)
+        {
+            // BST-20: call token.Transfer(dexAddress, amount) with caller = sender.
+            // The protocol authorizes this transfer because the user signed a DEX transaction.
+            ExecuteBst20Transfer(stateDb, runtime, token, sender, DexState.DexAddress, amount);
+        }
     }
 
-    internal static void TransferSingleTokenOut(IStateDatabase stateDb, Address recipient, Address token, UInt256 amount)
+    internal static void TransferSingleTokenOut(IStateDatabase stateDb, Address recipient, Address token, UInt256 amount, IContractRuntime? runtime = null)
     {
         if (amount.IsZero) return;
         if (token == Address.Zero)
@@ -462,7 +599,63 @@ public sealed class DexEngine
                 Balance = UInt256.CheckedAdd(recipientState.Balance, amount),
             });
         }
-        // BST-20: would call contract runtime Transfer here (Phase D)
+        else if (runtime != null)
+        {
+            // BST-20: call token.Transfer(recipient, amount) with caller = DexAddress.
+            // The DEX system account holds the tokens and authorizes their release.
+            ExecuteBst20Transfer(stateDb, runtime, token, DexState.DexAddress, recipient, amount);
+        }
+    }
+
+    /// <summary>
+    /// Execute a BST-20 contract Transfer(to, amount) call.
+    /// The caller parameter determines which address is the "msg.sender" for the contract call.
+    /// Returns false if no contract code exists at the token address (non-BST-20 token).
+    /// </summary>
+    private static bool ExecuteBst20Transfer(
+        IStateDatabase stateDb, IContractRuntime runtime,
+        Address token, Address caller, Address to, UInt256 amount)
+    {
+        // Load contract code from storage (key 0xFF01)
+        Span<byte> codeKeyBytes = stackalloc byte[32];
+        codeKeyBytes.Clear();
+        codeKeyBytes[0] = 0xFF;
+        codeKeyBytes[1] = 0x01;
+        var codeKey = new Hash256(codeKeyBytes);
+        var code = stateDb.GetStorage(token, codeKey);
+
+        // No contract code at this address — not a BST-20 token.
+        // Fall through silently to maintain backward compatibility with native-like token pairs.
+        if (code == null || code.Length == 0)
+            return false;
+
+        // Build calldata: [4B Transfer selector (FNV-1a)][20B to][32B amount (LE)]
+        var selector = SelectorHelper.ComputeSelectorBytes("Transfer");
+        var callData = new byte[4 + Address.Size + 32];
+        selector.CopyTo(callData, 0);
+        to.WriteTo(callData.AsSpan(4, Address.Size));
+        amount.WriteTo(callData.AsSpan(4 + Address.Size, 32));
+
+        var ctx = new VmExecutionContext
+        {
+            Caller = caller,
+            ContractAddress = token,
+            Value = UInt256.Zero,
+            BlockTimestamp = 0,
+            BlockNumber = 0,
+            BlockProposer = Address.Zero,
+            ChainId = 0,
+            GasMeter = new GasMeter(200_000),
+            StateDb = stateDb,
+            CallDepth = 0,
+        };
+
+        var result = runtime.Execute(code, callData, ctx);
+        if (!result.Success)
+            throw new BasaltException(BasaltErrorCode.DexInsufficientLiquidity,
+                $"BST-20 Transfer failed: {result.ErrorMessage}");
+
+        return true;
     }
 
     private static DexResult DebitAccount(IStateDatabase stateDb, Address addr, Address token, UInt256 amount)

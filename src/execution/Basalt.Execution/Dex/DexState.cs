@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Crypto;
 using Basalt.Storage;
 
 namespace Basalt.Execution.Dex;
@@ -147,6 +148,29 @@ public sealed class DexState
     {
         var key = MakeLpBalanceKey(poolId, owner);
         _stateDb.SetStorage(DexAddress, key, balance.ToArray());
+    }
+
+    // ────────── LP Allowances ──────────
+
+    /// <summary>
+    /// Get the LP token allowance granted by an owner to a spender for a specific pool.
+    /// </summary>
+    public UInt256 GetLpAllowance(ulong poolId, Address owner, Address spender)
+    {
+        var key = MakeLpAllowanceKey(poolId, owner, spender);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 32)
+            return UInt256.Zero;
+        return new UInt256(data);
+    }
+
+    /// <summary>
+    /// Set the LP token allowance granted by an owner to a spender for a specific pool.
+    /// </summary>
+    public void SetLpAllowance(ulong poolId, Address owner, Address spender, UInt256 allowance)
+    {
+        var key = MakeLpAllowanceKey(poolId, owner, spender);
+        _stateDb.SetStorage(DexAddress, key, allowance.ToArray());
     }
 
     // ────────── Order Book ──────────
@@ -339,6 +363,28 @@ public sealed class DexState
         Span<byte> key = stackalloc byte[32];
         key.Clear();
         key[0] = prefix;
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// Construct the storage key for an LP allowance: <c>0x08 + poolId(8B) + BLAKE3(owner ++ spender)[0..23]</c>.
+    /// The 23-byte hash suffix avoids truncating either address while fitting in 32 bytes.
+    /// </summary>
+    public static Hash256 MakeLpAllowanceKey(ulong poolId, Address owner, Address spender)
+    {
+        // Hash owner + spender to get a unique 23-byte suffix
+        Span<byte> input = stackalloc byte[Address.Size * 2];
+        owner.WriteTo(input[..Address.Size]);
+        spender.WriteTo(input[Address.Size..]);
+        var hash = Blake3Hasher.Hash(input);
+        Span<byte> hashBytes = stackalloc byte[Hash256.Size];
+        hash.WriteTo(hashBytes);
+
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x08;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
+        hashBytes[..23].CopyTo(key[9..32]);
         return new Hash256(key);
     }
 

@@ -269,7 +269,7 @@ public sealed class BlockBuilder
                 intentTxMap.TryAdd(tx.Hash, tx);
 
             var batchReceipts = BatchSettlementExecutor.ExecuteSettlement(
-                result, stateDb, dexState, preliminaryHeader, intentTxMap);
+                result, stateDb, dexState, preliminaryHeader, intentTxMap, _executor.ContractRuntime);
 
             // Add batch-settled intents as valid transactions and their receipts
             foreach (var r in batchReceipts)

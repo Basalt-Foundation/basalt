@@ -90,6 +90,12 @@ public sealed class ChainParameters
     /// <summary>Gas cost for canceling a limit order.</summary>
     public ulong DexCancelOrderGas { get; init; } = 40_000;
 
+    /// <summary>Gas cost for LP token transfer.</summary>
+    public ulong DexTransferLpGas { get; init; } = 40_000;
+
+    /// <summary>Gas cost for LP token approval.</summary>
+    public ulong DexApproveLpGas { get; init; } = 30_000;
+
     /// <summary>Maximum number of swap intents per batch auction per block.</summary>
     public uint DexMaxIntentsPerBatch { get; init; } = 500;
 

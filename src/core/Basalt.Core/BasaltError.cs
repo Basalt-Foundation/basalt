@@ -108,6 +108,10 @@ public enum BasaltErrorCode
     DexInvalidData = 10011,
     /// <summary>Limit order has expired.</summary>
     DexOrderExpired = 10012,
+    /// <summary>Insufficient LP token balance for transfer.</summary>
+    DexInsufficientLpBalance = 10013,
+    /// <summary>LP allowance is insufficient for transferFrom operation.</summary>
+    DexInsufficientLpAllowance = 10014,
 
     // Internal errors (9xxx)
     InternalError = 9001,
