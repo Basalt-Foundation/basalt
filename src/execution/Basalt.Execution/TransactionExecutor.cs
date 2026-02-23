@@ -80,6 +80,7 @@ public sealed class TransactionExecutor
             TransactionType.DexMintPosition => ExecuteDexMintPosition(tx, stateDb, blockHeader, txIndex),
             TransactionType.DexBurnPosition => ExecuteDexBurnPosition(tx, stateDb, blockHeader, txIndex),
             TransactionType.DexCollectFees => ExecuteDexCollectFees(tx, stateDb, blockHeader, txIndex),
+            TransactionType.DexEncryptedSwapIntent => ExecuteDexEncryptedSwapIntent(tx, stateDb, blockHeader, txIndex),
             _ => ExecuteStub(tx, stateDb, blockHeader, txIndex, BasaltErrorCode.InvalidTransactionType),
         };
     }
@@ -884,6 +885,53 @@ public sealed class TransactionExecutor
             ErrorCode = BasaltErrorCode.Success,
             PostStateRoot = Hash256.Zero,
             Logs = result.Logs,
+            EffectiveGasPrice = effectiveGasPrice,
+        };
+    }
+
+    private TransactionReceipt ExecuteDexEncryptedSwapIntent(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
+    {
+        // Encrypted swap intents are batch-settled in BlockBuilder Phase B after decryption.
+        // This handler validates the envelope format and charges gas.
+        var gasUsed = _chainParams.DexEncryptedSwapIntentGas;
+        var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
+        var gasFee = effectiveGasPrice * new UInt256(gasUsed);
+
+        var senderState = stateDb.GetAccount(tx.Sender) ?? AccountState.Empty;
+        if (senderState.Balance < gasFee)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.InsufficientBalance, stateDb, effectiveGasPrice);
+        }
+
+        // Validate envelope: [8B epoch][32B nonce][encrypted_payload >= 114B]
+        if (tx.Data.Length < Dex.EncryptedIntent.MinDataLength)
+        {
+            ChargeGasAndIncrementNonce(stateDb, tx.Sender, senderState, gasFee, effectiveGasPrice, blockHeader);
+            return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, BasaltErrorCode.DexInvalidData, stateDb, effectiveGasPrice);
+        }
+
+        senderState = senderState with
+        {
+            Balance = UInt256.CheckedSub(senderState.Balance, gasFee),
+            Nonce = IncrementNonce(senderState.Nonce),
+        };
+        stateDb.SetAccount(tx.Sender, senderState);
+        CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+
+        return new TransactionReceipt
+        {
+            TransactionHash = tx.Hash,
+            BlockHash = blockHeader.Hash,
+            BlockNumber = blockHeader.Number,
+            TransactionIndex = txIndex,
+            From = tx.Sender,
+            To = DexState.DexAddress,
+            GasUsed = gasUsed,
+            Success = true,
+            ErrorCode = BasaltErrorCode.Success,
+            PostStateRoot = Hash256.Zero,
+            Logs = [],
             EffectiveGasPrice = effectiveGasPrice,
         };
     }

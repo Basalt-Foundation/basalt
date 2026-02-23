@@ -77,8 +77,8 @@ public sealed class Mempool
                 return false;
         }
 
-        // Route DexSwapIntent transactions to the separate intent pool
-        if (tx.Type == TransactionType.DexSwapIntent)
+        // Route DexSwapIntent and DexEncryptedSwapIntent transactions to the separate intent pool
+        if (tx.Type == TransactionType.DexSwapIntent || tx.Type == TransactionType.DexEncryptedSwapIntent)
             return AddToDexIntentPool(tx, raiseEvent);
 
         bool added;

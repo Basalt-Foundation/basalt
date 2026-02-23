@@ -120,6 +120,10 @@ public enum BasaltErrorCode
     DexPositionNotFound = 10017,
     /// <summary>Not the owner of the position.</summary>
     DexPositionNotOwner = 10018,
+    /// <summary>Encrypted intent decryption failed (malformed ciphertext or wrong epoch key).</summary>
+    DexDecryptionFailed = 10019,
+    /// <summary>Encrypted intent references an unknown or expired DKG epoch.</summary>
+    DexInvalidEpoch = 10020,
 
     // Internal errors (9xxx)
     InternalError = 9001,

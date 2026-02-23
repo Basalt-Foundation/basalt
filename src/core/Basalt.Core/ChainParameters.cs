@@ -105,6 +105,9 @@ public sealed class ChainParameters
     /// <summary>Gas cost for collecting fees from a concentrated position.</summary>
     public ulong DexCollectFeesGas { get; init; } = 60_000;
 
+    /// <summary>Gas cost for encrypted swap intent (includes decryption overhead).</summary>
+    public ulong DexEncryptedSwapIntentGas { get; init; } = 100_000;
+
     /// <summary>Maximum number of swap intents per batch auction per block.</summary>
     public uint DexMaxIntentsPerBatch { get; init; } = 500;
 

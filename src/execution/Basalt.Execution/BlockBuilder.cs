@@ -16,6 +16,12 @@ public sealed class BlockBuilder
     private readonly TransactionExecutor _executor;
     private readonly ILogger<BlockBuilder>? _logger;
 
+    /// <summary>
+    /// DKG group public key for the current epoch, used to decrypt encrypted swap intents.
+    /// Set by NodeCoordinator after DKG completion.
+    /// </summary>
+    public BlsPublicKey? DkgGroupPublicKey { get; set; }
+
     public BlockBuilder(ChainParameters chainParams, ILogger<BlockBuilder>? logger = null)
         : this(chainParams, new TransactionExecutor(chainParams), logger) { }
 
@@ -206,8 +212,39 @@ public sealed class BlockBuilder
         {
             var dexState = new DexState(stateDb);
 
+            // Decrypt encrypted intents and merge with plaintext intents
+            var allParsedIntents = new List<ParsedIntent>();
+            foreach (var tx in pendingDexIntents)
+            {
+                if (tx.Type == TransactionType.DexEncryptedSwapIntent)
+                {
+                    if (DkgGroupPublicKey == null)
+                    {
+                        _logger?.LogWarning("Skipping encrypted intent {Hash}: no DKG group key available",
+                            tx.Hash.ToHexString()[..18] + "...");
+                        continue;
+                    }
+                    var encrypted = EncryptedIntent.Parse(tx);
+                    if (encrypted == null) continue;
+                    var decrypted = encrypted.Value.Decrypt(DkgGroupPublicKey.Value);
+                    if (decrypted == null)
+                    {
+                        _logger?.LogWarning("Skipping encrypted intent {Hash}: decryption failed",
+                            tx.Hash.ToHexString()[..18] + "...");
+                        continue;
+                    }
+                    allParsedIntents.Add(decrypted.Value);
+                }
+                else
+                {
+                    var intent = ParsedIntent.Parse(tx);
+                    if (intent != null)
+                        allParsedIntents.Add(intent.Value);
+                }
+            }
+
             // Group intents by trading pair
-            var groups = BatchSettlementExecutor.GroupByPair(pendingDexIntents, dexState);
+            var groups = GroupParsedIntentsByPair(allParsedIntents, dexState);
 
             foreach (var ((token0, token1), intents) in groups)
             {
@@ -323,6 +360,26 @@ public sealed class BlockBuilder
             Transactions = validTxs,
             Receipts = receipts,
         };
+    }
+
+    /// <summary>
+    /// Group already-parsed intents by canonical token pair (used when encrypted intents have been decrypted).
+    /// </summary>
+    private static Dictionary<(Address, Address), List<ParsedIntent>> GroupParsedIntentsByPair(
+        List<ParsedIntent> intents, DexState dexState)
+    {
+        var groups = new Dictionary<(Address, Address), List<ParsedIntent>>();
+        foreach (var intent in intents)
+        {
+            var (t0, t1) = DexEngine.SortTokens(intent.TokenIn, intent.TokenOut);
+            if (!groups.TryGetValue((t0, t1), out var list))
+            {
+                list = [];
+                groups[(t0, t1)] = list;
+            }
+            list.Add(intent);
+        }
+        return groups;
     }
 
     /// <summary>

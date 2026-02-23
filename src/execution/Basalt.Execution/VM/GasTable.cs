@@ -58,6 +58,7 @@ public static class GasTable
     public const ulong DexMintPosition = 120_000;
     public const ulong DexBurnPosition = 100_000;
     public const ulong DexCollectFees = 60_000;
+    public const ulong DexEncryptedSwapIntent = 100_000;
 
     // System
     public const ulong Balance = 400;

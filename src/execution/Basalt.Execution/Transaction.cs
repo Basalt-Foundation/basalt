@@ -44,6 +44,11 @@ public enum TransactionType : byte
     DexBurnPosition = 16,
     /// <summary>Collect accumulated fees from a concentrated position. Data: [8B positionId]</summary>
     DexCollectFees = 17,
+
+    // ── Encrypted Intents ──
+
+    /// <summary>Encrypted swap intent for threshold-decrypted batch settlement. Data: [8B epoch][32B nonce][encrypted_payload]</summary>
+    DexEncryptedSwapIntent = 18,
 }
 
 /// <summary>
