@@ -96,6 +96,15 @@ public sealed class ChainParameters
     /// <summary>Gas cost for LP token approval.</summary>
     public ulong DexApproveLpGas { get; init; } = 30_000;
 
+    /// <summary>Gas cost for minting a concentrated liquidity position.</summary>
+    public ulong DexMintPositionGas { get; init; } = 120_000;
+
+    /// <summary>Gas cost for burning a concentrated liquidity position.</summary>
+    public ulong DexBurnPositionGas { get; init; } = 100_000;
+
+    /// <summary>Gas cost for collecting fees from a concentrated position.</summary>
+    public ulong DexCollectFeesGas { get; init; } = 60_000;
+
     /// <summary>Maximum number of swap intents per batch auction per block.</summary>
     public uint DexMaxIntentsPerBatch { get; init; } = 500;
 

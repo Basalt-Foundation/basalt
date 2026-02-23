@@ -35,6 +35,15 @@ public enum TransactionType : byte
     DexTransferLp = 13,
     /// <summary>Approve a spender for LP tokens. Data: [8B poolId][20B spender][32B amount]</summary>
     DexApproveLp = 14,
+
+    // ── Concentrated Liquidity ──
+
+    /// <summary>Mint a concentrated liquidity position. Data: [8B poolId][4B tickLower][4B tickUpper][32B amount0Desired][32B amount1Desired]</summary>
+    DexMintPosition = 15,
+    /// <summary>Burn (partially or fully) a concentrated liquidity position. Data: [8B positionId][32B liquidityAmount]</summary>
+    DexBurnPosition = 16,
+    /// <summary>Collect accumulated fees from a concentrated position. Data: [8B positionId]</summary>
+    DexCollectFees = 17,
 }
 
 /// <summary>

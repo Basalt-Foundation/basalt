@@ -112,6 +112,14 @@ public enum BasaltErrorCode
     DexInsufficientLpBalance = 10013,
     /// <summary>LP allowance is insufficient for transferFrom operation.</summary>
     DexInsufficientLpAllowance = 10014,
+    /// <summary>Tick is out of the valid range.</summary>
+    DexInvalidTick = 10015,
+    /// <summary>Tick range is invalid (lower >= upper or not aligned to tick spacing).</summary>
+    DexInvalidTickRange = 10016,
+    /// <summary>Position does not exist.</summary>
+    DexPositionNotFound = 10017,
+    /// <summary>Not the owner of the position.</summary>
+    DexPositionNotOwner = 10018,
 
     // Internal errors (9xxx)
     InternalError = 9001,

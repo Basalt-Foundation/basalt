@@ -20,6 +20,10 @@ namespace Basalt.Execution.Dex;
 /// <item><term>0x06</term><description>Global pool count (ulong)</description></item>
 /// <item><term>0x07</term><description>Global order count (ulong)</description></item>
 /// <item><term>0x09 + token0(20B) + token1(10B) + feeBps(2B)</term><description>Pool lookup by pair</description></item>
+/// <item><term>0x0A + poolId(8B) + tick(4B signed BE)</term><description>Tick info (concentrated liquidity)</description></item>
+/// <item><term>0x0B + positionId(8B)</term><description>Concentrated liquidity position</description></item>
+/// <item><term>0x0C + poolId(8B)</term><description>Concentrated pool state (sqrtPrice, currentTick, totalLiquidity)</description></item>
+/// <item><term>0x0D</term><description>Global position count (ulong)</description></item>
 /// </list>
 /// </summary>
 public sealed class DexState
@@ -270,6 +274,83 @@ public sealed class DexState
         _stateDb.SetStorage(DexAddress, MakeTwapKey(poolId), acc.Serialize());
     }
 
+    // ────────── Concentrated Liquidity (Phase E2) ──────────
+
+    /// <summary>Get the tick info for a specific tick in a pool. Returns default if not initialized.</summary>
+    public TickInfo GetTickInfo(ulong poolId, int tick)
+    {
+        var key = MakeTickKey(poolId, tick);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < TickInfo.SerializedSize) return default;
+        return TickInfo.Deserialize(data);
+    }
+
+    /// <summary>Set the tick info for a specific tick in a pool.</summary>
+    public void SetTickInfo(ulong poolId, int tick, TickInfo info)
+    {
+        _stateDb.SetStorage(DexAddress, MakeTickKey(poolId, tick), info.Serialize());
+    }
+
+    /// <summary>Delete tick info when a tick is fully de-initialized.</summary>
+    public void DeleteTickInfo(ulong poolId, int tick)
+    {
+        _stateDb.DeleteStorage(DexAddress, MakeTickKey(poolId, tick));
+    }
+
+    /// <summary>Get a concentrated liquidity position by its ID. Returns null if not found.</summary>
+    public Position? GetPosition(ulong positionId)
+    {
+        var key = MakePositionKey(positionId);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < Position.SerializedSize) return null;
+        return Position.Deserialize(data);
+    }
+
+    /// <summary>Set a concentrated liquidity position.</summary>
+    public void SetPosition(ulong positionId, Position position)
+    {
+        _stateDb.SetStorage(DexAddress, MakePositionKey(positionId), position.Serialize());
+    }
+
+    /// <summary>Delete a position (fully burned).</summary>
+    public void DeletePosition(ulong positionId)
+    {
+        _stateDb.DeleteStorage(DexAddress, MakePositionKey(positionId));
+    }
+
+    /// <summary>Get the concentrated pool state. Returns null if not a concentrated pool.</summary>
+    public ConcentratedPoolState? GetConcentratedPoolState(ulong poolId)
+    {
+        var key = MakeConcentratedPoolKey(poolId);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < ConcentratedPoolState.SerializedSize) return null;
+        return ConcentratedPoolState.Deserialize(data);
+    }
+
+    /// <summary>Set the concentrated pool state.</summary>
+    public void SetConcentratedPoolState(ulong poolId, ConcentratedPoolState state)
+    {
+        _stateDb.SetStorage(DexAddress, MakeConcentratedPoolKey(poolId), state.Serialize());
+    }
+
+    /// <summary>Get the global position counter.</summary>
+    public ulong GetPositionCount()
+    {
+        var key = MakeGlobalKey(0x0D);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 8) return 0;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    /// <summary>Set the global position counter.</summary>
+    public void SetPositionCount(ulong count)
+    {
+        var key = MakeGlobalKey(0x0D);
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, count);
+        _stateDb.SetStorage(DexAddress, key, data);
+    }
+
     // ────────── Globals ──────────
 
     /// <summary>Get the total number of pools created.</summary>
@@ -385,6 +466,43 @@ public sealed class DexState
         key[0] = 0x08;
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
         hashBytes[..23].CopyTo(key[9..32]);
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// Construct the storage key for tick info: <c>0x0A + poolId(8B) + tick(4B signed BE) + 0x00(19B)</c>.
+    /// </summary>
+    public static Hash256 MakeTickKey(ulong poolId, int tick)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x0A;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(key[9..13], tick);
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// Construct the storage key for a position: <c>0x0B + positionId(8B) + 0x00(23B)</c>.
+    /// </summary>
+    public static Hash256 MakePositionKey(ulong positionId)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x0B;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], positionId);
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// Construct the storage key for concentrated pool state: <c>0x0C + poolId(8B) + 0x00(23B)</c>.
+    /// </summary>
+    public static Hash256 MakeConcentratedPoolKey(ulong poolId)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x0C;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
         return new Hash256(key);
     }
 

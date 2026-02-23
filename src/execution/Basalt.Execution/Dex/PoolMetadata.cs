@@ -216,3 +216,142 @@ public struct TwapAccumulator
         };
     }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Concentrated Liquidity Structures (Phase E2)
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Tick-level liquidity info for concentrated liquidity pools.
+/// Each initialized tick stores the net liquidity change that occurs when the tick is crossed.
+/// Stored at key prefix <c>0x0A</c> in the DEX state address.
+/// </summary>
+public struct TickInfo
+{
+    /// <summary>
+    /// Net liquidity change when crossing this tick left-to-right.
+    /// Positive = liquidity added (lower bound of a position).
+    /// Negative = liquidity removed (upper bound of a position).
+    /// Stored as a signed 64-bit value.
+    /// </summary>
+    public long LiquidityNet { get; set; }
+
+    /// <summary>
+    /// Total liquidity referencing this tick (sum of all positions using it as a bound).
+    /// When this reaches zero, the tick can be de-initialized.
+    /// </summary>
+    public UInt256 LiquidityGross { get; set; }
+
+    /// <summary>Serialized size: 8 (liquidityNet) + 32 (liquidityGross) = 40 bytes.</summary>
+    public const int SerializedSize = 8 + 32;
+
+    /// <summary>Serialize to byte array.</summary>
+    public readonly byte[] Serialize()
+    {
+        var buffer = new byte[SerializedSize];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(buffer.AsSpan(0, 8), LiquidityNet);
+        LiquidityGross.WriteTo(buffer.AsSpan(8, 32));
+        return buffer;
+    }
+
+    /// <summary>Deserialize from byte span.</summary>
+    public static TickInfo Deserialize(ReadOnlySpan<byte> data)
+    {
+        return new TickInfo
+        {
+            LiquidityNet = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(data[..8]),
+            LiquidityGross = new UInt256(data[8..40]),
+        };
+    }
+}
+
+/// <summary>
+/// A concentrated liquidity position — liquidity deployed within a specific tick range.
+/// Stored at key prefix <c>0x0B</c> in the DEX state address.
+/// </summary>
+public struct Position
+{
+    /// <summary>Address of the position owner.</summary>
+    public Address Owner { get; set; }
+
+    /// <summary>Pool this position belongs to.</summary>
+    public ulong PoolId { get; set; }
+
+    /// <summary>Lower tick boundary (inclusive).</summary>
+    public int TickLower { get; set; }
+
+    /// <summary>Upper tick boundary (exclusive).</summary>
+    public int TickUpper { get; set; }
+
+    /// <summary>Amount of liquidity in this position.</summary>
+    public UInt256 Liquidity { get; set; }
+
+    /// <summary>Serialized size: 20 + 8 + 4 + 4 + 32 = 68 bytes.</summary>
+    public const int SerializedSize = Address.Size + 8 + 4 + 4 + 32;
+
+    /// <summary>Serialize to byte array.</summary>
+    public readonly byte[] Serialize()
+    {
+        var buffer = new byte[SerializedSize];
+        Owner.WriteTo(buffer.AsSpan(0, Address.Size));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(buffer.AsSpan(20, 8), PoolId);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(28, 4), TickLower);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(32, 4), TickUpper);
+        Liquidity.WriteTo(buffer.AsSpan(36, 32));
+        return buffer;
+    }
+
+    /// <summary>Deserialize from byte span.</summary>
+    public static Position Deserialize(ReadOnlySpan<byte> data)
+    {
+        return new Position
+        {
+            Owner = new Address(data[..Address.Size]),
+            PoolId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data[20..28]),
+            TickLower = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data[28..32]),
+            TickUpper = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data[32..36]),
+            Liquidity = new UInt256(data[36..68]),
+        };
+    }
+}
+
+/// <summary>
+/// Global state for a concentrated liquidity pool.
+/// Stored at key prefix <c>0x0C</c> in the DEX state address.
+/// Tracks the current sqrt price, tick, and total active liquidity.
+/// </summary>
+public struct ConcentratedPoolState
+{
+    /// <summary>Current sqrt price as Q64.96 fixed-point.</summary>
+    public UInt256 SqrtPriceX96 { get; set; }
+
+    /// <summary>Current tick (derived from SqrtPriceX96).</summary>
+    public int CurrentTick { get; set; }
+
+    /// <summary>Total liquidity available at the current tick.</summary>
+    public UInt256 TotalLiquidity { get; set; }
+
+    /// <summary>Serialized size: 32 + 4 + 32 = 68 bytes.</summary>
+    public const int SerializedSize = 32 + 4 + 32;
+
+    /// <summary>Serialize to byte array.</summary>
+    public readonly byte[] Serialize()
+    {
+        var buffer = new byte[SerializedSize];
+        SqrtPriceX96.WriteTo(buffer.AsSpan(0, 32));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(32, 4), CurrentTick);
+        TotalLiquidity.WriteTo(buffer.AsSpan(36, 32));
+        return buffer;
+    }
+
+    /// <summary>Deserialize from byte span.</summary>
+    public static ConcentratedPoolState Deserialize(ReadOnlySpan<byte> data)
+    {
+        return new ConcentratedPoolState
+        {
+            SqrtPriceX96 = new UInt256(data[..32]),
+            CurrentTick = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data[32..36]),
+            TotalLiquidity = new UInt256(data[36..68]),
+        };
+    }
+}

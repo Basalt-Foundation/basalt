@@ -75,6 +75,10 @@ public readonly struct DexResult
     public static DexResult OrderCanceled(ulong orderId, List<EventLog>? logs = null) =>
         new(true, BasaltErrorCode.Success, null, 0, UInt256.Zero, UInt256.Zero, UInt256.Zero, orderId, logs);
 
+    /// <summary>Create a successful result for a concentrated liquidity operation with both amounts.</summary>
+    public static DexResult ConcentratedResult(ulong poolId, UInt256 amount0, UInt256 amount1, List<EventLog>? logs = null) =>
+        new(true, BasaltErrorCode.Success, null, poolId, amount0, amount1, UInt256.Zero, 0, logs);
+
     /// <summary>Create a failed result with the specified error.</summary>
     public static DexResult Error(BasaltErrorCode code, string message) =>
         new(false, code, message, 0, UInt256.Zero, UInt256.Zero, UInt256.Zero, 0, null);
