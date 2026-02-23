@@ -251,9 +251,8 @@ public sealed class TcpTransport : IAsyncDisposable
         // NET-M01: Set PeerId before TryAdd so the read loop uses the correct identity
         connection.PeerId = realId;
 
-        // Transfer IP mapping from temp ID to real ID
-        if (_peerIpMap.TryRemove(tempId, out var ip))
-            _peerIpMap[realId] = ip;
+        // Remove IP mapping from temp ID (we'll re-assign it below only on success)
+        _peerIpMap.TryRemove(tempId, out var ip);
 
         if (!_connections.TryAdd(realId, connection))
         {
@@ -261,13 +260,17 @@ public sealed class TcpTransport : IAsyncDisposable
             // (likely from simultaneous inbound+outbound). Dispose the duplicate silently.
             _logger.LogDebug(
                 "Duplicate connection to {RealId} detected; keeping existing connection", realId);
-            // Decrement IP count since we're dropping this connection
+            // Decrement IP count for the connection we're disposing.
+            // Do NOT touch _peerIpMap[realId] — that mapping belongs to the kept connection.
             if (ip != null)
                 _connectionsPerIp.AddOrUpdate(ip, 0, (_, count) => Math.Max(0, count - 1));
-            _peerIpMap.TryRemove(realId, out _);
             connection.Dispose();
             return false;
         }
+
+        // Transfer IP mapping to the real ID only after successful add
+        if (ip != null)
+            _peerIpMap[realId] = ip;
 
         _logger.LogInformation("Peer ID updated from {TempId} to {RealId}", tempId, realId);
         return true;
@@ -412,6 +415,8 @@ public sealed class TcpTransport : IAsyncDisposable
             {
                 _logger.LogWarning(
                     "Duplicate temporary peer ID {PeerId} from {Endpoint}; rejecting", tempId, endpoint);
+                // Decrement per-IP counter since we're not keeping this connection
+                _connectionsPerIp.AddOrUpdate(remoteIp, 0, (_, count) => Math.Max(0, count - 1));
                 connection.Dispose();
                 continue;
             }
