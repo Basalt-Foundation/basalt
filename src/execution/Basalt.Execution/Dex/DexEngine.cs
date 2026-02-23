@@ -515,7 +515,7 @@ public sealed class DexEngine
     /// <summary>
     /// Sort two token addresses into canonical order (lower address first).
     /// </summary>
-    internal static (Address token0, Address token1) SortTokens(Address a, Address b)
+    public static (Address token0, Address token1) SortTokens(Address a, Address b)
     {
         return a.CompareTo(b) < 0 ? (a, b) : (b, a);
     }

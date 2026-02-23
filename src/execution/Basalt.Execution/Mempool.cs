@@ -20,6 +20,14 @@ public sealed class Mempool
     private const int MaxTransactionsPerSender = 64;
 
     /// <summary>
+    /// Separate queue for DexSwapIntent transactions.
+    /// Swap intents are batch-settled by the BlockBuilder rather than executed individually,
+    /// so they need separate tracking for efficient retrieval during block building.
+    /// </summary>
+    private readonly Dictionary<Hash256, Transaction> _dexIntentTransactions = new();
+    private readonly SortedSet<MempoolEntry> _dexIntentEntries = new(MempoolEntryComparer.Instance);
+
+    /// <summary>
     /// Optional transaction validator for pre-admission validation (M-2).
     /// </summary>
     private readonly TransactionValidator? _validator;
@@ -48,7 +56,7 @@ public sealed class Mempool
 
     public int Count
     {
-        get { lock (_lock) return _transactions.Count; }
+        get { lock (_lock) return _transactions.Count + _dexIntentTransactions.Count; }
     }
 
     /// <summary>
@@ -68,6 +76,10 @@ public sealed class Mempool
             if (!validation.IsSuccess)
                 return false;
         }
+
+        // Route DexSwapIntent transactions to the separate intent pool
+        if (tx.Type == TransactionType.DexSwapIntent)
+            return AddToDexIntentPool(tx, raiseEvent);
 
         bool added;
         lock (_lock)
@@ -237,8 +249,80 @@ public sealed class Mempool
                     _orderedEntries.Remove(new MempoolEntry(existing));
                     DecrementSenderCount(existing.Sender);
                 }
+                else if (_dexIntentTransactions.Remove(tx.Hash, out var intentTx))
+                {
+                    _dexIntentEntries.Remove(new MempoolEntry(intentTx));
+                    DecrementSenderCount(intentTx.Sender);
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// Get pending DEX swap intents for batch auction settlement.
+    /// Returns intents ordered by fee priority. Within the batch auction, order doesn't affect
+    /// the clearing price (uniform pricing), but fee priority determines block inclusion.
+    /// </summary>
+    /// <param name="maxCount">Maximum number of intents to return.</param>
+    /// <param name="stateDb">Optional state database for nonce validation.</param>
+    /// <returns>List of swap intent transactions.</returns>
+    public List<Transaction> GetPendingDexIntents(int maxCount, IStateDatabase? stateDb = null)
+    {
+        lock (_lock)
+        {
+            var result = new List<Transaction>();
+            foreach (var entry in _dexIntentEntries)
+            {
+                if (result.Count >= maxCount) break;
+
+                // Optional nonce check
+                if (stateDb != null)
+                {
+                    var account = stateDb.GetAccount(entry.Transaction.Sender);
+                    var expectedNonce = account?.Nonce ?? 0;
+                    if (entry.Transaction.Nonce != expectedNonce)
+                        continue;
+                }
+
+                result.Add(entry.Transaction);
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Get the number of pending DEX swap intents.
+    /// </summary>
+    public int DexIntentCount
+    {
+        get { lock (_lock) return _dexIntentTransactions.Count; }
+    }
+
+    private bool AddToDexIntentPool(Transaction tx, bool raiseEvent)
+    {
+        bool added;
+        lock (_lock)
+        {
+            if (_dexIntentTransactions.ContainsKey(tx.Hash))
+                return false;
+            if (_transactions.ContainsKey(tx.Hash))
+                return false;
+
+            // M-1: Per-sender limit applies across both pools
+            _perSenderCount.TryGetValue(tx.Sender, out var senderCount);
+            if (senderCount >= MaxTransactionsPerSender)
+                return false;
+
+            _dexIntentTransactions[tx.Hash] = tx;
+            _dexIntentEntries.Add(new MempoolEntry(tx));
+            _perSenderCount[tx.Sender] = senderCount + 1;
+            added = true;
+        }
+
+        if (added && raiseEvent)
+            OnTransactionAdded?.Invoke(tx);
+
+        return added;
     }
 
     /// <summary>
@@ -296,13 +380,19 @@ public sealed class Mempool
     public bool Contains(Hash256 txHash)
     {
         lock (_lock)
-            return _transactions.ContainsKey(txHash);
+            return _transactions.ContainsKey(txHash) || _dexIntentTransactions.ContainsKey(txHash);
     }
 
     public Transaction? Get(Hash256 txHash)
     {
         lock (_lock)
-            return _transactions.TryGetValue(txHash, out var tx) ? tx : null;
+        {
+            if (_transactions.TryGetValue(txHash, out var tx))
+                return tx;
+            if (_dexIntentTransactions.TryGetValue(txHash, out var intentTx))
+                return intentTx;
+            return null;
+        }
     }
 }
 

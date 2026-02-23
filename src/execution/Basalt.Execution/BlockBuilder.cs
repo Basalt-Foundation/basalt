@@ -1,5 +1,6 @@
 using Basalt.Core;
 using Basalt.Crypto;
+using Basalt.Execution.Dex;
 using Basalt.Storage;
 using Microsoft.Extensions.Logging;
 
@@ -115,6 +116,196 @@ public sealed class BlockBuilder
         // MED-02: Update receipt BlockHash to match the final header.
         // Receipts were created with the preliminary header (zero roots),
         // so their BlockHash was incorrect.
+        foreach (var receipt in receipts)
+            receipt.BlockHash = header.Hash;
+
+        return new Block
+        {
+            Header = header,
+            Transactions = validTxs,
+            Receipts = receipts,
+        };
+    }
+
+    /// <summary>
+    /// Build a block with three-phase DEX pipeline:
+    /// <list type="number">
+    /// <item><description>Phase A: Execute all non-intent transactions (transfers, staking, liquidity, orders)</description></item>
+    /// <item><description>Phase B: Batch auction — group DexSwapIntent txs by pair, compute uniform clearing prices</description></item>
+    /// <item><description>Phase C: Settlement — apply fills at clearing price, update reserves, emit receipts</description></item>
+    /// </list>
+    /// </summary>
+    /// <param name="pendingTransactions">Non-intent transactions from the mempool.</param>
+    /// <param name="pendingDexIntents">DexSwapIntent transactions from the intent pool.</param>
+    /// <param name="stateDb">The canonical state database.</param>
+    /// <param name="parentHeader">The parent block header.</param>
+    /// <param name="proposer">The block proposer address.</param>
+    /// <returns>The built block.</returns>
+    public Block BuildBlockWithDex(
+        IReadOnlyList<Transaction> pendingTransactions,
+        IReadOnlyList<Transaction> pendingDexIntents,
+        IStateDatabase stateDb,
+        BlockHeader parentHeader,
+        Address proposer)
+    {
+        var validTxs = new List<Transaction>();
+        var receipts = new List<TransactionReceipt>();
+        ulong totalGasUsed = 0;
+
+        var baseFee = BaseFeeCalculator.Calculate(
+            parentHeader.BaseFee, parentHeader.GasUsed, parentHeader.GasLimit, _chainParams);
+
+        var blockNumber = parentHeader.Number + 1;
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var preliminaryHeader = new BlockHeader
+        {
+            Number = blockNumber,
+            ParentHash = parentHeader.Hash,
+            StateRoot = Hash256.Zero,
+            TransactionsRoot = Hash256.Zero,
+            ReceiptsRoot = Hash256.Zero,
+            Timestamp = timestamp,
+            Proposer = proposer,
+            ChainId = _chainParams.ChainId,
+            GasUsed = 0,
+            GasLimit = _chainParams.BlockGasLimit,
+            BaseFee = baseFee,
+        };
+
+        // ═══ Phase A: Non-DEX transactions + immediate DEX ops ═══
+        // DexAddLiquidity, DexRemoveLiquidity, DexLimitOrder, DexCancelOrder execute immediately.
+        // DexCreatePool also executes immediately.
+        foreach (var tx in pendingTransactions)
+        {
+            if (validTxs.Count >= (int)_chainParams.MaxTransactionsPerBlock)
+                break;
+
+            if (totalGasUsed + tx.GasLimit > _chainParams.BlockGasLimit)
+                continue;
+
+            var validation = _validator.Validate(tx, stateDb, baseFee);
+            if (!validation.IsSuccess)
+            {
+                _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
+                    tx.Hash.ToHexString()[..18] + "...", validation.Message);
+                continue;
+            }
+
+            var receipt = _executor.Execute(tx, stateDb, preliminaryHeader, validTxs.Count);
+            validTxs.Add(tx);
+            receipts.Add(receipt);
+            totalGasUsed += receipt.GasUsed;
+        }
+
+        // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
+        var batchResults = new List<BatchResult>();
+        var processedIntents = new List<Transaction>();
+
+        if (pendingDexIntents.Count > 0)
+        {
+            var dexState = new DexState(stateDb);
+
+            // Group intents by trading pair
+            var groups = BatchSettlementExecutor.GroupByPair(pendingDexIntents, dexState);
+
+            foreach (var ((token0, token1), intents) in groups)
+            {
+                // Find pool for this pair
+                ulong? poolId = null;
+                uint poolFeeBps = 30;
+                foreach (var tier in Dex.Math.DexLibrary.AllowedFeeTiers)
+                {
+                    poolId = dexState.LookupPool(token0, token1, tier);
+                    if (poolId != null)
+                    {
+                        poolFeeBps = tier;
+                        break;
+                    }
+                }
+
+                if (poolId == null)
+                {
+                    _logger?.LogWarning("No pool found for pair {T0}/{T1}, skipping {Count} intents",
+                        token0, token1, intents.Count);
+                    continue;
+                }
+
+                var reserves = dexState.GetPoolReserves(poolId.Value);
+                if (reserves == null) continue;
+
+                // Split into buy/sell sides
+                var (buys, sells) = BatchSettlementExecutor.SplitBuySell(intents, token0);
+
+                // Filter expired intents
+                buys.RemoveAll(i => i.Deadline > 0 && blockNumber > i.Deadline);
+                sells.RemoveAll(i => i.Deadline > 0 && blockNumber > i.Deadline);
+
+                // Compute settlement
+                var result = BatchAuctionSolver.ComputeSettlement(
+                    buys, sells,
+                    [], [], // No crossing limit orders in Phase B
+                    reserves.Value, poolFeeBps, poolId.Value);
+
+                if (result != null)
+                {
+                    batchResults.Add(result);
+
+                    // Track which intents were processed
+                    foreach (var intent in buys)
+                        processedIntents.Add(intent.OriginalTx);
+                    foreach (var intent in sells)
+                        processedIntents.Add(intent.OriginalTx);
+                }
+            }
+        }
+
+        // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
+        foreach (var result in batchResults)
+        {
+            var dexState = new DexState(stateDb);
+            var intentTxMap = new Dictionary<Hash256, Transaction>();
+            foreach (var tx in processedIntents)
+                intentTxMap.TryAdd(tx.Hash, tx);
+
+            var batchReceipts = BatchSettlementExecutor.ExecuteSettlement(
+                result, stateDb, dexState, preliminaryHeader, intentTxMap);
+
+            // Add batch-settled intents as valid transactions and their receipts
+            foreach (var r in batchReceipts)
+            {
+                // Charge gas for each intent tx
+                var intentTx = intentTxMap.GetValueOrDefault(r.TransactionHash);
+                if (intentTx != null)
+                {
+                    var gasUsed = _chainParams.DexSwapGas;
+                    totalGasUsed += gasUsed;
+                    validTxs.Add(intentTx);
+                }
+                receipts.Add(r);
+            }
+        }
+
+        // Compute roots
+        var stateRoot = stateDb.ComputeStateRoot();
+        var txRoot = ComputeTransactionsRoot(validTxs);
+        var receiptsRoot = ComputeReceiptsRoot(receipts);
+
+        var header = new BlockHeader
+        {
+            Number = blockNumber,
+            ParentHash = parentHeader.Hash,
+            StateRoot = stateRoot,
+            TransactionsRoot = txRoot,
+            ReceiptsRoot = receiptsRoot,
+            Timestamp = timestamp,
+            Proposer = proposer,
+            ChainId = _chainParams.ChainId,
+            GasUsed = totalGasUsed,
+            GasLimit = _chainParams.BlockGasLimit,
+            BaseFee = baseFee,
+        };
+
         foreach (var receipt in receipts)
             receipt.BlockHash = header.Hash;
 
