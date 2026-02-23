@@ -286,6 +286,13 @@ public sealed class BlockBuilder
             }
         }
 
+        // Serialize TWAP data for block header ExtraData
+        var dexStateForTwap = new DexState(stateDb);
+        var extraData = batchResults.Count > 0
+            ? TwapOracle.SerializeForBlockHeader(
+                batchResults, dexStateForTwap, blockNumber, _chainParams.MaxExtraDataBytes)
+            : [];
+
         // Compute roots
         var stateRoot = stateDb.ComputeStateRoot();
         var txRoot = ComputeTransactionsRoot(validTxs);
@@ -304,6 +311,7 @@ public sealed class BlockBuilder
             GasUsed = totalGasUsed,
             GasLimit = _chainParams.BlockGasLimit,
             BaseFee = baseFee,
+            ExtraData = extraData,
         };
 
         foreach (var receipt in receipts)
