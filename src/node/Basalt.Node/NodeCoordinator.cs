@@ -616,8 +616,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)_chainParams.DexMaxIntentsPerBatch, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = pendingDexIntents.Count > 0
+            ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
+            : _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _consensus.ProposeBlock(blockData, block.Hash);
@@ -625,8 +628,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (proposal != null)
         {
             _gossip!.BroadcastConsensusMessage(proposal);
-            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, BlockTxs: {BlockTxs}",
-                block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, block.Transactions.Count);
+            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, DexIntents: {IntentCount}, BlockTxs: {BlockTxs}",
+                block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, pendingDexIntents.Count, block.Transactions.Count);
         }
     }
 
@@ -652,8 +655,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)_chainParams.DexMaxIntentsPerBatch, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = pendingDexIntents.Count > 0
+            ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
+            : _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _pipelinedConsensus.StartRound(nextBlock, blockData, block.Hash);
@@ -661,8 +667,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (proposal != null)
         {
             _gossip!.BroadcastConsensusMessage(proposal);
-            _logger.LogInformation("Proposed pipelined block #{Number}. Active rounds: {Active}",
-                nextBlock, _pipelinedConsensus.ActiveRoundCount);
+            _logger.LogInformation("Proposed pipelined block #{Number}. DexIntents: {IntentCount}, Active rounds: {Active}",
+                nextBlock, pendingDexIntents.Count, _pipelinedConsensus.ActiveRoundCount);
         }
     }
 

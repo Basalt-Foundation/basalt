@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution;
+using Basalt.Execution.Dex;
 using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -779,6 +780,95 @@ public static class RestApiEndpoints
 
             return Microsoft.AspNetCore.Http.Results.Ok(new { count = pending.Count, transactions = results });
         });
+
+        // ═══ DEX Endpoints ═══
+
+        app.MapGet("/v1/dex/pools", () =>
+        {
+            var dexState = new DexState(stateDb);
+            var poolCount = dexState.GetPoolCount();
+            var pools = new List<DexPoolResponse>();
+
+            for (ulong i = 0; i < poolCount && i < 100; i++)
+            {
+                var meta = dexState.GetPoolMetadata(i);
+                var reserves = dexState.GetPoolReserves(i);
+                if (meta == null) continue;
+
+                pools.Add(DexPoolResponse.From(i, meta.Value, reserves));
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(pools.ToArray());
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}", (ulong poolId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var reserves = dexState.GetPoolReserves(poolId);
+            return Microsoft.AspNetCore.Http.Results.Ok(DexPoolResponse.From(poolId, meta.Value, reserves));
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}/orders", (ulong poolId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var orders = new List<DexOrderResponse>();
+            var orderCount = dexState.GetOrderCount();
+
+            for (ulong i = 0; i < orderCount && orders.Count < 100; i++)
+            {
+                var order = dexState.GetOrder(i);
+                if (order == null || order.Value.PoolId != poolId) continue;
+                orders.Add(DexOrderResponse.From(i, order.Value));
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(orders.ToArray());
+        });
+
+        app.MapGet("/v1/dex/orders/{orderId}", (ulong orderId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var order = dexState.GetOrder(orderId);
+            if (order == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            return Microsoft.AspNetCore.Http.Results.Ok(DexOrderResponse.From(orderId, order.Value));
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}/twap", (ulong poolId, ulong? window) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var currentBlock = chainManager.LatestBlockNumber;
+            var windowBlocks = window ?? 100;
+            var twap = TwapOracle.ComputeTwap(dexState, poolId, currentBlock, windowBlocks);
+            var volatility = TwapOracle.ComputeVolatilityBps(dexState, poolId, currentBlock, windowBlocks);
+
+            var reserves = dexState.GetPoolReserves(poolId);
+            var spotPrice = reserves != null && !reserves.Value.Reserve0.IsZero
+                ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
+                : UInt256.Zero;
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexTwapResponse
+            {
+                PoolId = poolId,
+                Twap = twap.ToString(),
+                SpotPrice = spotPrice.ToString(),
+                VolatilityBps = volatility,
+                WindowBlocks = windowBlocks,
+                CurrentBlock = currentBlock,
+            });
+        });
     }
 }
 
@@ -1093,6 +1183,66 @@ public sealed class ComplianceProofDto
     }
 }
 
+public sealed class DexPoolResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("token0")] public string Token0 { get; set; } = "";
+    [JsonPropertyName("token1")] public string Token1 { get; set; } = "";
+    [JsonPropertyName("feeBps")] public uint FeeBps { get; set; }
+    [JsonPropertyName("reserve0")] public string Reserve0 { get; set; } = "0";
+    [JsonPropertyName("reserve1")] public string Reserve1 { get; set; } = "0";
+    [JsonPropertyName("totalSupply")] public string TotalSupply { get; set; } = "0";
+
+    public static DexPoolResponse From(ulong poolId, PoolMetadata meta, PoolReserves? reserves)
+    {
+        return new DexPoolResponse
+        {
+            PoolId = poolId,
+            Token0 = meta.Token0.ToHexString(),
+            Token1 = meta.Token1.ToHexString(),
+            FeeBps = meta.FeeBps,
+            Reserve0 = reserves?.Reserve0.ToString() ?? "0",
+            Reserve1 = reserves?.Reserve1.ToString() ?? "0",
+            TotalSupply = reserves?.TotalSupply.ToString() ?? "0",
+        };
+    }
+}
+
+public sealed class DexOrderResponse
+{
+    [JsonPropertyName("orderId")] public ulong OrderId { get; set; }
+    [JsonPropertyName("owner")] public string Owner { get; set; } = "";
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("price")] public string Price { get; set; } = "0";
+    [JsonPropertyName("amount")] public string Amount { get; set; } = "0";
+    [JsonPropertyName("isBuy")] public bool IsBuy { get; set; }
+    [JsonPropertyName("expiryBlock")] public ulong ExpiryBlock { get; set; }
+
+    public static DexOrderResponse From(ulong orderId, LimitOrder order)
+    {
+        return new DexOrderResponse
+        {
+            OrderId = orderId,
+            Owner = order.Owner.ToHexString(),
+            PoolId = order.PoolId,
+            Price = order.Price.ToString(),
+            Amount = order.Amount.ToString(),
+            IsBuy = order.IsBuy,
+            ExpiryBlock = order.ExpiryBlock,
+        };
+    }
+}
+
+public sealed class DexTwapResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("twap")] public string Twap { get; set; } = "0";
+    [JsonPropertyName("spotPrice")] public string SpotPrice { get; set; } = "0";
+    [JsonPropertyName("volatilityBps")] public uint VolatilityBps { get; set; }
+    [JsonPropertyName("windowBlocks")] public ulong WindowBlocks { get; set; }
+    [JsonPropertyName("currentBlock")] public ulong CurrentBlock { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -1118,4 +1268,9 @@ public sealed class ComplianceProofDto
 [JsonSerializable(typeof(LogResponse[]))]
 [JsonSerializable(typeof(ComplianceProofDto))]
 [JsonSerializable(typeof(ComplianceProofDto[]))]
+[JsonSerializable(typeof(DexPoolResponse))]
+[JsonSerializable(typeof(DexPoolResponse[]))]
+[JsonSerializable(typeof(DexOrderResponse))]
+[JsonSerializable(typeof(DexOrderResponse[]))]
+[JsonSerializable(typeof(DexTwapResponse))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;
