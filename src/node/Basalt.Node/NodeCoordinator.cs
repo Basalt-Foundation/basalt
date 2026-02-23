@@ -82,6 +82,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private TransactionExecutor? _txExecutor;
     private Address _proposerAddress;
 
+    // Solver network (Phase E4)
+    private Solver.SolverManager? _solverManager;
+
+    /// <summary>
+    /// Exposes the solver manager for wiring into the REST API adapter.
+    /// </summary>
+    public Solver.SolverManager? SolverManager => _solverManager;
+
     // Runtime
     private CancellationTokenSource? _cts;
     private Task? _consensusLoop;
@@ -578,6 +586,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // the leader's block building uses the same staking/compliance-aware executor.
         _blockBuilder = new BlockBuilder(_chainParams, _txExecutor, _loggerFactory.CreateLogger<BlockBuilder>());
 
+        // E4: Initialize solver manager and wire it to the block builder
+        _solverManager = new Solver.SolverManager(
+            _chainParams, _loggerFactory.CreateLogger<Solver.SolverManager>())
+        {
+            SolutionWindowMs = _chainParams.SolverWindowMs,
+            MaxSolvers = _chainParams.MaxSolvers,
+        };
+        _blockBuilder.ExternalSolverProvider = (poolId, buys, sells, reserves, feeBps,
+            intentMinAmounts, stateDb, dexState, intentTxMap) =>
+            _solverManager.GetBestSettlement(
+                poolId, buys, sells, reserves, feeBps,
+                intentMinAmounts, stateDb, dexState, intentTxMap);
+
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
 
@@ -755,6 +776,103 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// <summary>
     /// Extract validator index from Docker-style hostname (e.g., "validator-2" → 2).
     /// </summary>
+    // ────────── Solver Network Handlers (Phase E4) ──────────
+
+    private void HandleSolverRegistration(PeerId sender, SolverRegistrationMessage msg)
+    {
+        if (_solverManager == null) return;
+
+        var solverAddress = Ed25519Signer.DeriveAddress(msg.SolverPublicKey);
+        var registered = _solverManager.RegisterSolver(solverAddress, msg.SolverPublicKey, msg.Endpoint);
+
+        if (registered)
+            _logger.LogInformation("Solver {Address} registered from peer {Sender}", solverAddress, sender);
+        else
+            _logger.LogDebug("Solver registration rejected from peer {Sender}", sender);
+    }
+
+    private void HandleSolverSolution(PeerId sender, SolverSolutionMessage msg)
+    {
+        if (_solverManager == null) return;
+
+        // Deserialize the solution into a SolverSolution
+        var clearingPrice = new UInt256(msg.ClearingPriceBytes);
+        var fills = DeserializeFills(msg.SerializedFills);
+        var updatedReserves = DeserializeReserves(msg.UpdatedReservesBytes);
+
+        // Derive solver address from the signature verification context
+        // (We look up all registered solvers and try to match)
+        var signData = Solver.SolverManager.ComputeSolutionSignData(msg.BlockNumber, msg.PoolId, clearingPrice);
+        Address? solverAddress = null;
+        foreach (var solver in _solverManager.GetRegisteredSolvers())
+        {
+            if (Ed25519Signer.Verify(solver.PublicKey, signData, msg.SolverSignature))
+            {
+                solverAddress = solver.Address;
+                break;
+            }
+        }
+
+        if (solverAddress == null)
+        {
+            _logger.LogDebug("Solver solution from {Sender}: signature doesn't match any registered solver", sender);
+            return;
+        }
+
+        var solution = new Solver.SolverSolution
+        {
+            BlockNumber = msg.BlockNumber,
+            PoolId = msg.PoolId,
+            ClearingPrice = clearingPrice,
+            Result = new Execution.Dex.BatchResult
+            {
+                PoolId = msg.PoolId,
+                ClearingPrice = clearingPrice,
+                Fills = fills,
+                UpdatedReserves = updatedReserves,
+            },
+            SolverAddress = solverAddress.Value,
+            SolverSignature = msg.SolverSignature,
+        };
+
+        _solverManager.SubmitSolution(solution);
+    }
+
+    private static List<Execution.Dex.FillRecord> DeserializeFills(byte[][] serialized)
+    {
+        var fills = new List<Execution.Dex.FillRecord>();
+        foreach (var data in serialized)
+        {
+            if (data.Length < 20 + 32 + 32 + 1 + 32) continue; // min: addr + in + out + isLimit + txHash
+            var participant = new Address(data.AsSpan(0, 20));
+            var amountIn = new UInt256(data.AsSpan(20, 32));
+            var amountOut = new UInt256(data.AsSpan(52, 32));
+            var isLimit = data[84] != 0;
+            var txHash = new Hash256(data.AsSpan(85, 32));
+            fills.Add(new Execution.Dex.FillRecord
+            {
+                Participant = participant,
+                AmountIn = amountIn,
+                AmountOut = amountOut,
+                IsLimitOrder = isLimit,
+                TxHash = txHash,
+            });
+        }
+        return fills;
+    }
+
+    private static Execution.Dex.PoolReserves DeserializeReserves(byte[] data)
+    {
+        if (data.Length < 64)
+            return new Execution.Dex.PoolReserves();
+
+        return new Execution.Dex.PoolReserves
+        {
+            Reserve0 = new UInt256(data.AsSpan(0, 32)),
+            Reserve1 = new UInt256(data.AsSpan(32, 32)),
+        };
+    }
+
     private static bool TryParseValidatorIndex(string hostname, out int index)
     {
         index = -1;
@@ -859,6 +977,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
             case PingMessage:
                 var pong = new PongMessage { SenderId = _localPeerId, Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
                 _ = _transport!.SendAsync(sender, MessageCodec.Serialize(pong));
+                break;
+
+            case SolverRegistrationMessage solverReg:
+                HandleSolverRegistration(sender, solverReg);
+                break;
+
+            case SolverSolutionMessage solverSol:
+                HandleSolverSolution(sender, solverSol);
                 break;
 
             default:

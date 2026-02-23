@@ -197,6 +197,14 @@ public static class MessageCodec
                 WriteDkgFinalize(ref writer, finalize);
                 break;
 
+            case SolverRegistrationMessage solverReg:
+                WriteSolverRegistration(ref writer, solverReg);
+                break;
+
+            case SolverSolutionMessage solverSol:
+                WriteSolverSolution(ref writer, solverSol);
+                break;
+
             default:
                 throw new ArgumentException($"Unknown message type: {message.GetType().Name}");
         }
@@ -286,6 +294,8 @@ public static class MessageCodec
             MessageType.DkgComplaint => ReadDkgComplaint(ref reader, senderId, timestamp),
             MessageType.DkgJustification => ReadDkgJustification(ref reader, senderId, timestamp),
             MessageType.DkgFinalize => ReadDkgFinalize(ref reader, senderId, timestamp),
+            MessageType.SolverRegistration => ReadSolverRegistration(ref reader, senderId, timestamp),
+            MessageType.SolverSolution => ReadSolverSolution(ref reader, senderId, timestamp),
             _ => throw new InvalidOperationException($"Unknown message type: 0x{(byte)type:X2}"),
         };
     }
@@ -741,6 +751,8 @@ public static class MessageCodec
             DkgComplaintMessage => 8 + 4 + 4 + 42,
             DkgJustificationMessage => 8 + 4 + 4 + 42,
             DkgFinalizeMessage => 8 + BlsPublicKey.Size,
+            SolverRegistrationMessage => PublicKey.Size + 256 + Signature.Size,
+            SolverSolutionMessage m => 8 + 8 + 42 + EstimateByteArraysSize(m.SerializedFills) + 74 + Signature.Size,
             _ => 1024,
         };
 
@@ -848,5 +860,49 @@ public static class MessageCodec
         }
 
         return total;
+    }
+
+    // ────────── Solver Network Message Serialization (Phase E4) ──────────
+
+    private static void WriteSolverRegistration(ref BasaltWriter writer, SolverRegistrationMessage msg)
+    {
+        writer.WritePublicKey(msg.SolverPublicKey);
+        writer.WriteString(msg.Endpoint);
+        writer.WriteSignature(msg.RegistrationSignature);
+    }
+
+    private static SolverRegistrationMessage ReadSolverRegistration(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new SolverRegistrationMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            SolverPublicKey = reader.ReadPublicKey(),
+            Endpoint = reader.ReadString(),
+            RegistrationSignature = reader.ReadSignature(),
+        };
+    }
+
+    private static void WriteSolverSolution(ref BasaltWriter writer, SolverSolutionMessage msg)
+    {
+        writer.WriteUInt64(msg.BlockNumber);
+        writer.WriteUInt64(msg.PoolId);
+        writer.WriteBytes(msg.ClearingPriceBytes);
+        WriteByteArrays(ref writer, msg.SerializedFills);
+        writer.WriteBytes(msg.UpdatedReservesBytes);
+        writer.WriteSignature(msg.SolverSignature);
+    }
+
+    private static SolverSolutionMessage ReadSolverSolution(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new SolverSolutionMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            BlockNumber = reader.ReadUInt64(),
+            PoolId = reader.ReadUInt64(),
+            ClearingPriceBytes = reader.ReadBytes().ToArray(),
+            SerializedFills = ReadByteArrays(ref reader),
+            UpdatedReservesBytes = reader.ReadBytes().ToArray(),
+            SolverSignature = reader.ReadSignature(),
+        };
     }
 }

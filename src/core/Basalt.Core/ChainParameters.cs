@@ -111,6 +111,15 @@ public sealed class ChainParameters
     /// <summary>Maximum number of swap intents per batch auction per block.</summary>
     public uint DexMaxIntentsPerBatch { get; init; } = 500;
 
+    /// <summary>Duration in milliseconds that the proposer waits for external solver solutions.</summary>
+    public int SolverWindowMs { get; init; } = 500;
+
+    /// <summary>Maximum number of registered solvers.</summary>
+    public int MaxSolvers { get; init; } = 32;
+
+    /// <summary>Fraction of swap fees rewarded to the winning solver (basis points, e.g. 1000 = 10%).</summary>
+    public uint SolverRewardBps { get; init; } = 1000;
+
     /// <summary>Token decimals (18 like Ethereum).</summary>
     public byte TokenDecimals { get; init; } = 18;
 

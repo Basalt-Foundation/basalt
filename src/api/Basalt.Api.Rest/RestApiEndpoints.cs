@@ -31,7 +31,8 @@ public static class RestApiEndpoints
         IContractRuntime? contractRuntime = null,
         Storage.RocksDb.ReceiptStore? receiptStore = null,
         Microsoft.Extensions.Logging.ILogger? logger = null,
-        ChainParameters? chainParams = null)
+        ChainParameters? chainParams = null,
+        ISolverInfoProvider? solverProvider = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -869,7 +870,85 @@ public static class RestApiEndpoints
                 CurrentBlock = currentBlock,
             });
         });
+
+        // ═══ Solver Network Endpoints (Phase E4) ═══
+
+        if (solverProvider != null)
+        {
+            app.MapGet("/v1/solvers", () =>
+            {
+                var solvers = solverProvider.GetRegisteredSolvers();
+                return Microsoft.AspNetCore.Http.Results.Ok(solvers);
+            });
+
+            app.MapPost("/v1/solvers/register", (SolverRegistrationRequest request) =>
+            {
+                if (string.IsNullOrEmpty(request.PublicKey) || string.IsNullOrEmpty(request.Endpoint))
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "publicKey and endpoint are required" });
+
+                try
+                {
+                    var pubKeyHex = StripHexPrefix(request.PublicKey);
+                    var pubKeyBytes = Convert.FromHexString(pubKeyHex);
+                    if (pubKeyBytes.Length != 32)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "publicKey must be 32 bytes" });
+
+                    var pubKey = new PublicKey(pubKeyBytes);
+                    var address = Ed25519Signer.DeriveAddress(pubKey);
+                    var registered = solverProvider.RegisterSolver(address, pubKey, request.Endpoint);
+
+                    if (!registered)
+                        return Microsoft.AspNetCore.Http.Results.Conflict(new { error = "Registration failed (max solvers reached)" });
+
+                    return Microsoft.AspNetCore.Http.Results.Ok(new
+                    {
+                        address = address.ToHexString(),
+                        endpoint = request.Endpoint,
+                        status = "registered",
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = ex.Message });
+                }
+            });
+
+            app.MapGet("/v1/dex/intents/pending", () =>
+            {
+                var intents = solverProvider.GetPendingIntentHashes();
+                return Microsoft.AspNetCore.Http.Results.Ok(new
+                {
+                    count = intents.Length,
+                    intentHashes = intents.Select(h => h.ToHexString()).ToArray(),
+                });
+            });
+        }
     }
+}
+
+/// <summary>
+/// Interface for the REST API to query solver network state without depending on Basalt.Node.
+/// </summary>
+public interface ISolverInfoProvider
+{
+    SolverInfoResponse[] GetRegisteredSolvers();
+    bool RegisterSolver(Address address, PublicKey publicKey, string endpoint);
+    Hash256[] GetPendingIntentHashes();
+}
+
+public sealed class SolverInfoResponse
+{
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("endpoint")] public string Endpoint { get; set; } = "";
+    [JsonPropertyName("registeredAt")] public long RegisteredAt { get; set; }
+    [JsonPropertyName("solutionsAccepted")] public int SolutionsAccepted { get; set; }
+    [JsonPropertyName("solutionsRejected")] public int SolutionsRejected { get; set; }
+}
+
+public sealed class SolverRegistrationRequest
+{
+    [JsonPropertyName("publicKey")] public string PublicKey { get; set; } = "";
+    [JsonPropertyName("endpoint")] public string Endpoint { get; set; } = "";
 }
 
 // DTO classes

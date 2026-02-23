@@ -238,7 +238,9 @@ try
 
     // Map REST endpoints (with read-only call support via ManagedContractRuntime)
     var contractRuntime = new ManagedContractRuntime();
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams);
+    var solverInfoAdapter = new Basalt.Node.Solver.SolverInfoAdapter();
+    solverInfoAdapter.SetMempool(mempool);
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams, solverProvider: solverInfoAdapter);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
@@ -336,6 +338,10 @@ try
             blockStore, receiptStore,
             stakingState, slashingEngine,
             complianceEngine);
+
+        // E4: Wire solver manager into REST API adapter after NodeCoordinator is initialized
+        if (coordinator.SolverManager != null)
+            solverInfoAdapter.SetSolverManager(coordinator.SolverManager);
 
         Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty($"http://localhost:{config.HttpPort}")));
         Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);

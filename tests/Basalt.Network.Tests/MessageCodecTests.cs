@@ -707,4 +707,93 @@ public class MessageCodecTests
         AssertHeaderEquals(original, result);
         Assert.Empty(result.ClosestPeers);
     }
+
+    // ────────── Solver Network Messages (Phase E4) ──────────
+
+    [Fact]
+    public void Roundtrip_SolverRegistrationMessage()
+    {
+        var (_, pubKey, sig) = MakeSignature();
+        var original = new SolverRegistrationMessage
+        {
+            SenderId = MakePeerId(30),
+            Timestamp = Now(),
+            SolverPublicKey = pubKey,
+            Endpoint = "http://solver.example.com:8080",
+            RegistrationSignature = sig,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<SolverRegistrationMessage>(deserialized);
+        AssertHeaderEquals(original, result);
+        Assert.Equal(original.SolverPublicKey.ToArray(), result.SolverPublicKey.ToArray());
+        Assert.Equal(original.Endpoint, result.Endpoint);
+        Assert.Equal(original.RegistrationSignature.ToArray(), result.RegistrationSignature.ToArray());
+    }
+
+    [Fact]
+    public void Roundtrip_SolverSolutionMessage()
+    {
+        var (_, _, sig) = MakeSignature();
+        var clearingPrice = new byte[32];
+        clearingPrice[0] = 0x42;
+        var reserves = new byte[64];
+        reserves[0] = 0x10;
+        reserves[32] = 0x20;
+
+        var fill1 = new byte[117]; // 20 + 32 + 32 + 1 + 32
+        fill1[0] = 0xAA;
+        fill1[20] = 0x01;
+        fill1[52] = 0x02;
+
+        var original = new SolverSolutionMessage
+        {
+            SenderId = MakePeerId(31),
+            Timestamp = Now(),
+            BlockNumber = 42,
+            PoolId = 7,
+            ClearingPriceBytes = clearingPrice,
+            SerializedFills = [fill1],
+            UpdatedReservesBytes = reserves,
+            SolverSignature = sig,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<SolverSolutionMessage>(deserialized);
+        AssertHeaderEquals(original, result);
+        Assert.Equal(42UL, result.BlockNumber);
+        Assert.Equal(7UL, result.PoolId);
+        Assert.Equal(original.ClearingPriceBytes, result.ClearingPriceBytes);
+        Assert.Single(result.SerializedFills);
+        Assert.Equal(fill1, result.SerializedFills[0]);
+        Assert.Equal(reserves, result.UpdatedReservesBytes);
+        Assert.Equal(original.SolverSignature.ToArray(), result.SolverSignature.ToArray());
+    }
+
+    [Fact]
+    public void Roundtrip_SolverSolutionMessage_EmptyFills()
+    {
+        var (_, _, sig) = MakeSignature();
+        var original = new SolverSolutionMessage
+        {
+            SenderId = MakePeerId(32),
+            Timestamp = Now(),
+            BlockNumber = 1,
+            PoolId = 0,
+            ClearingPriceBytes = new byte[32],
+            SerializedFills = [],
+            UpdatedReservesBytes = new byte[64],
+            SolverSignature = sig,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<SolverSolutionMessage>(deserialized);
+        Assert.Empty(result.SerializedFills);
+    }
 }

@@ -22,6 +22,15 @@ public sealed class BlockBuilder
     /// </summary>
     public BlsPublicKey? DkgGroupPublicKey { get; set; }
 
+    /// <summary>
+    /// Optional external settlement provider. When set, the block builder will prefer
+    /// external solver settlements over the built-in BatchAuctionSolver when the external
+    /// solver produces higher surplus for users.
+    /// </summary>
+    public Func<ulong, List<ParsedIntent>, List<ParsedIntent>, PoolReserves, uint,
+        Dictionary<Hash256, UInt256>, IStateDatabase, DexState, Dictionary<Hash256, Transaction>,
+        BatchResult?>? ExternalSolverProvider { get; set; }
+
     public BlockBuilder(ChainParameters chainParams, ILogger<BlockBuilder>? logger = null)
         : this(chainParams, new TransactionExecutor(chainParams), logger) { }
 
@@ -278,8 +287,26 @@ public sealed class BlockBuilder
                 buys.RemoveAll(i => i.Deadline > 0 && blockNumber > i.Deadline);
                 sells.RemoveAll(i => i.Deadline > 0 && blockNumber > i.Deadline);
 
-                // Compute settlement
-                var result = BatchAuctionSolver.ComputeSettlement(
+                // Compute settlement — prefer external solver when available
+                BatchResult? result = null;
+                if (ExternalSolverProvider != null)
+                {
+                    // Build intent min-amounts map for surplus scoring
+                    var intentMinAmounts = new Dictionary<Hash256, UInt256>();
+                    var intentTxMapForSolver = new Dictionary<Hash256, Transaction>();
+                    foreach (var intent in buys.Concat(sells))
+                    {
+                        intentMinAmounts[intent.TxHash] = intent.MinAmountOut;
+                        intentTxMapForSolver[intent.TxHash] = intent.OriginalTx;
+                    }
+
+                    result = ExternalSolverProvider(
+                        poolId.Value, buys, sells, reserves.Value, poolFeeBps,
+                        intentMinAmounts, stateDb, dexState, intentTxMapForSolver);
+                }
+
+                // Fall back to built-in solver
+                result ??= BatchAuctionSolver.ComputeSettlement(
                     buys, sells,
                     [], [], // No crossing limit orders in Phase B
                     reserves.Value, poolFeeBps, poolId.Value);
