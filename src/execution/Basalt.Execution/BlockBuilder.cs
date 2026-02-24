@@ -284,6 +284,14 @@ public sealed class BlockBuilder
         {
             var dexState = new DexState(stateDb);
 
+            // P-2: Skip batch auction when DEX is paused — intents should not settle.
+            if (dexState.IsDexPaused())
+            {
+                _logger?.LogWarning("DEX is paused — skipping batch auction for {Count} intents",
+                    pendingDexIntents.Count);
+                goto SkipBatchAuction;
+            }
+
             // Decrypt encrypted intents and merge with plaintext intents
             var allParsedIntents = new List<ParsedIntent>();
             foreach (var tx in pendingDexIntents)
@@ -420,6 +428,7 @@ public sealed class BlockBuilder
                 }
             }
         }
+        SkipBatchAuction:
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
         bool gasLimitReached = false;

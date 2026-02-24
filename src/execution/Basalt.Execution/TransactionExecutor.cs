@@ -746,8 +746,7 @@ public sealed class TransactionExecutor
     private TransactionReceipt ExecuteDexRemoveLiquidity(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasUsed = _chainParams.DexLiquidityGas;
-        var pauseCheck = CheckDexPaused(tx, stateDb, blockHeader, txIndex, gasUsed);
-        if (pauseCheck != null) return pauseCheck;
+        // P-1: Withdrawals bypass pause — users must always be able to exit positions.
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
@@ -1277,8 +1276,7 @@ public sealed class TransactionExecutor
     private TransactionReceipt ExecuteDexBurnPosition(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasUsed = _chainParams.DexBurnPositionGas;
-        var pauseCheck = CheckDexPaused(tx, stateDb, blockHeader, txIndex, gasUsed);
-        if (pauseCheck != null) return pauseCheck;
+        // P-1: Withdrawals bypass pause — users must always be able to exit positions.
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
@@ -1340,8 +1338,7 @@ public sealed class TransactionExecutor
     private TransactionReceipt ExecuteDexCollectFees(Transaction tx, IStateDatabase stateDb, BlockHeader blockHeader, int txIndex)
     {
         var gasUsed = _chainParams.DexCollectFeesGas;
-        var pauseCheck = CheckDexPaused(tx, stateDb, blockHeader, txIndex, gasUsed);
-        if (pauseCheck != null) return pauseCheck;
+        // P-1: Withdrawals bypass pause — users must always be able to exit positions.
         var effectiveGasPrice = tx.EffectiveGasPrice(blockHeader.BaseFee);
         var gasFee = effectiveGasPrice * new UInt256(gasUsed);
 
