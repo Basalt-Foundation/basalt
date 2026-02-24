@@ -815,6 +815,7 @@ public static class RestApiEndpoints
             return Microsoft.AspNetCore.Http.Results.Ok(DexPoolResponse.From(poolId, meta.Value, reserves));
         });
 
+        // CR-8: Walk per-pool linked list instead of O(totalOrders) global scan
         app.MapGet("/v1/dex/pools/{poolId}/orders", (ulong poolId) =>
         {
             var dexState = new DexState(stateDb);
@@ -823,13 +824,14 @@ public static class RestApiEndpoints
                 return Microsoft.AspNetCore.Http.Results.NotFound();
 
             var orders = new List<DexOrderResponse>();
-            var orderCount = dexState.GetOrderCount();
+            var current = dexState.GetPoolOrderHead(poolId);
 
-            for (ulong i = 0; i < orderCount && orders.Count < 100; i++)
+            while (current != ulong.MaxValue && orders.Count < 100)
             {
-                var order = dexState.GetOrder(i);
-                if (order == null || order.Value.PoolId != poolId) continue;
-                orders.Add(DexOrderResponse.From(i, order.Value));
+                var order = dexState.GetOrder(current);
+                if (order != null)
+                    orders.Add(DexOrderResponse.From(current, order.Value));
+                current = dexState.GetOrderNext(current);
             }
 
             return Microsoft.AspNetCore.Http.Results.Ok(orders.ToArray());
