@@ -25,7 +25,7 @@ public partial class BST20Token : IBST20
         _balances = new StorageMap<string, UInt256>("balances");
         _allowances = new StorageMap<string, UInt256>("allowances");
 
-        if (!initialSupply.IsZero)
+        if (!initialSupply.IsZero && _totalSupply.Get().IsZero)
         {
             Mint(Context.Caller, initialSupply);
         }
