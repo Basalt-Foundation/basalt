@@ -99,7 +99,8 @@ public sealed class ContractRegistry
             var name = reader.ReadString();
             var symbol = reader.ReadString();
             var decimals = reader.ReadByte();
-            return new Basalt.Sdk.Contracts.Standards.BST20Token(name, symbol, decimals);
+            var initialSupply = reader.Remaining >= 32 ? reader.ReadUInt256() : default;
+            return new Basalt.Sdk.Contracts.Standards.BST20Token(name, symbol, decimals, initialSupply);
         });
 
         registry.Register(0x0002, "BST721Token", args =>

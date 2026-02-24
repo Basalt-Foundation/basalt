@@ -16,7 +16,7 @@ public partial class BST20Token : IBST20
     private readonly string _symbol;
     private readonly byte _decimals;
 
-    public BST20Token(string name, string symbol, byte decimals = 18)
+    public BST20Token(string name, string symbol, byte decimals = 18, UInt256 initialSupply = default)
     {
         _name = name;
         _symbol = symbol;
@@ -24,6 +24,11 @@ public partial class BST20Token : IBST20
         _totalSupply = new StorageValue<UInt256>("total_supply");
         _balances = new StorageMap<string, UInt256>("balances");
         _allowances = new StorageMap<string, UInt256>("allowances");
+
+        if (!initialSupply.IsZero)
+        {
+            Mint(Context.Caller, initialSupply);
+        }
     }
 
     [BasaltView]
