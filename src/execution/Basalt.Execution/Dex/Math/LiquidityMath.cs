@@ -27,6 +27,8 @@ public static class LiquidityMath
         }
         else
         {
+            if (y == long.MinValue)
+                throw new OverflowException("LiquidityMath: cannot negate long.MinValue");
             var absY = new UInt256((ulong)(-y));
             if (x < absY)
                 throw new OverflowException($"LiquidityMath: underflow — cannot subtract {absY} from {x}");

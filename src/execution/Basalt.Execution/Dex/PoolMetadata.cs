@@ -119,7 +119,7 @@ public struct LimitOrder
     public ulong PoolId { get; set; }
 
     /// <summary>
-    /// Limit price as a UInt256 (scaled by 2^128 for precision).
+    /// Limit price as a UInt256 (scaled by 2^64 (PriceScale) for precision).
     /// For buy orders: maximum price willing to pay.
     /// For sell orders: minimum price willing to accept.
     /// </summary>
@@ -242,8 +242,17 @@ public struct TickInfo
     /// </summary>
     public UInt256 LiquidityGross { get; set; }
 
-    /// <summary>Serialized size: 8 (liquidityNet) + 32 (liquidityGross) = 40 bytes.</summary>
-    public const int SerializedSize = 8 + 32;
+    /// <summary>Cumulative fee growth per unit of liquidity on the token0 side, outside this tick.</summary>
+    public UInt256 FeeGrowthOutside0X128 { get; set; }
+
+    /// <summary>Cumulative fee growth per unit of liquidity on the token1 side, outside this tick.</summary>
+    public UInt256 FeeGrowthOutside1X128 { get; set; }
+
+    /// <summary>Legacy serialized size (without fee fields): 8 + 32 = 40 bytes.</summary>
+    public const int LegacySerializedSize = 8 + 32;
+
+    /// <summary>Serialized size: 8 + 32 + 32 + 32 = 104 bytes.</summary>
+    public const int SerializedSize = 8 + 32 + 32 + 32;
 
     /// <summary>Serialize to byte array.</summary>
     public readonly byte[] Serialize()
@@ -251,17 +260,25 @@ public struct TickInfo
         var buffer = new byte[SerializedSize];
         System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(buffer.AsSpan(0, 8), LiquidityNet);
         LiquidityGross.WriteTo(buffer.AsSpan(8, 32));
+        FeeGrowthOutside0X128.WriteTo(buffer.AsSpan(40, 32));
+        FeeGrowthOutside1X128.WriteTo(buffer.AsSpan(72, 32));
         return buffer;
     }
 
-    /// <summary>Deserialize from byte span.</summary>
+    /// <summary>Deserialize from byte span. Supports legacy 40-byte format (fee fields default to zero).</summary>
     public static TickInfo Deserialize(ReadOnlySpan<byte> data)
     {
-        return new TickInfo
+        var info = new TickInfo
         {
             LiquidityNet = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(data[..8]),
             LiquidityGross = new UInt256(data[8..40]),
         };
+        if (data.Length >= SerializedSize)
+        {
+            info.FeeGrowthOutside0X128 = new UInt256(data[40..72]);
+            info.FeeGrowthOutside1X128 = new UInt256(data[72..104]);
+        }
+        return info;
     }
 }
 
@@ -286,8 +303,23 @@ public struct Position
     /// <summary>Amount of liquidity in this position.</summary>
     public UInt256 Liquidity { get; set; }
 
-    /// <summary>Serialized size: 20 + 8 + 4 + 4 + 32 = 68 bytes.</summary>
-    public const int SerializedSize = Address.Size + 8 + 4 + 4 + 32;
+    /// <summary>Fee growth inside the position's range at the time of last update (token0, Q128).</summary>
+    public UInt256 FeeGrowthInside0LastX128 { get; set; }
+
+    /// <summary>Fee growth inside the position's range at the time of last update (token1, Q128).</summary>
+    public UInt256 FeeGrowthInside1LastX128 { get; set; }
+
+    /// <summary>Uncollected fees owed to this position (token0).</summary>
+    public UInt256 TokensOwed0 { get; set; }
+
+    /// <summary>Uncollected fees owed to this position (token1).</summary>
+    public UInt256 TokensOwed1 { get; set; }
+
+    /// <summary>Legacy serialized size (without fee fields): 20 + 8 + 4 + 4 + 32 = 68 bytes.</summary>
+    public const int LegacySerializedSize = Address.Size + 8 + 4 + 4 + 32;
+
+    /// <summary>Serialized size: 68 + 32*4 = 196 bytes.</summary>
+    public const int SerializedSize = LegacySerializedSize + 32 * 4;
 
     /// <summary>Serialize to byte array.</summary>
     public readonly byte[] Serialize()
@@ -298,13 +330,17 @@ public struct Position
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(28, 4), TickLower);
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(32, 4), TickUpper);
         Liquidity.WriteTo(buffer.AsSpan(36, 32));
+        FeeGrowthInside0LastX128.WriteTo(buffer.AsSpan(68, 32));
+        FeeGrowthInside1LastX128.WriteTo(buffer.AsSpan(100, 32));
+        TokensOwed0.WriteTo(buffer.AsSpan(132, 32));
+        TokensOwed1.WriteTo(buffer.AsSpan(164, 32));
         return buffer;
     }
 
-    /// <summary>Deserialize from byte span.</summary>
+    /// <summary>Deserialize from byte span. Supports legacy 68-byte format (fee fields default to zero).</summary>
     public static Position Deserialize(ReadOnlySpan<byte> data)
     {
-        return new Position
+        var pos = new Position
         {
             Owner = new Address(data[..Address.Size]),
             PoolId = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data[20..28]),
@@ -312,13 +348,21 @@ public struct Position
             TickUpper = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data[32..36]),
             Liquidity = new UInt256(data[36..68]),
         };
+        if (data.Length >= SerializedSize)
+        {
+            pos.FeeGrowthInside0LastX128 = new UInt256(data[68..100]);
+            pos.FeeGrowthInside1LastX128 = new UInt256(data[100..132]);
+            pos.TokensOwed0 = new UInt256(data[132..164]);
+            pos.TokensOwed1 = new UInt256(data[164..196]);
+        }
+        return pos;
     }
 }
 
 /// <summary>
 /// Global state for a concentrated liquidity pool.
 /// Stored at key prefix <c>0x0C</c> in the DEX state address.
-/// Tracks the current sqrt price, tick, and total active liquidity.
+/// Tracks the current sqrt price, tick, total active liquidity, and global fee growth.
 /// </summary>
 public struct ConcentratedPoolState
 {
@@ -331,8 +375,17 @@ public struct ConcentratedPoolState
     /// <summary>Total liquidity available at the current tick.</summary>
     public UInt256 TotalLiquidity { get; set; }
 
-    /// <summary>Serialized size: 32 + 4 + 32 = 68 bytes.</summary>
-    public const int SerializedSize = 32 + 4 + 32;
+    /// <summary>Cumulative fee growth per unit of liquidity for token0 (Q128 fixed-point).</summary>
+    public UInt256 FeeGrowthGlobal0X128 { get; set; }
+
+    /// <summary>Cumulative fee growth per unit of liquidity for token1 (Q128 fixed-point).</summary>
+    public UInt256 FeeGrowthGlobal1X128 { get; set; }
+
+    /// <summary>Legacy serialized size (without fee fields): 32 + 4 + 32 = 68 bytes.</summary>
+    public const int LegacySerializedSize = 32 + 4 + 32;
+
+    /// <summary>Serialized size: 68 + 32*2 = 132 bytes.</summary>
+    public const int SerializedSize = LegacySerializedSize + 32 * 2;
 
     /// <summary>Serialize to byte array.</summary>
     public readonly byte[] Serialize()
@@ -341,17 +394,25 @@ public struct ConcentratedPoolState
         SqrtPriceX96.WriteTo(buffer.AsSpan(0, 32));
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(32, 4), CurrentTick);
         TotalLiquidity.WriteTo(buffer.AsSpan(36, 32));
+        FeeGrowthGlobal0X128.WriteTo(buffer.AsSpan(68, 32));
+        FeeGrowthGlobal1X128.WriteTo(buffer.AsSpan(100, 32));
         return buffer;
     }
 
-    /// <summary>Deserialize from byte span.</summary>
+    /// <summary>Deserialize from byte span. Supports legacy 68-byte format (fee fields default to zero).</summary>
     public static ConcentratedPoolState Deserialize(ReadOnlySpan<byte> data)
     {
-        return new ConcentratedPoolState
+        var state = new ConcentratedPoolState
         {
             SqrtPriceX96 = new UInt256(data[..32]),
             CurrentTick = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data[32..36]),
             TotalLiquidity = new UInt256(data[36..68]),
         };
+        if (data.Length >= SerializedSize)
+        {
+            state.FeeGrowthGlobal0X128 = new UInt256(data[68..100]);
+            state.FeeGrowthGlobal1X128 = new UInt256(data[100..132]);
+        }
+        return state;
     }
 }

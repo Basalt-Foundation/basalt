@@ -36,16 +36,41 @@ public static class TwapOracle
         var acc = state.GetTwapAccumulator(poolId);
         if (acc.LastBlock == 0) return UInt256.Zero;
 
-        // If the window extends before the first update, use what we have
-        var effectiveWindow = acc.LastBlock > windowBlocks
-            ? windowBlocks
-            : acc.LastBlock;
+        var endAccum = acc.CumulativePrice;
+        var endBlock = acc.LastBlock;
 
-        if (effectiveWindow == 0) return UInt256.Zero;
+        // M-06: Windowed TWAP using stored per-block accumulator snapshots.
+        // twap = (accumulator[end] - accumulator[start]) / (end - start)
+        var targetStartBlock = currentBlock > windowBlocks ? currentBlock - windowBlocks : 0;
 
-        // TWAP = cumulativePrice / effectiveWindow
-        // This gives the average price-per-block over the window
-        return FullMath.MulDiv(acc.CumulativePrice, UInt256.One, new UInt256(effectiveWindow));
+        // Search backwards from targetStartBlock for the nearest snapshot
+        UInt256 startAccum = UInt256.Zero;
+        ulong actualStartBlock = 0;
+
+        if (targetStartBlock > 0)
+        {
+            const ulong maxScan = 2048;
+            ulong scanLower = targetStartBlock > maxScan ? targetStartBlock - maxScan : 0;
+
+            for (ulong b = targetStartBlock; b >= scanLower; b--)
+            {
+                var snapshot = state.GetTwapSnapshot(poolId, b);
+                if (snapshot != null)
+                {
+                    startAccum = snapshot.Value;
+                    actualStartBlock = b;
+                    break;
+                }
+                if (b == 0) break; // Prevent ulong underflow
+            }
+        }
+
+        if (endBlock <= actualStartBlock) return UInt256.Zero;
+
+        var blockSpan = new UInt256(endBlock - actualStartBlock);
+        if (endAccum < startAccum) return UInt256.Zero;
+
+        return FullMath.MulDiv(endAccum - startAccum, UInt256.One, blockSpan);
     }
 
     /// <summary>
@@ -90,6 +115,15 @@ public static class TwapOracle
     }
 
     /// <summary>
+    /// Carry forward the TWAP accumulator for a pool using its current price.
+    /// Called per-block for all active pools to prevent TWAP gaps during low-volume blocks.
+    /// </summary>
+    public static void CarryForwardAccumulator(DexState state, ulong poolId, UInt256 currentPrice, ulong blockNumber)
+    {
+        state.UpdateTwapAccumulator(poolId, currentPrice, blockNumber);
+    }
+
+    /// <summary>
     /// Serialize TWAP data for inclusion in block header ExtraData.
     /// Format per pool: <c>[8B poolId][32B clearingPrice][32B twap]</c>
     /// Multiple pools concatenated up to MaxExtraDataBytes.
@@ -101,7 +135,7 @@ public static class TwapOracle
     /// <returns>Serialized TWAP snapshot for block header ExtraData.</returns>
     public static byte[] SerializeForBlockHeader(
         List<BatchResult> settlements, DexState state,
-        ulong currentBlock, uint maxBytes)
+        ulong currentBlock, uint maxBytes, ulong twapWindowBlocks = 7200)
     {
         const int entrySize = 8 + 32 + 32; // poolId + clearingPrice + twap
         var maxEntries = (int)(maxBytes / entrySize);
@@ -120,7 +154,7 @@ public static class TwapOracle
                 buffer.AsSpan(offset, 8), settlement.PoolId);
             settlement.ClearingPrice.WriteTo(buffer.AsSpan(offset + 8, 32));
 
-            var twap = ComputeTwap(state, settlement.PoolId, currentBlock, 100);
+            var twap = ComputeTwap(state, settlement.PoolId, currentBlock, twapWindowBlocks);
             twap.WriteTo(buffer.AsSpan(offset + 40, 32));
         }
 

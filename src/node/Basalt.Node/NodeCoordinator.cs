@@ -45,6 +45,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     // Compliance
     private readonly IComplianceVerifier? _complianceVerifier;
+
+    // B1: Staking persistence
+    private readonly Basalt.Consensus.Staking.IStakingPersistence? _stakingPersistence;
     private WeightedLeaderSelector? _leaderSelector;
 
     // Network components
@@ -56,6 +59,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Creates a fresh HandshakeProtocol per connection to avoid sharing ephemeral key state.
     /// Each handshake generates its own X25519 key pair, so concurrent connections must not
     /// share the same instance.
+    /// M11: Passes configurable handshake timeout from ChainParameters.
     /// </summary>
     private HandshakeProtocol CreateHandshake() => new(
         _config.ChainId,
@@ -68,7 +72,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         () => _chainManager.LatestBlock?.Hash ?? Hash256.Zero,
         () => _chainManager.GetBlockByNumber(0)?.Hash ?? Hash256.Zero,
         _loggerFactory.CreateLogger<HandshakeProtocol>(),
-        $"validator-{_config.ValidatorIndex}");
+        $"validator-{_config.ValidatorIndex}",
+        TimeSpan.FromMilliseconds(_chainParams.P2PHandshakeTimeoutMs));
 
     // Consensus
     private BasaltBft? _consensus;
@@ -114,6 +119,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// <summary>LOW-N01: Timestamp of last sync rate-limit eviction run.</summary>
     private long _lastSyncEvictionTime;
 
+    // Circuit breaker: halt proposals after consecutive finalization failures
+    private int _consecutiveFinalizationFailures;
+    private const int CircuitBreakerThreshold = 5;
+    private volatile bool _circuitBreakerTripped;
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -140,7 +150,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         ReceiptStore? receiptStore = null,
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
-        IComplianceVerifier? complianceVerifier = null)
+        IComplianceVerifier? complianceVerifier = null,
+        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null)
     {
         // MEDIUM-01: Validate chain parameters at startup to catch misconfigurations early.
         chainParams.Validate();
@@ -159,6 +170,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _stakingState = stakingState;
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
+        _stakingPersistence = stakingPersistence;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -340,7 +352,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _peerManager = new PeerManager(_loggerFactory.CreateLogger<PeerManager>());
         _gossip = new GossipService(_peerManager, _loggerFactory.CreateLogger<GossipService>());
         _episub = new EpisubService(_peerManager, _loggerFactory.CreateLogger<EpisubService>());
-        _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>());
+        // M11: Pass configurable connect timeout from ChainParameters
+        _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>(),
+            TimeSpan.FromMilliseconds(_chainParams.P2PConnectTimeoutMs));
 
         // Send our validator identity as "validator-N" so peers can map us in their ValidatorSet.
         // HandshakeProtocol is now created per-connection via CreateHandshake()
@@ -442,6 +456,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void SetupPipelinedConsensus()
     {
         var lastFinalized = _chainManager.LatestBlockNumber;
+        // M10: Pass configurable consensus timeout from ChainParameters
         _pipelinedConsensus = new PipelinedConsensus(
             _validatorSet!,
             _localPeerId,
@@ -449,7 +464,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _blsSigner,
             _loggerFactory.CreateLogger<PipelinedConsensus>(),
             lastFinalized,
-            _chainParams.ChainId);
+            _chainParams.ChainId,
+            TimeSpan.FromMilliseconds(_chainParams.ConsensusTimeoutMs));
 
         // When a block is finalized by pipelined consensus, apply it
         _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;
@@ -476,11 +492,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
-            // COMPL-07: Reset nullifiers at block boundary to bound memory and prevent same-block replay.
+            // COMPL-07: Windowed nullifier reset — prunes nullifiers outside the retention window
+            // while keeping recent ones to prevent cross-block replay attacks.
             // LOW-03 R3: This runs before executing the finalized block's transactions. Safe because
             // HandleBlockFinalized and block building run on the same thread (consensus callback path),
             // so no concurrent block proposal can observe cleared nullifiers mid-finalization.
-            _complianceVerifier?.ResetNullifiers();
+            _complianceVerifier?.ResetNullifiers(block.Number);
+
+            // M16: Block timestamp validation — reject blocks with invalid timestamps
+            var parentBlock = _chainManager.LatestBlock;
+            if (parentBlock != null)
+            {
+                if (block.Header.Timestamp < parentBlock.Header.Timestamp)
+                {
+                    _logger.LogError("Block #{Num} rejected: timestamp {BlockTs} before parent {ParentTs}",
+                        block.Number, block.Header.Timestamp, parentBlock.Header.Timestamp);
+                    return; // Skip finalization
+                }
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var maxDrift = (long)_chainParams.BlockTimeMs * 15; // 15 blocks of drift allowed (~30s at 2s blocks)
+                if (block.Header.Timestamp > now + maxDrift)
+                {
+                    _logger.LogError("Block #{Num} rejected: timestamp {Ahead}ms ahead of local time (max drift: {MaxDrift}ms)",
+                        block.Number, block.Header.Timestamp - now, maxDrift);
+                    return; // Skip finalization
+                }
+            }
 
             // All validators execute finalized transactions against canonical state.
             // Proposals use a forked state, so the leader's live state is never speculatively mutated.
@@ -505,10 +542,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (pruned > 0)
                     _logger.LogInformation("Pruned {Count} stale/underpriced transactions from mempool", pruned);
 
+                // Update mempool admission gate so new submissions below the current base fee are rejected early
+                _mempool.UpdateBaseFee(block.Header.BaseFee);
+
+                // Circuit breaker: reset on success
+                Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
+                if (_circuitBreakerTripped)
+                {
+                    _circuitBreakerTripped = false;
+                    _logger.LogWarning("Circuit breaker reset after successful block finalization");
+                }
+
                 MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
+
+                // M13: Record additional Prometheus metrics
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var prevFinalizedMs = Volatile.Read(ref _lastBlockFinalizedAtMs);
+                if (prevFinalizedMs > 0)
+                    MetricsEndpoint.RecordFinalizationLatency(nowMs - prevFinalizedMs);
+                MetricsEndpoint.RecordBaseFee(block.Header.BaseFee.IsZero ? 0 : (long)(ulong)block.Header.BaseFee);
+                MetricsEndpoint.RecordConsensusView((long)block.Number);
+                MetricsEndpoint.RecordPeerCount(_peerManager?.ConnectedCount ?? 0);
+                MetricsEndpoint.RecordDexIntentCount(_mempool.DexIntentCount);
+
                 _ = _wsHandler.BroadcastNewBlock(block);
 
-                Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                Volatile.Write(ref _lastBlockFinalizedAtMs, nowMs);
 
                 // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
                 // This preserves recent evidence for double-sign detection while preventing unbounded growth.
@@ -552,6 +611,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 _logger.LogError("Failed to add consensus-finalized block #{Number}: {Error}",
                     block.Number, result.Message);
+
+                // Circuit breaker: increment failure count
+                var failures = Interlocked.Increment(ref _consecutiveFinalizationFailures);
+                if (failures >= CircuitBreakerThreshold && !_circuitBreakerTripped)
+                {
+                    _circuitBreakerTripped = true;
+                    _logger.LogCritical(
+                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals.", failures);
+                }
 
                 // If we're behind (block number > our tip + 1), trigger a sync
                 // to catch up on missed blocks before the next round.
@@ -624,6 +692,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void TryProposeBlockSequential()
     {
+        if (_circuitBreakerTripped) return;
+
         if (!_consensus!.IsLeader || _consensus.State != ConsensusState.Proposing)
             return;
 
@@ -637,7 +707,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
-        var pendingDexIntents = _mempool.GetPendingDexIntents((int)_chainParams.DexMaxIntentsPerBatch, _stateDb);
+        var dexStateP = new Basalt.Execution.Dex.DexState(_stateDb);
+        var effectiveMaxIntents = dexStateP.GetEffectiveMaxIntentsPerBatch(_chainParams);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents, _stateDb);
         var proposalState = _stateDb.Fork();
         var block = pendingDexIntents.Count > 0
             ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
@@ -656,6 +728,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void TryProposeBlockPipelined()
     {
+        if (_circuitBreakerTripped) return;
+
         // Block time pacing
         var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
@@ -676,7 +750,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
-        var pendingDexIntents = _mempool.GetPendingDexIntents((int)_chainParams.DexMaxIntentsPerBatch, _stateDb);
+        var dexStateP2 = new Basalt.Execution.Dex.DexState(_stateDb);
+        var effectiveMaxIntents2 = dexStateP2.GetEffectiveMaxIntentsPerBatch(_chainParams);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents2, _stateDb);
         var proposalState = _stateDb.Fork();
         var block = pendingDexIntents.Count > 0
             ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
@@ -1512,8 +1588,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private async Task ReconnectLoop(CancellationToken ct)
     {
-        // Wait for initial connections to settle
+        // M14: Exponential backoff with jitter for reconnection
         await Task.Delay(3000, ct);
+        const int baseDelayMs = 5000;
+        const int maxDelayMs = 60_000;
+        var currentDelayMs = baseDelayMs;
 
         while (!ct.IsCancellationRequested)
         {
@@ -1522,14 +1601,29 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var expectedPeerCount = _config.Peers.Length;
                 var connectedCount = _peerManager!.ConnectedCount;
 
+                // M13: Update peer count metric
+                MetricsEndpoint.RecordPeerCount(connectedCount);
+
                 if (connectedCount < expectedPeerCount)
                 {
                     _logger.LogInformation("Only {Connected}/{Expected} peers connected, reconnecting...",
                         connectedCount, expectedPeerCount);
                     await ConnectToStaticPeers();
+
+                    // If still not fully connected, increase backoff
+                    if (_peerManager.ConnectedCount < expectedPeerCount)
+                        currentDelayMs = Math.Min(currentDelayMs * 2, maxDelayMs);
+                    else
+                        currentDelayMs = baseDelayMs; // Reset on full connectivity
+                }
+                else
+                {
+                    currentDelayMs = baseDelayMs; // Reset when healthy
                 }
 
-                await Task.Delay(5000, ct);
+                // Add jitter (±20%)
+                var jitter = Random.Shared.Next(-currentDelayMs / 5, currentDelayMs / 5);
+                await Task.Delay(currentDelayMs + jitter, ct);
             }
             catch (OperationCanceledException)
             {
@@ -1806,6 +1900,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
             foreach (var key in oldKeys)
                 _proposalsByView.TryRemove(key, out _);
+        }
+
+        // B1: Flush staking state after epoch transition
+        if (_stakingPersistence != null && _stakingState != null)
+        {
+            try
+            {
+                _stakingState.FlushToPersistence(_stakingPersistence);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to flush staking state after epoch transition");
+            }
         }
 
         _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",

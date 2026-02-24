@@ -49,6 +49,13 @@ public enum TransactionType : byte
 
     /// <summary>Encrypted swap intent for threshold-decrypted batch settlement. Data: [8B epoch][32B nonce][encrypted_payload]</summary>
     DexEncryptedSwapIntent = 18,
+
+    // ── DEX Admin ──
+
+    /// <summary>Admin pause/unpause the DEX. Data: [1B pause (0=unpause, 1=pause)]</summary>
+    DexAdminPause = 19,
+    /// <summary>Admin set a governance parameter. Data: [1B paramId][8B value (BE)]</summary>
+    DexSetParameter = 20,
 }
 
 /// <summary>

@@ -15,13 +15,14 @@ public sealed class MockKycProvider : IKycProvider
     private readonly IdentityRegistry _registry;
     private readonly byte[] _providerAddress;
 
-    public MockKycProvider(IdentityRegistry registry, byte[] providerAddress)
+    public MockKycProvider(IdentityRegistry registry, byte[] providerAddress, bool allowSelfApproval = true)
     {
         _registry = registry;
         _providerAddress = providerAddress;
 
-        // Self-register as approved provider
-        registry.ApproveProvider(providerAddress);
+        // H9: Self-register as approved provider (opt-out for production safety)
+        if (allowSelfApproval)
+            registry.ApproveProvider(providerAddress);
     }
 
     public bool IsApproved => _registry.IsApprovedProvider(_providerAddress);

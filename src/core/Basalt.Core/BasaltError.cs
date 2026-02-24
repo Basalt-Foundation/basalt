@@ -76,6 +76,7 @@ public enum BasaltErrorCode
     AttestationExpired = 7007,
     ComplianceProofInvalid = 7008,
     ComplianceProofMissing = 7009,
+    NullifierReplay = 7010,
 
     // Staking errors (8xxx)
     StakeBelowMinimum = 8001,
@@ -124,6 +125,18 @@ public enum BasaltErrorCode
     DexDecryptionFailed = 10019,
     /// <summary>Encrypted intent references an unknown or expired DKG epoch.</summary>
     DexInvalidEpoch = 10020,
+    /// <summary>BST-20 token transfer failed during DEX operation.</summary>
+    DexTransferFailed = 10021,
+    /// <summary>Insufficient native token balance for DEX debit.</summary>
+    DexInsufficientBalance = 10022,
+    /// <summary>DEX is paused by admin — all DEX operations are rejected.</summary>
+    DexPaused = 10023,
+    /// <summary>Maximum pool creations per block reached.</summary>
+    DexPoolCreationLimitReached = 10024,
+    /// <summary>Sender is not the DEX admin.</summary>
+    DexAdminUnauthorized = 10025,
+    /// <summary>Invalid governance parameter ID.</summary>
+    DexInvalidParameter = 10026,
 
     // Internal errors (9xxx)
     InternalError = 9001,

@@ -519,4 +519,159 @@ public class DkgProtocolTests
         protocol.StartComplaintPhase(validators[0].PeerId);
         protocol.Phase.Should().Be(DkgPhase.Complaint);
     }
+
+    // ────────── Test 7: Malicious Dealer Detection ──────────
+
+    [Fact]
+    public void MaliciousDealer_InvalidShares_TriggersComplaint()
+    {
+        // Test 7: A malicious dealer sends shares inconsistent with commitments.
+        var validators = GenerateValidators(4);
+        var blsKeys = validators.Select(v => v.BlsPubKey).ToArray();
+        var n = 4;
+
+        var protocols = new DkgProtocol[n];
+        var dealMessages = new DkgDealMessage[n];
+
+        for (int i = 0; i < n; i++)
+            protocols[i] = new DkgProtocol(i, n, 1, blsKeys);
+
+        // Phase 1: Deal — all honest
+        for (int i = 0; i < n; i++)
+        {
+            DkgDealMessage? msg = null;
+            protocols[i].OnBroadcast += m => { if (m is DkgDealMessage d) msg = d; };
+            protocols[i].StartDealPhase(validators[i].PeerId);
+            dealMessages[i] = msg!;
+        }
+
+        // Tamper with dealer 0's encrypted shares — corrupt the share for validator 1
+        var tamperedDeal = dealMessages[0];
+        if (tamperedDeal.EncryptedShares.Length > 1 && tamperedDeal.EncryptedShares[1].Length > 0)
+        {
+            tamperedDeal.EncryptedShares[1][0] ^= 0xFF; // Flip bits
+        }
+
+        // Distribute deals — validator 1 should detect the tampered share
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = 0; j < n; j++)
+            {
+                if (i != j) protocols[i].ProcessDeal(dealMessages[j]);
+            }
+        }
+
+        // Move to complaint phase
+        for (int i = 0; i < n; i++)
+            protocols[i].StartComplaintPhase(validators[i].PeerId);
+
+        // At least one validator should have filed a complaint about dealer 0
+        var totalComplaints = protocols.Sum(p => p.ComplaintCount);
+        totalComplaints.Should().BeGreaterThan(0,
+            "tampered shares should trigger at least one complaint");
+    }
+
+    // ────────── Test 8: All Validators Derive Same GPK ──────────
+
+    [Fact]
+    public void AllValidators_DeriveSameGroupPublicKey()
+    {
+        var validators = GenerateValidators(4);
+        var blsKeys = validators.Select(v => v.BlsPubKey).ToArray();
+        var n = 4;
+
+        var protocols = new DkgProtocol[n];
+        var dealMessages = new DkgDealMessage[n];
+
+        for (int i = 0; i < n; i++)
+            protocols[i] = new DkgProtocol(i, n, 1, blsKeys);
+
+        for (int i = 0; i < n; i++)
+        {
+            DkgDealMessage? msg = null;
+            protocols[i].OnBroadcast += m => { if (m is DkgDealMessage d) msg = d; };
+            protocols[i].StartDealPhase(validators[i].PeerId);
+            dealMessages[i] = msg!;
+        }
+
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                if (i != j) protocols[i].ProcessDeal(dealMessages[j]);
+
+        for (int i = 0; i < n; i++) protocols[i].StartComplaintPhase(validators[i].PeerId);
+        for (int i = 0; i < n; i++) protocols[i].StartJustificationPhase(validators[i].PeerId);
+        for (int i = 0; i < n; i++) protocols[i].Finalize(validators[i].PeerId);
+
+        // All should complete
+        for (int i = 0; i < n; i++)
+            protocols[i].Phase.Should().Be(DkgPhase.Completed);
+
+        // All should derive the same group public key
+        var gpk0 = protocols[0].Result!.GroupPublicKey;
+        gpk0.Should().NotBeNull("group public key should be computed");
+        for (int i = 1; i < n; i++)
+        {
+            protocols[i].Result!.GroupPublicKey.ToArray().Should().BeEquivalentTo(gpk0.ToArray(),
+                $"validator {i} should derive the same GPK as validator 0");
+        }
+    }
+
+    // ────────── Test 9: Reconstruction Threshold Boundary ──────────
+
+    [Fact]
+    public void Reconstruct_ExactlyThreshold_Fails_ThresholdPlusOne_Succeeds()
+    {
+        // DKG with 7 validators, threshold=2. Need 3 shares to reconstruct (threshold+1).
+        var validators = GenerateValidators(7);
+        var blsKeys = validators.Select(v => v.BlsPubKey).ToArray();
+        var n = 7;
+
+        var protocols = new DkgProtocol[n];
+        var dealMessages = new DkgDealMessage[n];
+
+        for (int i = 0; i < n; i++)
+            protocols[i] = new DkgProtocol(i, n, 1, blsKeys);
+
+        for (int i = 0; i < n; i++)
+        {
+            DkgDealMessage? msg = null;
+            protocols[i].OnBroadcast += m => { if (m is DkgDealMessage d) msg = d; };
+            protocols[i].StartDealPhase(validators[i].PeerId);
+            dealMessages[i] = msg!;
+        }
+
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                if (i != j) protocols[i].ProcessDeal(dealMessages[j]);
+
+        for (int i = 0; i < n; i++) protocols[i].StartComplaintPhase(validators[i].PeerId);
+        for (int i = 0; i < n; i++) protocols[i].StartJustificationPhase(validators[i].PeerId);
+        for (int i = 0; i < n; i++) protocols[i].Finalize(validators[i].PeerId);
+
+        for (int i = 0; i < n; i++)
+            protocols[i].Phase.Should().Be(DkgPhase.Completed);
+
+        var threshold = protocols[0].Result!.Threshold;
+        threshold.Should().Be(2, "threshold for 7 validators should be 2");
+
+        // Collect all shares
+        var allShares = new List<(int Index, BigInteger Share)>();
+        for (int i = 0; i < n; i++)
+            allShares.Add((i + 1, protocols[i].Result!.SecretShare));
+
+        // Reconstruct with threshold+1 (3) shares — should succeed
+        var threshPlusOne = allShares.Take(threshold + 1).ToList();
+        var secretA = ThresholdCrypto.ReconstructSecret(threshPlusOne);
+
+        // Reconstruct with a different set of threshold+1 shares — same result
+        var differentSet = allShares.Skip(2).Take(threshold + 1).ToList();
+        var secretB = ThresholdCrypto.ReconstructSecret(differentSet);
+        secretA.Should().Be(secretB, "any threshold+1 shares should reconstruct the same secret");
+
+        // Reconstruct with exactly threshold (2) shares — should NOT match
+        var exactThreshold = allShares.Take(threshold).ToList();
+        var wrongSecret = ThresholdCrypto.ReconstructSecret(exactThreshold);
+        wrongSecret.Should().NotBe(secretA,
+            "exactly threshold shares (without +1) should NOT reconstruct the correct secret");
+    }
 }

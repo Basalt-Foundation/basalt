@@ -116,6 +116,14 @@ public sealed class ComplianceEngine : IComplianceVerifier
     }
 
     /// <summary>
+    /// Windowed nullifier reset — prunes only nullifiers outside the retention window.
+    /// </summary>
+    public void ResetNullifiers(ulong currentBlockNumber)
+    {
+        (_zkVerifier as ZkComplianceVerifier)?.ResetNullifiers(currentBlockNumber);
+    }
+
+    /// <summary>
     /// Register or update a compliance policy for a token.
     /// Only callable by the token issuer/owner (COMPL-05).
     /// </summary>

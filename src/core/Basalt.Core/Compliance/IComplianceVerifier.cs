@@ -34,16 +34,16 @@ public interface IComplianceVerifier
         ulong amount, long currentTimestamp, ulong receiverCurrentBalance);
 
     /// <summary>
-    /// Reset the nullifier set. Called at block boundaries to bound memory usage
-    /// and allow cross-block proof reuse (COMPL-07).
+    /// Reset the nullifier set. Called at block boundaries to bound memory usage.
+    /// See <see cref="ResetNullifiers(ulong)"/> for bounded cross-block nullifier tracking.
     /// </summary>
-    /// <remarks>
-    /// SECURITY NOTE: Nullifiers are per-block only. An attacker could replay a proof
-    /// in a subsequent block. This is acceptable because each proof is tied to a specific
-    /// transaction (nonce, sender) which prevents replay at the transaction level.
-    /// Cross-block nullifier tracking is not implemented due to unbounded storage growth.
-    /// </remarks>
     void ResetNullifiers();
+
+    /// <summary>
+    /// Windowed nullifier cleanup. Implementations prune only nullifiers outside the
+    /// retention window. Default falls back to clearing all nullifiers.
+    /// </summary>
+    void ResetNullifiers(ulong currentBlockNumber) => ResetNullifiers();
 }
 
 /// <summary>

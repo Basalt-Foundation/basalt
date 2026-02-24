@@ -1,3 +1,4 @@
+using System.Numerics;
 using Basalt.Core;
 using Basalt.Execution.Dex.Math;
 
@@ -11,9 +12,8 @@ namespace Basalt.Execution.Dex;
 /// Algorithm overview:
 /// <list type="number">
 /// <item><description>Collect all critical prices (intent limits, order prices, AMM spot price)</description></item>
-/// <item><description>Sort critical prices ascending</description></item>
-/// <item><description>For each price P, compute buy volume (demand) and sell volume (supply)</description></item>
-/// <item><description>Find P* where demand crosses supply (equilibrium)</description></item>
+/// <item><description>Sweep all prices, selecting the one that maximizes matched volume (C-05: maximum-volume clearing rule)</description></item>
+/// <item><description>Ties broken by highest price</description></item>
 /// <item><description>At P*: match buyers and sellers peer-to-peer, route residual through AMM</description></item>
 /// </list>
 ///
@@ -40,6 +40,7 @@ public static class BatchAuctionSolver
     /// <param name="reserves">Current AMM reserves.</param>
     /// <param name="feeBps">Pool fee in basis points.</param>
     /// <param name="poolId">The pool ID for this settlement.</param>
+    /// <param name="currentBlockNumber">Current block number for deadline enforcement (M-04).</param>
     /// <returns>A <see cref="BatchResult"/> with fills and updated reserves, or null if no settlement.</returns>
     public static BatchResult? ComputeSettlement(
         List<ParsedIntent> buyIntents,
@@ -48,8 +49,17 @@ public static class BatchAuctionSolver
         List<LimitOrder> sellOrders,
         PoolReserves reserves,
         uint feeBps,
-        ulong poolId)
+        ulong poolId,
+        DexState? dexState = null,
+        ulong currentBlockNumber = 0)
     {
+        // M-04: Filter expired intents by deadline
+        if (currentBlockNumber > 0)
+        {
+            buyIntents = buyIntents.Where(i => i.Deadline == 0 || i.Deadline >= currentBlockNumber).ToList();
+            sellIntents = sellIntents.Where(i => i.Deadline == 0 || i.Deadline >= currentBlockNumber).ToList();
+        }
+
         if (buyIntents.Count == 0 && sellIntents.Count == 0 &&
             buyOrders.Count == 0 && sellOrders.Count == 0)
             return null;
@@ -65,17 +75,14 @@ public static class BatchAuctionSolver
 
         // Step 1: Collect all critical prices
         var criticalPrices = CollectCriticalPrices(
-            buyIntents, sellIntents, buyOrders, sellOrders, reserves);
+            buyIntents, sellIntents, buyOrders, sellOrders, reserves, dexState, poolId);
 
         if (criticalPrices.Count == 0)
             return null;
 
-        // Step 2: Sort prices ascending
-        criticalPrices.Sort();
-
-        // Step 3: Find equilibrium price via linear scan
-        // At each price point, compute aggregate buy volume and sell volume.
-        // The clearing price is the highest price where buyVolume >= sellVolume.
+        // Step 2: C-05: Maximum-volume clearing rule — sweep ALL prices,
+        // select the one that maximizes min(buyVol, totalSell).
+        // Ties broken by highest price.
         UInt256 clearingPrice = UInt256.Zero;
         UInt256 matchedVolume = UInt256.Zero;
 
@@ -87,16 +94,12 @@ public static class BatchAuctionSolver
             var sellVol = ComputeSellVolume(price, sellIntents, sellOrders);
 
             // Include AMM as passive liquidity
-            // AMM sell volume at price P: how much token0 the AMM can output at price P
-            var ammSellVol = ComputeAmmSellVolume(price, reserves, feeBps);
-            var totalSell = sellVol + ammSellVol;
+            var ammSellVol = ComputeAmmSellVolume(price, reserves, feeBps, dexState, poolId);
+            var totalSell = UInt256.CheckedAdd(sellVol, ammSellVol);
 
-            if (buyVol.IsZero || totalSell.IsZero)
-                continue;
+            if (buyVol.IsZero || totalSell.IsZero) continue;
 
-            // The matched volume is the minimum of buy and sell at this price
             var vol = buyVol < totalSell ? buyVol : totalSell;
-
             if (vol > matchedVolume || (vol == matchedVolume && price > clearingPrice))
             {
                 clearingPrice = price;
@@ -131,7 +134,9 @@ public static class BatchAuctionSolver
         List<ParsedIntent> sellIntents,
         List<LimitOrder> buyOrders,
         List<LimitOrder> sellOrders,
-        PoolReserves reserves)
+        PoolReserves reserves,
+        DexState? dexState = null,
+        ulong poolId = 0)
     {
         var prices = new HashSet<UInt256>();
 
@@ -144,9 +149,14 @@ public static class BatchAuctionSolver
 
         foreach (var intent in sellIntents)
         {
-            var lp = intent.LimitPrice;
-            if (!lp.IsZero && lp != UInt256.MaxValue)
-                prices.Add(lp);
+            // H-04: Sell intent limit price = MinAmountOut * PriceScale / AmountIn (token1/token0)
+            // ParsedIntent.LimitPrice computes AmountIn/MinAmountOut which is inverted for sell intents.
+            if (!intent.AmountIn.IsZero && !intent.MinAmountOut.IsZero)
+            {
+                var correctPrice = FullMath.MulDiv(intent.MinAmountOut, PriceScale, intent.AmountIn);
+                if (!correctPrice.IsZero && correctPrice != UInt256.MaxValue)
+                    prices.Add(correctPrice);
+            }
         }
 
         foreach (var order in buyOrders)
@@ -157,9 +167,16 @@ public static class BatchAuctionSolver
             if (!order.Price.IsZero)
                 prices.Add(order.Price);
 
-        // AMM spot price
-        if (!reserves.Reserve0.IsZero && !reserves.Reserve1.IsZero)
+        // AMM spot price — use concentrated pool price if available
+        var concentratedSpot = ComputeConcentratedSpotPrice(dexState, poolId);
+        if (!concentratedSpot.IsZero)
+        {
+            prices.Add(concentratedSpot);
+        }
+        else if (!reserves.Reserve0.IsZero && !reserves.Reserve1.IsZero)
+        {
             prices.Add(ComputeSpotPrice(reserves.Reserve0, reserves.Reserve1));
+        }
 
         return prices.ToList();
     }
@@ -186,7 +203,7 @@ public static class BatchAuctionSolver
                 // Convert their token1 input to token0 output at the clearing price
                 // volume = amountIn * PriceScale / price (token0 units)
                 var token0Vol = FullMath.MulDiv(intent.AmountIn, PriceScale, price);
-                vol = UInt256.CheckedAdd(vol, token0Vol);
+                vol = UInt256.CheckedAdd(vol, token0Vol); // L-09: checked add
             }
         }
 
@@ -196,7 +213,7 @@ public static class BatchAuctionSolver
             {
                 // Buy order amount is in token1; convert to token0
                 var token0Vol = FullMath.MulDiv(order.Amount, PriceScale, price);
-                vol = UInt256.CheckedAdd(vol, token0Vol);
+                vol = UInt256.CheckedAdd(vol, token0Vol); // L-09: checked add
             }
         }
 
@@ -217,25 +234,19 @@ public static class BatchAuctionSolver
         foreach (var intent in sellIntents)
         {
             // Sell intent: they're selling token0, their limit is min price they'll accept
-            // For sell intents, LimitPrice = amountIn * PriceScale / minAmountOut
-            // They need price >= their minimum, but since they're selling token0,
-            // their limit price is the inverse — check if clearing price >= their min
-            // Actually: sell intent has amountIn of token0, minAmountOut of token1
-            // Their limit (min acceptable price) = minAmountOut / amountIn
-            // They participate if clearingPrice >= their limit
             var minPrice = intent.MinAmountOut.IsZero
                 ? UInt256.Zero
                 : FullMath.MulDiv(intent.MinAmountOut, PriceScale, intent.AmountIn);
 
             if (price >= minPrice)
-                vol = UInt256.CheckedAdd(vol, intent.AmountIn);
+                vol = UInt256.CheckedAdd(vol, intent.AmountIn); // L-09: checked add
         }
 
         foreach (var order in sellOrders)
         {
             // Sell order: sells token0 at minimum price
             if (price >= order.Price)
-                vol = UInt256.CheckedAdd(vol, order.Amount);
+                vol = UInt256.CheckedAdd(vol, order.Amount); // L-09: checked add
         }
 
         return vol;
@@ -243,10 +254,29 @@ public static class BatchAuctionSolver
 
     /// <summary>
     /// Compute how much token0 the AMM can provide at price P.
-    /// Uses the constant-product formula to determine the maximum output
-    /// if someone were to move the price from spot to P.
+    /// Detects whether the pool uses concentrated liquidity or constant-product,
+    /// and delegates to the appropriate computation.
     /// </summary>
     private static UInt256 ComputeAmmSellVolume(
+        UInt256 price, PoolReserves reserves, uint feeBps,
+        DexState? dexState = null, ulong poolId = 0)
+    {
+        // Check for concentrated liquidity pool
+        if (dexState != null)
+        {
+            var clState = dexState.GetConcentratedPoolState(poolId);
+            if (clState != null && !clState.Value.SqrtPriceX96.IsZero)
+                return ComputeConcentratedAmmSellVolume(price, clState.Value, dexState, poolId, feeBps);
+        }
+
+        // Fall back to constant-product
+        return ComputeConstantProductAmmSellVolume(price, reserves, feeBps);
+    }
+
+    /// <summary>
+    /// L-02: Constant-product AMM sell volume using BigInteger for overflow safety.
+    /// </summary>
+    private static UInt256 ComputeConstantProductAmmSellVolume(
         UInt256 price, PoolReserves reserves, uint feeBps)
     {
         if (reserves.Reserve0.IsZero || reserves.Reserve1.IsZero)
@@ -258,23 +288,87 @@ public static class BatchAuctionSolver
         if (price <= spotPrice)
             return UInt256.Zero;
 
-        // Compute the token1 input needed to move price from spot to P
-        // At price P: newReserve1/newReserve0 = P/PriceScale
-        // With constant product: newReserve0 * newReserve1 = k
-        // newReserve0 = sqrt(k * PriceScale / P)
-        var k = FullMath.MulDiv(reserves.Reserve0, reserves.Reserve1, UInt256.One);
-        var newRes0Sq = FullMath.MulDiv(k, PriceScale, price);
-        var newRes0 = FullMath.Sqrt(newRes0Sq);
+        // L-02: Use BigInteger for k to prevent overflow
+        var k = FullMath.ToBig(reserves.Reserve0) * FullMath.ToBig(reserves.Reserve1);
+        var newRes0Sq = k * FullMath.ToBig(PriceScale) / FullMath.ToBig(price);
+        var newRes0 = BigIntegerSqrt(newRes0Sq);
+        var bigRes0 = FullMath.ToBig(reserves.Reserve0);
 
-        if (newRes0 >= reserves.Reserve0)
+        if (newRes0 >= bigRes0)
             return UInt256.Zero;
 
-        // The AMM can sell (reserve0 - newReserve0) token0
-        var ammOutput = reserves.Reserve0 - newRes0;
+        var ammOutputBig = bigRes0 - newRes0;
+        if (ammOutputBig.Sign <= 0)
+            return UInt256.Zero;
+
+        // Convert back to UInt256
+        var ammOutputBytes = ammOutputBig.ToByteArray(isUnsigned: true);
+        if (ammOutputBytes.Length > 32)
+            return UInt256.Zero; // Overflow protection
+
+        Span<byte> padded = stackalloc byte[32];
+        padded.Clear();
+        ammOutputBytes.CopyTo(padded);
+        var ammOutput = new UInt256(padded);
 
         // Apply fee discount: actual output is less due to fees
         var feeComplement = new UInt256(10_000 - feeBps);
         return FullMath.MulDiv(ammOutput, feeComplement, new UInt256(10_000));
+    }
+
+    /// <summary>
+    /// Compute how much token0 a concentrated liquidity pool can sell at price P.
+    /// Uses read-only tick-walking simulation via <see cref="ConcentratedPool.SimulateSwap"/>.
+    /// </summary>
+    private static UInt256 ComputeConcentratedAmmSellVolume(
+        UInt256 price, ConcentratedPoolState clState, DexState dexState, ulong poolId, uint feeBps)
+    {
+        var clSpot = ComputeConcentratedSpotPrice(dexState, poolId);
+
+        // AMM sells token0 when price goes up (buyers push price above spot)
+        if (price <= clSpot || clSpot.IsZero)
+            return UInt256.Zero;
+
+        // M-02: Convert solver price to sqrtPriceX96
+        // solverPrice = token1/token0 * 2^64
+        // sqrtPriceX96 = sqrt(realPrice) * 2^96 = sqrt(solverPrice / 2^64) * 2^96
+        //              = sqrt(solverPrice) * 2^(96-32) = sqrt(solverPrice) * 2^64
+        var sqrtSolverPrice = FullMath.Sqrt(price);
+        var targetSqrtPriceX96 = FullMath.MulDiv(sqrtSolverPrice, new UInt256(1UL << 32) * new UInt256(1UL << 32), UInt256.One);
+
+        // Clamp to valid range
+        if (targetSqrtPriceX96 > Math.TickMath.MaxSqrtRatio)
+            targetSqrtPriceX96 = Math.TickMath.MaxSqrtRatio;
+        if (targetSqrtPriceX96 <= clState.SqrtPriceX96)
+            return UInt256.Zero;
+
+        // Simulate a oneForZero swap (buying token0, selling token1)
+        // H-05: Pass feeBps to SimulateSwap (which now handles fees internally)
+        var pool = new ConcentratedPool(dexState);
+        var simResult = pool.SimulateSwap(poolId, false, UInt256.MaxValue / new UInt256(2), targetSqrtPriceX96, feeBps);
+        if (simResult == null)
+            return UInt256.Zero;
+
+        // H-05: SimulateSwap now includes fee handling internally — no additional fee discount
+        return simResult.Value.AmountOut;
+    }
+
+    /// <summary>
+    /// Compute the spot price for a concentrated liquidity pool.
+    /// Returns price in solver format: token1/token0 * PriceScale.
+    /// </summary>
+    private static UInt256 ComputeConcentratedSpotPrice(DexState? dexState, ulong poolId)
+    {
+        if (dexState == null) return UInt256.Zero;
+        var clState = dexState.GetConcentratedPoolState(poolId);
+        if (clState == null || clState.Value.SqrtPriceX96.IsZero) return UInt256.Zero;
+
+        // sqrtPriceX96 = sqrt(price) * 2^96
+        // price = sqrtPriceX96^2 / 2^192
+        // solverPrice = price * PriceScale = sqrtPriceX96^2 * 2^64 / 2^192 = sqrtPriceX96^2 / 2^128
+        var sqrtP = clState.Value.SqrtPriceX96;
+        var scale128 = new UInt256(1UL << 32) * new UInt256(1UL << 32) * new UInt256(1UL << 32) * new UInt256(1UL << 32);
+        return FullMath.MulDiv(sqrtP, sqrtP, scale128);
     }
 
     // ────────── Fill Generation ──────────
@@ -303,6 +397,11 @@ public static class BatchAuctionSolver
             if (clearingPrice < minPrice) continue;
 
             var fillAmount0 = intent.AmountIn < remainingSellVolume ? intent.AmountIn : remainingSellVolume;
+
+            // M-03: Enforce AllowPartialFill
+            if (!intent.AllowPartialFill && fillAmount0 < intent.AmountIn)
+                continue;
+
             // token1 output = fillAmount0 * clearingPrice / PriceScale
             var fillAmount1 = FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
 
@@ -312,11 +411,12 @@ public static class BatchAuctionSolver
                 AmountIn = fillAmount0,
                 AmountOut = fillAmount1,
                 IsLimitOrder = false,
+                IsBuy = false,
                 TxHash = intent.TxHash,
             });
 
-            remainingSellVolume = remainingSellVolume - fillAmount0;
-            peerSellVolume = peerSellVolume + fillAmount0;
+            remainingSellVolume = UInt256.CheckedSub(remainingSellVolume, fillAmount0); // L-09
+            peerSellVolume = UInt256.CheckedAdd(peerSellVolume, fillAmount0); // L-09
         }
 
         foreach (var order in sellOrders)
@@ -333,11 +433,12 @@ public static class BatchAuctionSolver
                 AmountIn = fillAmount0,
                 AmountOut = fillAmount1,
                 IsLimitOrder = true,
-                OrderId = 0, // Would need order ID tracking
+                IsBuy = false,
+                OrderId = 0, // L-07: Would need order ID tracking from caller
             });
 
-            remainingSellVolume = remainingSellVolume - fillAmount0;
-            peerSellVolume = peerSellVolume + fillAmount0;
+            remainingSellVolume = UInt256.CheckedSub(remainingSellVolume, fillAmount0); // L-09
+            peerSellVolume = UInt256.CheckedAdd(peerSellVolume, fillAmount0); // L-09
         }
 
         // Step 2: Fill buy-side (intents and orders wanting token0)
@@ -351,6 +452,11 @@ public static class BatchAuctionSolver
             // Convert intent's token1 input to token0 at clearing price
             var token0Want = FullMath.MulDiv(intent.AmountIn, PriceScale, clearingPrice);
             var fillAmount0 = token0Want < remainingBuyVolume ? token0Want : remainingBuyVolume;
+
+            // M-03: Enforce AllowPartialFill
+            if (!intent.AllowPartialFill && fillAmount0 < token0Want)
+                continue;
+
             var fillAmount1 = FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
 
             fills.Add(new FillRecord
@@ -359,11 +465,12 @@ public static class BatchAuctionSolver
                 AmountIn = fillAmount1, // They pay token1
                 AmountOut = fillAmount0, // They receive token0
                 IsLimitOrder = false,
+                IsBuy = true,
                 TxHash = intent.TxHash,
             });
 
-            remainingBuyVolume = remainingBuyVolume - fillAmount0;
-            peerBuyVolume = peerBuyVolume + fillAmount0;
+            remainingBuyVolume = UInt256.CheckedSub(remainingBuyVolume, fillAmount0); // L-09
+            peerBuyVolume = UInt256.CheckedAdd(peerBuyVolume, fillAmount0); // L-09
         }
 
         foreach (var order in buyOrders)
@@ -381,50 +488,62 @@ public static class BatchAuctionSolver
                 AmountIn = fillAmount1,
                 AmountOut = fillAmount0,
                 IsLimitOrder = true,
-                OrderId = 0,
+                IsBuy = true,
+                OrderId = 0, // L-07: Would need order ID tracking from caller
             });
 
-            remainingBuyVolume = remainingBuyVolume - fillAmount0;
-            peerBuyVolume = peerBuyVolume + fillAmount0;
+            remainingBuyVolume = UInt256.CheckedSub(remainingBuyVolume, fillAmount0); // L-09
+            peerBuyVolume = UInt256.CheckedAdd(peerBuyVolume, fillAmount0); // L-09
         }
 
-        // Step 3: Route residual through AMM
-        // Residual = matched volume that wasn't satisfied by peer-to-peer
+        // C-06: Route residual through AMM based on net imbalance
         var ammVolume = UInt256.Zero;
         var updatedReserves = reserves;
 
-        // If sell side has leftover (more sellers than buyers matched p2p), route buy through AMM
-        if (remainingSellVolume > UInt256.Zero && !reserves.Reserve0.IsZero)
+        if (!reserves.Reserve0.IsZero && !reserves.Reserve1.IsZero)
         {
-            // There were more buyers than p2p sellers could fill;
-            // remaining buy volume needs AMM to sell token0
-            ammVolume = remainingBuyVolume;
-        }
-        else if (remainingBuyVolume > UInt256.Zero && !reserves.Reserve0.IsZero)
-        {
-            ammVolume = remainingBuyVolume;
-        }
-
-        // Update reserves based on net flow
-        // Peer-to-peer: net zero to the AMM
-        // AMM portion: adjust reserves for the residual routed through the AMM
-        if (ammVolume > UInt256.Zero && !reserves.Reserve0.IsZero && !reserves.Reserve1.IsZero)
-        {
-            // Compute AMM swap for the residual
-            var ammOutput0 = DexLibrary.GetAmountOut(
-                FullMath.MulDiv(ammVolume, clearingPrice, PriceScale),
-                reserves.Reserve1, reserves.Reserve0, feeBps);
-
-            updatedReserves = new PoolReserves
+            if (remainingBuyVolume > remainingSellVolume)
             {
-                Reserve0 = reserves.Reserve0 - (ammOutput0 < reserves.Reserve0 ? ammOutput0 : UInt256.Zero),
-                Reserve1 = reserves.Reserve1 + FullMath.MulDiv(ammVolume, clearingPrice, PriceScale),
-                TotalSupply = reserves.TotalSupply,
-                KLast = reserves.KLast,
-            };
+                // Net buy pressure: AMM sells token0, receives token1
+                var netBuy = UInt256.CheckedSub(remainingBuyVolume, remainingSellVolume);
+                var token1Cost = FullMath.MulDiv(netBuy, clearingPrice, PriceScale);
+                if (!token1Cost.IsZero)
+                {
+                    var ammOutput0 = DexLibrary.GetAmountOut(token1Cost, reserves.Reserve1, reserves.Reserve0, feeBps);
+                    ammVolume = netBuy;
+                    updatedReserves = new PoolReserves
+                    {
+                        Reserve0 = UInt256.CheckedSub(reserves.Reserve0, ammOutput0),
+                        Reserve1 = UInt256.CheckedAdd(reserves.Reserve1, token1Cost),
+                        TotalSupply = reserves.TotalSupply,
+                        KLast = reserves.KLast,
+                    };
+                }
+            }
+            else if (remainingSellVolume > remainingBuyVolume)
+            {
+                // Net sell pressure: AMM buys token0, gives token1
+                var netSell = UInt256.CheckedSub(remainingSellVolume, remainingBuyVolume);
+                if (!netSell.IsZero)
+                {
+                    var ammOutput1 = DexLibrary.GetAmountOut(netSell, reserves.Reserve0, reserves.Reserve1, feeBps);
+                    ammVolume = netSell;
+                    updatedReserves = new PoolReserves
+                    {
+                        Reserve0 = UInt256.CheckedAdd(reserves.Reserve0, netSell),
+                        Reserve1 = UInt256.CheckedSub(reserves.Reserve1, ammOutput1),
+                        TotalSupply = reserves.TotalSupply,
+                        KLast = reserves.KLast,
+                    };
+                }
+            }
         }
 
         var totalVolume1 = FullMath.MulDiv(matchedVolume, clearingPrice, PriceScale);
+
+        // L-01: Track AMM direction for solver reward computation.
+        // Sell pressure (remainingSellVolume > remainingBuyVolume) means AMM bought token0.
+        var ammBoughtToken0 = remainingSellVolume > remainingBuyVolume;
 
         return new BatchResult
         {
@@ -433,8 +552,27 @@ public static class BatchAuctionSolver
             TotalVolume0 = matchedVolume,
             TotalVolume1 = totalVolume1,
             AmmVolume = ammVolume,
+            AmmBoughtToken0 = ammBoughtToken0,
             Fills = fills,
             UpdatedReserves = updatedReserves,
         };
+    }
+
+    /// <summary>
+    /// Integer square root for BigInteger via Newton's method.
+    /// </summary>
+    private static BigInteger BigIntegerSqrt(BigInteger n)
+    {
+        if (n.IsZero) return BigInteger.Zero;
+        if (n.Sign < 0) throw new ArgumentException("Cannot compute sqrt of negative");
+
+        var x = n;
+        var y = (x + BigInteger.One) / 2;
+        while (y < x)
+        {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        return x;
     }
 }

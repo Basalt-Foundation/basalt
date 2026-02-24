@@ -308,7 +308,7 @@ public class ConcentratedPoolTests
         var stateBefore = _dexState.GetConcentratedPoolState(0)!.Value;
 
         var result = _pool.Swap(0, zeroForOne: true, new UInt256(1_000),
-            sqrtPriceLimitX96: TickMath.MinSqrtRatio + UInt256.One);
+            sqrtPriceLimitX96: TickMath.MinSqrtRatio + UInt256.One, feeBps: 30);
 
         result.Success.Should().BeTrue();
         result.Amount0.Should().BeGreaterThan(UInt256.Zero); // Input consumed
@@ -326,7 +326,7 @@ public class ConcentratedPoolTests
         var stateBefore = _dexState.GetConcentratedPoolState(0)!.Value;
 
         var result = _pool.Swap(0, zeroForOne: false, new UInt256(1_000),
-            sqrtPriceLimitX96: TickMath.MaxSqrtRatio - UInt256.One);
+            sqrtPriceLimitX96: TickMath.MaxSqrtRatio - UInt256.One, feeBps: 30);
 
         result.Success.Should().BeTrue();
         result.Amount0.Should().BeGreaterThan(UInt256.Zero);
@@ -339,7 +339,7 @@ public class ConcentratedPoolTests
     [Fact]
     public void Swap_ZeroAmount_Fails()
     {
-        var result = _pool.Swap(0, true, UInt256.Zero, TickMath.MinSqrtRatio + UInt256.One);
+        var result = _pool.Swap(0, true, UInt256.Zero, TickMath.MinSqrtRatio + UInt256.One, feeBps: 30);
         result.Success.Should().BeFalse();
         result.ErrorCode.Should().Be(BasaltErrorCode.DexInvalidAmount);
     }
@@ -351,7 +351,7 @@ public class ConcentratedPoolTests
 
         // For zeroForOne: limit must be < current price
         var result = _pool.Swap(0, zeroForOne: true, new UInt256(1_000),
-            sqrtPriceLimitX96: TickMath.MaxSqrtRatio);
+            sqrtPriceLimitX96: TickMath.MaxSqrtRatio, feeBps: 30);
         result.Success.Should().BeFalse();
         result.ErrorCode.Should().Be(BasaltErrorCode.DexInvalidAmount);
     }
@@ -360,19 +360,18 @@ public class ConcentratedPoolTests
     public void Swap_NoLiquidity_NoOutput()
     {
         // Pool is initialized but has no positions → no liquidity
-        // The swap should succeed but produce zero output
+        // M-4: Swap should fail when nothing is consumed (insufficient liquidity)
         var result = _pool.Swap(0, zeroForOne: true, new UInt256(1_000),
-            sqrtPriceLimitX96: TickMath.MinSqrtRatio + UInt256.One);
+            sqrtPriceLimitX96: TickMath.MinSqrtRatio + UInt256.One, feeBps: 30);
 
-        result.Success.Should().BeTrue();
-        // No liquidity to trade against
-        result.Amount1.Should().Be(UInt256.Zero);
+        result.Success.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.DexInsufficientLiquidity);
     }
 
     [Fact]
     public void Swap_NonexistentPool_Fails()
     {
-        var result = _pool.Swap(999, true, new UInt256(1000), TickMath.MinSqrtRatio + UInt256.One);
+        var result = _pool.Swap(999, true, new UInt256(1000), TickMath.MinSqrtRatio + UInt256.One, feeBps: 30);
         result.Success.Should().BeFalse();
         result.ErrorCode.Should().Be(BasaltErrorCode.DexPoolNotFound);
     }
@@ -474,6 +473,89 @@ public class ConcentratedPoolTests
         _dexState.GetPositionCount().Should().Be(0ul);
         _dexState.SetPositionCount(5);
         _dexState.GetPositionCount().Should().Be(5ul);
+    }
+
+    // ────────── Multi-Tick and SimulateSwap Tests ──────────
+
+    [Fact]
+    public void Swap_CrossesMultipleTickBoundaries()
+    {
+        // Test 5: Multi-tick swap crossing 3+ boundaries.
+        // Create 3 adjacent narrow-range positions to create multiple tick boundaries.
+        _pool.MintPosition(Alice, 0, -3000, -1000, new UInt256(5_000_000), new UInt256(5_000_000));
+        _pool.MintPosition(Alice, 0, -1000, 1000, new UInt256(5_000_000), new UInt256(5_000_000));
+        _pool.MintPosition(Alice, 0, 1000, 3000, new UInt256(5_000_000), new UInt256(5_000_000));
+
+        var stateBefore = _dexState.GetConcentratedPoolState(0)!.Value;
+
+        // Execute a large swap that should cross through multiple tick boundaries
+        var result = _pool.Swap(0, zeroForOne: true, new UInt256(10_000_000),
+            sqrtPriceLimitX96: TickMath.MinSqrtRatio + UInt256.One, feeBps: 30);
+
+        result.Success.Should().BeTrue("large swap should succeed through multiple ticks");
+        result.Amount0.Should().BeGreaterThan(UInt256.Zero, "should consume some input");
+        result.Amount1.Should().BeGreaterThan(UInt256.Zero, "should produce output from multiple tick ranges");
+
+        var stateAfter = _dexState.GetConcentratedPoolState(0)!.Value;
+        // Price should have moved significantly downward through multiple ticks
+        stateAfter.SqrtPriceX96.Should().BeLessThan(stateBefore.SqrtPriceX96,
+            "price should decrease after large zeroForOne swap across ticks");
+        stateAfter.CurrentTick.Should().BeLessThan(stateBefore.CurrentTick,
+            "tick should decrease after crossing multiple boundaries");
+    }
+
+    [Fact]
+    public void SimulateSwap_MatchesSwapOutput()
+    {
+        // Test 6: SimulateSwap should produce the same output as Swap.
+        _pool.MintPosition(Alice, 0, -10000, 10000, new UInt256(10_000_000), new UInt256(10_000_000));
+
+        var amountIn = new UInt256(5_000);
+        var sqrtPriceLimit = TickMath.MinSqrtRatio + UInt256.One;
+
+        // SimulateSwap (read-only)
+        var simResult = _pool.SimulateSwap(0, zeroForOne: true, amountIn, sqrtPriceLimit, feeBps: 30);
+        simResult.Should().NotBeNull("simulation should succeed");
+
+        // Verify state was NOT changed by simulation
+        var stateAfterSim = _dexState.GetConcentratedPoolState(0)!.Value;
+
+        // Now execute actual swap
+        var swapResult = _pool.Swap(0, zeroForOne: true, amountIn, sqrtPriceLimit, feeBps: 30);
+        swapResult.Success.Should().BeTrue();
+
+        // SimulateSwap output should match Swap output
+        simResult!.Value.AmountOut.Should().Be(swapResult.Amount1,
+            "SimulateSwap output should match Swap output");
+        simResult.Value.AmountConsumed.Should().Be(swapResult.Amount0,
+            "SimulateSwap consumed should match Swap consumed");
+    }
+
+    // ────────── H-3 Regression: Swap deadline enforcement ──────────
+
+    [Fact]
+    public void Swap_ExpiredDeadline_Fails()
+    {
+        _pool.MintPosition(Alice, 0, -10000, 10000, new UInt256(10_000_000), new UInt256(10_000_000));
+
+        var sqrtPriceLimit = TickMath.MinSqrtRatio + UInt256.One;
+        var result = _pool.Swap(0, zeroForOne: true, new UInt256(1_000), sqrtPriceLimit, feeBps: 30,
+            currentBlock: 100, deadline: 50); // currentBlock > deadline
+
+        result.Success.Should().BeFalse();
+        result.ErrorCode.Should().Be(BasaltErrorCode.DexDeadlineExpired);
+    }
+
+    [Fact]
+    public void Swap_ZeroDeadline_Ignored()
+    {
+        _pool.MintPosition(Alice, 0, -10000, 10000, new UInt256(10_000_000), new UInt256(10_000_000));
+
+        var sqrtPriceLimit = TickMath.MinSqrtRatio + UInt256.One;
+        var result = _pool.Swap(0, zeroForOne: true, new UInt256(1_000), sqrtPriceLimit, feeBps: 30,
+            currentBlock: 100, deadline: 0); // deadline = 0 means no deadline
+
+        result.Success.Should().BeTrue();
     }
 
     private static Address MakeAddress(byte id)

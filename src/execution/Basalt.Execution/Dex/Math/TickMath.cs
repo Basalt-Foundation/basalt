@@ -14,6 +14,9 @@ namespace Basalt.Execution.Dex.Math;
 /// For |tick|, the constants give 1/sqrt(1.0001)^|tick| in Q128.128.
 /// Positive ticks are then inverted to get sqrt(1.0001)^tick.
 /// Ported from Uniswap v3 TickMath.sol to UInt256/BigInteger arithmetic.
+///
+/// L-14: GetTickAtSqrtRatio uses log2 estimation (MSB + 14 squaring refinements + 1 verification)
+/// instead of binary search, reducing from ~21 full tick→sqrt conversions to ~1.
 /// </remarks>
 public static class TickMath
 {
@@ -37,6 +40,13 @@ public static class TickMath
     // The algorithm multiplies these together for each set bit of |tick| to get
     // ratio = 2^128 / sqrt(1.0001)^|tick| in Q128.128 format.
     private static readonly BigInteger[] MagicConstants;
+
+    // L-14: Constants for log2-based GetTickAtSqrtRatio (from Uniswap v3 TickMath.sol).
+    // LogConvFactor = 1 / log2(sqrt(1.0001)) in Q64 fixed-point.
+    // The offsets account for rounding to produce a tight [tickLow, tickHi] bracket.
+    private static readonly BigInteger LogConvFactor = BigInteger.Parse("255738958999603826347141");
+    private static readonly BigInteger TickLowOffset = BigInteger.Parse("3402992956809132418596140100660247210");
+    private static readonly BigInteger TickHiOffset = BigInteger.Parse("291339464771989622907027621153398088495");
 
     static TickMath()
     {
@@ -122,6 +132,10 @@ public static class TickMath
     /// <summary>
     /// Computes the tick at the given sqrt price ratio (floor).
     /// The result satisfies: GetSqrtRatioAtTick(result) &lt;= sqrtPriceX96 &lt; GetSqrtRatioAtTick(result + 1).
+    ///
+    /// L-14: Uses log2 estimation (MSB + 14 squaring refinements) instead of binary search.
+    /// This reduces the cost from ~21 full tick→sqrt conversions to at most 1 verification call.
+    /// Algorithm ported from Uniswap v3 TickMath.sol.
     /// </summary>
     /// <param name="sqrtPriceX96">The sqrt price as a Q64.96 value. Must be in [MinSqrtRatio, MaxSqrtRatio].</param>
     /// <returns>The greatest tick such that GetSqrtRatioAtTick(tick) &lt;= sqrtPriceX96.</returns>
@@ -130,20 +144,45 @@ public static class TickMath
         if (sqrtPriceX96 < MinSqrtRatio || sqrtPriceX96 > MaxSqrtRatio)
             throw new ArgumentOutOfRangeException(nameof(sqrtPriceX96), "Sqrt ratio out of range");
 
-        // Binary search for the greatest tick where GetSqrtRatioAtTick(tick) <= sqrtPriceX96.
-        int lo = MinTick;
-        int hi = MaxTick;
-        while (lo < hi)
+        // Step 1: Convert Q64.96 → Q128.128 by left-shifting 32 bits
+        var ratio = ToBig(sqrtPriceX96) << 32;
+
+        // Step 2: Find MSB position (integer part of log2)
+        int msb = (int)ratio.GetBitLength() - 1;
+
+        // Step 3: Normalize so bit 127 is the MSB (r in [2^127, 2^128))
+        BigInteger r;
+        if (msb >= 128)
+            r = ratio >> (msb - 127);
+        else
+            r = ratio << (127 - msb);
+
+        // Step 4: Compute log2 in Q64.64 fixed-point
+        // Integer part from MSB position, fractional part via 14 squaring iterations
+        var log_2 = new BigInteger(msb - 128) << 64;
+
+        for (int i = 63; i >= 50; i--)
         {
-            int mid = lo + (hi - lo + 1) / 2;
-            var sqrtAtMid = GetSqrtRatioAtTick(mid);
-            if (sqrtAtMid <= sqrtPriceX96)
-                lo = mid;
-            else
-                hi = mid - 1;
+            // Square and normalize: r*r is ~256 bits, >>127 brings back to ~129 bits
+            r = r * r >> 127;
+            // Check if r >= 2^128 (fractional bit is 1)
+            var f = r >> 128;
+            log_2 |= f << i;
+            // If f=1, divide r by 2 to keep it in [2^127, 2^128)
+            r >>= (int)f;
         }
 
-        return lo;
+        // Step 5: Convert log2 to log_sqrt(1.0001) using precomputed constant
+        var log_sqrt10001 = log_2 * LogConvFactor;
+
+        // Step 6: Compute tight tick bracket and verify
+        int tickLow = (int)((log_sqrt10001 - TickLowOffset) >> 128);
+        int tickHi = (int)((log_sqrt10001 + TickHiOffset) >> 128);
+
+        if (tickLow == tickHi)
+            return tickLow;
+
+        return GetSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow;
     }
 
     private static BigInteger ToBig(UInt256 value)

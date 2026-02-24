@@ -101,13 +101,25 @@ public sealed class TrieStateDb : IStateDatabase
         return new TrieStateDb(overlay, currentRoot);
     }
 
+    /// <summary>
+    /// Not supported by the trie-backed store. Merkle Patricia Tries are optimized for
+    /// key→value lookups and proof generation, not full enumeration. Full trie traversal
+    /// would require visiting every node (O(n) I/O with no locality), which is prohibitively
+    /// expensive for large state databases.
+    ///
+    /// <para><b>Workaround:</b> Use <see cref="Basalt.Storage.FlatStateDb"/> which maintains
+    /// an O(1) dictionary cache alongside the trie. <c>FlatStateDb.GetAllAccounts()</c>
+    /// returns cached accounts directly.</para>
+    ///
+    /// <para><b>Future:</b> A dedicated account index (e.g., RocksDB column family with
+    /// address→AccountState mapping) would enable efficient enumeration without the
+    /// memory overhead of FlatStateDb's in-memory cache.</para>
+    /// </summary>
     public IEnumerable<(Address Address, AccountState State)> GetAllAccounts()
     {
-        // For the trie-backed store, we iterate over all leaves
-        // This is a best-effort implementation — real production would use a separate index
         throw new NotSupportedException(
             "Iterating all accounts is not efficiently supported by the trie-backed store. " +
-            "Use InMemoryStateDb for development or maintain a separate index.");
+            "Use FlatStateDb (which wraps TrieStateDb with an O(1) cache) or maintain a separate index.");
     }
 
     public byte[]? GetStorage(Address contract, Hash256 key)

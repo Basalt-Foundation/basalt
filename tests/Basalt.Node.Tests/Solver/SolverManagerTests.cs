@@ -329,6 +329,34 @@ public class SolverManagerTests
         }).Should().BeFalse(); // Wrong block number
     }
 
+    [Fact]
+    public void IncrementRevertCount_TracksReverts()
+    {
+        // H6: Revert count tracking for solver reputation
+        var manager = new SolverManager(DefaultParams);
+        var (_, pubKey, address) = MakeSolver();
+        manager.RegisterSolver(address, pubKey, "http://solver:8080");
+
+        var info = manager.GetSolverInfo(address);
+        info!.RevertCount.Should().Be(0);
+
+        manager.IncrementRevertCount(address);
+        manager.IncrementRevertCount(address);
+        manager.IncrementRevertCount(address);
+
+        info = manager.GetSolverInfo(address);
+        info!.RevertCount.Should().Be(3);
+    }
+
+    [Fact]
+    public void IncrementRevertCount_UnknownSolver_DoesNotThrow()
+    {
+        // H6: Incrementing revert count for unregistered solver should not crash
+        var manager = new SolverManager(DefaultParams);
+        var act = () => manager.IncrementRevertCount(MakeAddress(0x99));
+        act.Should().NotThrow();
+    }
+
     // Helper methods
 
     private static byte[] CreateSwapIntentPayload(Address tokenIn, Address tokenOut, UInt256 amountIn, UInt256 minAmountOut)

@@ -147,9 +147,18 @@ public sealed class SolverManager
                 return false;
             }
 
-            // Verify solution signature
+            // M-14: Reject solutions with excessive fills to prevent DoS
+            const int MaxFillsPerSolution = 10_000;
+            if (solution.Result.Fills.Count > MaxFillsPerSolution)
+            {
+                _logger?.LogWarning("Solution rejected: too many fills ({Count} > {Max}) from {Address}",
+                    solution.Result.Fills.Count, MaxFillsPerSolution, solution.SolverAddress);
+                return false;
+            }
+
+            // H-09: Verify solution signature (includes fills hash)
             var signData = ComputeSolutionSignData(
-                solution.BlockNumber, solution.PoolId, solution.ClearingPrice);
+                solution.BlockNumber, solution.PoolId, solution.ClearingPrice, solution.Result.Fills);
             var solver = _solvers[solution.SolverAddress];
             if (!Ed25519Signer.Verify(solver.PublicKey, signData, solution.SolverSignature))
             {
@@ -254,6 +263,7 @@ public sealed class SolverManager
         {
             _logger?.LogInformation("Using external solution from {Address} for pool {Pool} (built-in produced no result)",
                 bestExternal.SolverAddress, poolId);
+            bestExternal.Result.WinningSolver = bestExternal.SolverAddress;
             return bestExternal.Result;
         }
 
@@ -266,6 +276,7 @@ public sealed class SolverManager
             _logger?.LogInformation(
                 "External solver {Address} wins for pool {Pool}: surplus {ExtSurplus} > built-in {BuiltInSurplus}",
                 bestExternal.SolverAddress, poolId, externalSurplus, builtInSurplus);
+            bestExternal.Result.WinningSolver = bestExternal.SolverAddress;
             return bestExternal.Result;
         }
 
@@ -275,16 +286,51 @@ public sealed class SolverManager
     }
 
     /// <summary>
-    /// Compute the data that a solver must sign to authenticate their solution.
-    /// BLAKE3(blockNumber BE || poolId BE || clearingPrice LE 32B)
+    /// H-09: Compute the data that a solver must sign to authenticate their solution.
+    /// Includes a hash of all fills to prevent tampering.
+    /// BLAKE3(blockNumber BE || poolId BE || clearingPrice LE 32B || fillsHash 32B)
     /// </summary>
-    public static byte[] ComputeSolutionSignData(ulong blockNumber, ulong poolId, UInt256 clearingPrice)
+    public static byte[] ComputeSolutionSignData(ulong blockNumber, ulong poolId, UInt256 clearingPrice, List<FillRecord>? fills = null)
     {
-        var data = new byte[8 + 8 + 32];
+        // H-09: Hash fills data for signature coverage
+        byte[] fillsHash;
+        if (fills != null && fills.Count > 0)
+        {
+            // Each fill: [20B participant][32B amountIn][32B amountOut] = 84 bytes
+            var fillsData = new byte[fills.Count * 84];
+            for (int i = 0; i < fills.Count; i++)
+            {
+                var offset = i * 84;
+                fills[i].Participant.WriteTo(fillsData.AsSpan(offset, 20));
+                fills[i].AmountIn.WriteTo(fillsData.AsSpan(offset + 20, 32));
+                fills[i].AmountOut.WriteTo(fillsData.AsSpan(offset + 52, 32));
+            }
+            fillsHash = Blake3Hasher.Hash(fillsData).ToArray();
+        }
+        else
+        {
+            fillsHash = new byte[32]; // zero hash for empty fills
+        }
+
+        var data = new byte[8 + 8 + 32 + 32];
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data.AsSpan(0, 8), blockNumber);
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data.AsSpan(8, 8), poolId);
         clearingPrice.WriteTo(data.AsSpan(16, 32));
+        fillsHash.CopyTo(data.AsSpan(48, 32));
         return Blake3Hasher.Hash(data).ToArray();
+    }
+
+    /// <summary>
+    /// H6: Increment the revert count for a solver whose settlement execution failed.
+    /// Called by the block builder when a solver's settlement reverts.
+    /// </summary>
+    public void IncrementRevertCount(Address solverAddress)
+    {
+        lock (_lock)
+        {
+            if (_solvers.TryGetValue(solverAddress, out var solver))
+                solver.RevertCount++;
+        }
     }
 
     /// <summary>
@@ -310,4 +356,6 @@ public sealed class RegisteredSolver
     public long RegisteredAtMs { get; init; }
     public int SolutionsAccepted { get; set; }
     public int SolutionsRejected { get; set; }
+    /// <summary>H6: Track settlement execution reverts for reputation scoring.</summary>
+    public int RevertCount { get; set; }
 }

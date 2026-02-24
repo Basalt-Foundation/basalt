@@ -56,4 +56,8 @@ EXPOSE 5000 5001 30303
 ENV ASPNETCORE_URLS=http://+:5000
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
 
+# L19: Health check for container orchestrators (Docker Compose, Kubernetes)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -sf http://localhost:5000/v1/health || exit 1
+
 ENTRYPOINT ["dotnet", "Basalt.Node.dll"]

@@ -24,6 +24,11 @@ namespace Basalt.Execution.Dex;
 /// <item><term>0x0B + positionId(8B)</term><description>Concentrated liquidity position</description></item>
 /// <item><term>0x0C + poolId(8B)</term><description>Concentrated pool state (sqrtPrice, currentTick, totalLiquidity)</description></item>
 /// <item><term>0x0D</term><description>Global position count (ulong)</description></item>
+/// <item><term>0x0E + poolId(8B) + blockNumber(8B)</term><description>TWAP accumulator snapshot (for windowed queries)</description></item>
+/// <item><term>0x0F + poolId(8B) + wordPos(4B signed BE)</term><description>Tick bitmap word (256 ticks per word)</description></item>
+/// <item><term>0x12</term><description>Emergency pause flag (1 byte: 0=unpaused, 1=paused)</description></item>
+/// <item><term>0x13 + paramId(1B)</term><description>Governance parameter override (ulong BE)</description></item>
+/// <item><term>0x14 + blockNumber(8B)</term><description>Pool creation count per block (ulong BE)</description></item>
 /// </list>
 /// </summary>
 public sealed class DexState
@@ -212,6 +217,9 @@ public sealed class DexState
         };
         _stateDb.SetStorage(DexAddress, MakeOrderKey(orderId), order.Serialize());
 
+        // L-15: Insert into per-pool order linked list
+        InsertOrderIntoPoolIndex(poolId, orderId);
+
         return orderId;
     }
 
@@ -234,6 +242,11 @@ public sealed class DexState
     /// </summary>
     public void DeleteOrder(ulong orderId)
     {
+        // L-15: Remove from per-pool linked list before deleting
+        var order = GetOrder(orderId);
+        if (order != null)
+            RemoveOrderFromPoolIndex(order.Value.PoolId, orderId);
+
         _stateDb.DeleteStorage(DexAddress, MakeOrderKey(orderId));
     }
 
@@ -272,6 +285,30 @@ public sealed class DexState
         }
         acc.LastBlock = blockNumber;
         _stateDb.SetStorage(DexAddress, MakeTwapKey(poolId), acc.Serialize());
+
+        // M-06: Store per-block snapshot for windowed TWAP queries
+        SetTwapSnapshot(poolId, blockNumber, acc.CumulativePrice);
+    }
+
+    /// <summary>
+    /// M-06: Get a TWAP accumulator snapshot at a specific block.
+    /// Returns null if no snapshot was stored at that block.
+    /// </summary>
+    public UInt256? GetTwapSnapshot(ulong poolId, ulong blockNumber)
+    {
+        var key = MakeTwapSnapshotKey(poolId, blockNumber);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 32) return null;
+        return new UInt256(data);
+    }
+
+    /// <summary>
+    /// M-06: Store a TWAP accumulator snapshot at a specific block for windowed queries.
+    /// </summary>
+    private void SetTwapSnapshot(ulong poolId, ulong blockNumber, UInt256 cumulativePrice)
+    {
+        var key = MakeTwapSnapshotKey(poolId, blockNumber);
+        _stateDb.SetStorage(DexAddress, key, cumulativePrice.ToArray());
     }
 
     // ────────── Concentrated Liquidity (Phase E2) ──────────
@@ -281,7 +318,7 @@ public sealed class DexState
     {
         var key = MakeTickKey(poolId, tick);
         var data = _stateDb.GetStorage(DexAddress, key);
-        if (data == null || data.Length < TickInfo.SerializedSize) return default;
+        if (data == null || data.Length < TickInfo.LegacySerializedSize) return default;
         return TickInfo.Deserialize(data);
     }
 
@@ -302,7 +339,7 @@ public sealed class DexState
     {
         var key = MakePositionKey(positionId);
         var data = _stateDb.GetStorage(DexAddress, key);
-        if (data == null || data.Length < Position.SerializedSize) return null;
+        if (data == null || data.Length < Position.LegacySerializedSize) return null;
         return Position.Deserialize(data);
     }
 
@@ -323,7 +360,7 @@ public sealed class DexState
     {
         var key = MakeConcentratedPoolKey(poolId);
         var data = _stateDb.GetStorage(DexAddress, key);
-        if (data == null || data.Length < ConcentratedPoolState.SerializedSize) return null;
+        if (data == null || data.Length < ConcentratedPoolState.LegacySerializedSize) return null;
         return ConcentratedPoolState.Deserialize(data);
     }
 
@@ -348,6 +385,231 @@ public sealed class DexState
         var key = MakeGlobalKey(0x0D);
         var data = new byte[8];
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, count);
+        _stateDb.SetStorage(DexAddress, key, data);
+    }
+
+    // ────────── Per-Pool Order Index (L-15) ──────────
+
+    /// <summary>
+    /// L-15: Get the head of a pool's order linked list.
+    /// Returns <c>ulong.MaxValue</c> if the pool has no orders.
+    /// </summary>
+    public ulong GetPoolOrderHead(ulong poolId)
+    {
+        var key = MakePoolOrderHeadKey(poolId);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 8)
+            return ulong.MaxValue;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    /// <summary>
+    /// L-15: Set the head of a pool's order linked list.
+    /// </summary>
+    public void SetPoolOrderHead(ulong poolId, ulong orderId)
+    {
+        var key = MakePoolOrderHeadKey(poolId);
+        if (orderId == ulong.MaxValue)
+        {
+            _stateDb.DeleteStorage(DexAddress, key);
+            return;
+        }
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, orderId);
+        _stateDb.SetStorage(DexAddress, key, data);
+    }
+
+    /// <summary>
+    /// L-15: Get the next order ID in a pool's linked list after the given order.
+    /// Returns <c>ulong.MaxValue</c> if this is the last order.
+    /// </summary>
+    public ulong GetOrderNext(ulong orderId)
+    {
+        var key = MakeOrderNextKey(orderId);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 8)
+            return ulong.MaxValue;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    /// <summary>
+    /// L-15: Set the next order ID in a pool's linked list.
+    /// </summary>
+    public void SetOrderNext(ulong orderId, ulong nextOrderId)
+    {
+        var key = MakeOrderNextKey(orderId);
+        if (nextOrderId == ulong.MaxValue)
+        {
+            _stateDb.DeleteStorage(DexAddress, key);
+            return;
+        }
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, nextOrderId);
+        _stateDb.SetStorage(DexAddress, key, data);
+    }
+
+    /// <summary>
+    /// L-15: Insert an order at the head of a pool's linked list (O(1)).
+    /// </summary>
+    public void InsertOrderIntoPoolIndex(ulong poolId, ulong orderId)
+    {
+        var currentHead = GetPoolOrderHead(poolId);
+        SetOrderNext(orderId, currentHead);
+        SetPoolOrderHead(poolId, orderId);
+    }
+
+    /// <summary>
+    /// L-15: Remove an order from a pool's linked list.
+    /// Scans from head to find the predecessor (O(n) per pool, but bounded per-pool).
+    /// </summary>
+    public void RemoveOrderFromPoolIndex(ulong poolId, ulong orderId)
+    {
+        var head = GetPoolOrderHead(poolId);
+        if (head == ulong.MaxValue) return;
+
+        if (head == orderId)
+        {
+            // Removing the head — promote next
+            var next = GetOrderNext(orderId);
+            SetPoolOrderHead(poolId, next);
+            SetOrderNext(orderId, ulong.MaxValue);
+            return;
+        }
+
+        // Scan for predecessor
+        var prev = head;
+        const int maxScan = 10_000;
+        int scanned = 0;
+        while (prev != ulong.MaxValue && scanned < maxScan)
+        {
+            scanned++;
+            var next = GetOrderNext(prev);
+            if (next == orderId)
+            {
+                // Unlink orderId
+                var afterRemoved = GetOrderNext(orderId);
+                SetOrderNext(prev, afterRemoved);
+                SetOrderNext(orderId, ulong.MaxValue);
+                return;
+            }
+            prev = next;
+        }
+    }
+
+    // ────────── Emergency Pause ──────────
+
+    private const byte PausePrefix = 0x12;
+
+    /// <summary>Check whether the DEX is currently paused.</summary>
+    public bool IsDexPaused()
+    {
+        var key = MakeGlobalKey(PausePrefix);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        return data is { Length: >= 1 } && data[0] != 0;
+    }
+
+    /// <summary>Set or clear the DEX pause flag.</summary>
+    public void SetDexPaused(bool paused)
+    {
+        var key = MakeGlobalKey(PausePrefix);
+        _stateDb.SetStorage(DexAddress, key, [paused ? (byte)1 : (byte)0]);
+    }
+
+    // ────────── Governance Parameters ──────────
+
+    /// <summary>Well-known governance parameter IDs for DEX configuration.</summary>
+    public static class ParamId
+    {
+        public const byte SolverRewardBps = 0x01;
+        public const byte MaxIntentsPerBatch = 0x02;
+        public const byte TwapWindowBlocks = 0x03;
+        public const byte MaxPoolCreationsPerBlock = 0x04;
+    }
+
+    private const byte ParamPrefix = 0x13;
+
+    /// <summary>Get a governance parameter override. Returns null if no override is set.</summary>
+    public ulong? GetDexParameter(byte paramId)
+    {
+        Span<byte> keyBytes = stackalloc byte[32];
+        keyBytes.Clear();
+        keyBytes[0] = ParamPrefix;
+        keyBytes[1] = paramId;
+        var key = new Hash256(keyBytes);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 8) return null;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    /// <summary>Set a governance parameter override.</summary>
+    public void SetDexParameter(byte paramId, ulong value)
+    {
+        Span<byte> keyBytes = stackalloc byte[32];
+        keyBytes.Clear();
+        keyBytes[0] = ParamPrefix;
+        keyBytes[1] = paramId;
+        var key = new Hash256(keyBytes);
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, value);
+        _stateDb.SetStorage(DexAddress, key, data);
+    }
+
+    /// <summary>Get effective SolverRewardBps (governance override → ChainParameters fallback).</summary>
+    public uint GetEffectiveSolverRewardBps(ChainParameters cp)
+    {
+        var v = GetDexParameter(ParamId.SolverRewardBps);
+        return v.HasValue ? (uint)v.Value : cp.SolverRewardBps;
+    }
+
+    /// <summary>Get effective MaxIntentsPerBatch (governance override → ChainParameters fallback).</summary>
+    public uint GetEffectiveMaxIntentsPerBatch(ChainParameters cp)
+    {
+        var v = GetDexParameter(ParamId.MaxIntentsPerBatch);
+        return v.HasValue ? (uint)v.Value : cp.DexMaxIntentsPerBatch;
+    }
+
+    /// <summary>Get effective TwapWindowBlocks (governance override → ChainParameters fallback).</summary>
+    public ulong GetEffectiveTwapWindowBlocks(ChainParameters cp)
+    {
+        var v = GetDexParameter(ParamId.TwapWindowBlocks);
+        return v ?? cp.TwapWindowBlocks;
+    }
+
+    /// <summary>Get effective MaxPoolCreationsPerBlock (governance override → ChainParameters fallback).</summary>
+    public uint GetEffectiveMaxPoolCreationsPerBlock(ChainParameters cp)
+    {
+        var v = GetDexParameter(ParamId.MaxPoolCreationsPerBlock);
+        return v.HasValue ? (uint)v.Value : cp.MaxPoolCreationsPerBlock;
+    }
+
+    // ────────── Pool Creation Rate Limit ──────────
+
+    private const byte BlockPoolCreationsPrefix = 0x14;
+
+    /// <summary>Get the number of pools created in a given block.</summary>
+    public ulong GetBlockPoolCreations(ulong blockNumber)
+    {
+        Span<byte> keyBytes = stackalloc byte[32];
+        keyBytes.Clear();
+        keyBytes[0] = BlockPoolCreationsPrefix;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes[1..9], blockNumber);
+        var key = new Hash256(keyBytes);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 8) return 0;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    /// <summary>Increment the pool creation counter for a given block.</summary>
+    public void IncrementBlockPoolCreations(ulong blockNumber)
+    {
+        var count = GetBlockPoolCreations(blockNumber);
+        Span<byte> keyBytes = stackalloc byte[32];
+        keyBytes.Clear();
+        keyBytes[0] = BlockPoolCreationsPrefix;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes[1..9], blockNumber);
+        var key = new Hash256(keyBytes);
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, count + 1);
         _stateDb.SetStorage(DexAddress, key, data);
     }
 
@@ -507,21 +769,112 @@ public sealed class DexState
     }
 
     /// <summary>
-    /// Construct the pool lookup key: <c>0x09 + token0(20B) + token1(10B) + feeBps(2B)</c>.
-    /// Note: token1 is truncated to first 10 bytes due to 32-byte key limit.
-    /// This provides sufficient uniqueness for pool lookup while fitting in a single hash key.
+    /// H-10: Construct the pool lookup key using BLAKE3 hash to avoid truncation.
+    /// Input: <c>0x09 + token0(20B) + token1(20B) + feeBps(4B)</c> → BLAKE3 → 32-byte key.
     /// </summary>
     public static Hash256 MakePoolLookupKey(Address token0, Address token1, uint feeBps)
     {
+        Span<byte> input = stackalloc byte[1 + 20 + 20 + 4];
+        input[0] = 0x09;
+        token0.WriteTo(input[1..21]);
+        token1.WriteTo(input[21..41]);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(input[41..45], feeBps);
+        var hash = Blake3Hasher.Hash(input);
+        return new Hash256(hash.ToArray());
+    }
+
+    // ────────── Tick Bitmap ──────────
+
+    /// <summary>
+    /// Get a tick bitmap word for a pool. Each word covers 256 consecutive ticks.
+    /// A set bit at position <c>tick &amp; 0xFF</c> means that tick is initialized.
+    /// </summary>
+    public UInt256 GetTickBitmapWord(ulong poolId, int wordPos)
+    {
+        var key = MakeTickBitmapKey(poolId, wordPos);
+        var data = _stateDb.GetStorage(DexAddress, key);
+        if (data == null || data.Length < 32) return UInt256.Zero;
+        return new UInt256(data);
+    }
+
+    /// <summary>
+    /// Set a tick bitmap word for a pool.
+    /// </summary>
+    public void SetTickBitmapWord(ulong poolId, int wordPos, UInt256 word)
+    {
+        var key = MakeTickBitmapKey(poolId, wordPos);
+        if (word.IsZero)
+            _stateDb.DeleteStorage(DexAddress, key);
+        else
+            _stateDb.SetStorage(DexAddress, key, word.ToArray());
+    }
+
+    /// <summary>
+    /// Flip a tick's bit in the bitmap. Called when a tick transitions
+    /// between initialized (has liquidity) and uninitialized (no liquidity).
+    /// </summary>
+    public void FlipTickBit(ulong poolId, int tick)
+    {
+        int wordPos = tick >> 8;
+        int bitPos = tick & 0xFF;
+        var word = GetTickBitmapWord(poolId, wordPos);
+        word ^= UInt256.One << bitPos;
+        SetTickBitmapWord(poolId, wordPos, word);
+    }
+
+    /// <summary>
+    /// Construct the storage key for a tick bitmap word: <c>0x0F + poolId(8B) + wordPos(4B signed BE) + 0x00(19B)</c>.
+    /// </summary>
+    public static Hash256 MakeTickBitmapKey(ulong poolId, int wordPos)
+    {
         Span<byte> key = stackalloc byte[32];
         key.Clear();
-        key[0] = 0x09;
-        token0.WriteTo(key[1..21]);
-        // Truncate token1 to 9 bytes to fit feeBps (4B) in 32 bytes: 1 + 20 + 9 + 2 = 32
-        Span<byte> t1 = stackalloc byte[Address.Size];
-        token1.WriteTo(t1);
-        t1[..9].CopyTo(key[21..30]);
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(key[30..32], (ushort)feeBps);
+        key[0] = 0x0F;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(key[9..13], wordPos);
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// Construct the storage key for a TWAP snapshot: <c>0x0E + poolId(8B) + blockNumber(8B) + 0x00(15B)</c>.
+    /// </summary>
+    public static Hash256 MakeTwapSnapshotKey(ulong poolId, ulong blockNumber)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x0E;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[9..17], blockNumber);
+        return new Hash256(key);
+    }
+
+    // ────────── Per-Pool Order Index Keys (L-15) ──────────
+
+    /// <summary>
+    /// L-15: Key for pool order list head: <c>0x10 + poolId(8B) + 0xFF(8B) + 0x00(15B)</c>.
+    /// </summary>
+    public static Hash256 MakePoolOrderHeadKey(ulong poolId)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x10;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], poolId);
+        // Sentinel: all 0xFF bytes for head pointer
+        key[9] = 0xFF; key[10] = 0xFF; key[11] = 0xFF; key[12] = 0xFF;
+        key[13] = 0xFF; key[14] = 0xFF; key[15] = 0xFF; key[16] = 0xFF;
+        return new Hash256(key);
+    }
+
+    /// <summary>
+    /// L-15: Key for order next pointer: <c>0x10 + orderId(8B) + 0x00(23B)</c>.
+    /// Uses prefix 0x11 to avoid collision with pool head keys.
+    /// </summary>
+    public static Hash256 MakeOrderNextKey(ulong orderId)
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x11;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(key[1..9], orderId);
         return new Hash256(key);
     }
 

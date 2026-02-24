@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Basalt.Core;
+using Basalt.Execution.Dex;
 using Basalt.Storage;
 
 namespace Basalt.Execution;
@@ -33,6 +34,9 @@ public sealed class Mempool
     private readonly TransactionValidator? _validator;
     private readonly IStateDatabase? _validationStateDb;
 
+    private UInt256 _currentBaseFee = UInt256.Zero;
+    private readonly uint _maxTransactionDataBytes;
+
     /// <summary>
     /// Fired when a transaction is successfully added to the mempool.
     /// Used to trigger gossip for locally-submitted transactions.
@@ -54,6 +58,15 @@ public sealed class Mempool
         _validationStateDb = stateDb;
     }
 
+    /// <summary>
+    /// Create a mempool with pre-admission validation and data size limits.
+    /// </summary>
+    public Mempool(int maxSize, TransactionValidator validator, IStateDatabase stateDb, uint maxTransactionDataBytes)
+        : this(maxSize, validator, stateDb)
+    {
+        _maxTransactionDataBytes = maxTransactionDataBytes;
+    }
+
     public int Count
     {
         get { lock (_lock) return _transactions.Count + _dexIntentTransactions.Count; }
@@ -67,6 +80,13 @@ public sealed class Mempool
     /// the caller handles gossip separately (e.g., peer-received transactions).</param>
     public bool Add(Transaction tx, bool raiseEvent = true)
     {
+        // Early rejection: base fee gate and data size limit
+        var baseFee = _currentBaseFee;
+        if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+            return false;
+        if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
+            return false;
+
         // M-2: Pre-admission validation (signature, nonce, balance, gas)
         // MED-01: Fork the state DB to isolate validation reads from concurrent block execution writes.
         if (_validator != null && _validationStateDb != null)
@@ -76,6 +96,10 @@ public sealed class Mempool
             if (!validation.IsSuccess)
                 return false;
         }
+
+        // Pre-validate plaintext intents: reject unparseable intents early
+        if (tx.Type == TransactionType.DexSwapIntent && ParsedIntent.Parse(tx) == null)
+            return false;
 
         // Route DexSwapIntent and DexEncryptedSwapIntent transactions to the separate intent pool
         if (tx.Type == TransactionType.DexSwapIntent || tx.Type == TransactionType.DexEncryptedSwapIntent)
@@ -300,12 +324,23 @@ public sealed class Mempool
 
     private bool AddToDexIntentPool(Transaction tx, bool raiseEvent)
     {
+        // Early rejection: base fee gate and data size limit
+        var baseFee = _currentBaseFee;
+        if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+            return false;
+        if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
+            return false;
+
         bool added;
         lock (_lock)
         {
             if (_dexIntentTransactions.ContainsKey(tx.Hash))
                 return false;
             if (_transactions.ContainsKey(tx.Hash))
+                return false;
+
+            // M-08: DEX intent pool size limit
+            if (_dexIntentTransactions.Count >= _maxSize)
                 return false;
 
             // M-1: Per-sender limit applies across both pools
@@ -333,6 +368,7 @@ public sealed class Mempool
     public int PruneStale(IStateDatabase stateDb, UInt256 baseFee)
     {
         var toRemove = new List<Hash256>();
+        var toRemoveIntents = new List<Hash256>();
         lock (_lock)
         {
             foreach (var tx in _transactions.Values)
@@ -354,6 +390,24 @@ public sealed class Mempool
                 }
             }
 
+            // M-09: Parallel pruning of DEX intent transactions
+            foreach (var tx in _dexIntentTransactions.Values)
+            {
+                var account = stateDb.GetAccount(tx.Sender);
+                var onChainNonce = account?.Nonce ?? 0;
+
+                if (tx.Nonce < onChainNonce)
+                {
+                    toRemoveIntents.Add(tx.Hash);
+                    continue;
+                }
+
+                if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+                {
+                    toRemoveIntents.Add(tx.Hash);
+                }
+            }
+
             foreach (var hash in toRemove)
             {
                 if (_transactions.Remove(hash, out var existing))
@@ -362,9 +416,25 @@ public sealed class Mempool
                     DecrementSenderCount(existing.Sender);
                 }
             }
+
+            foreach (var hash in toRemoveIntents)
+            {
+                if (_dexIntentTransactions.Remove(hash, out var existing))
+                {
+                    _dexIntentEntries.Remove(new MempoolEntry(existing));
+                    DecrementSenderCount(existing.Sender);
+                }
+            }
         }
-        return toRemove.Count;
+        return toRemove.Count + toRemoveIntents.Count;
     }
+
+    /// <summary>
+    /// Update the current base fee used for admission gating.
+    /// Called after each block finalization so newly submitted transactions
+    /// that can't cover the current base fee are rejected early.
+    /// </summary>
+    public void UpdateBaseFee(UInt256 baseFee) => _currentBaseFee = baseFee;
 
     private void DecrementSenderCount(Address sender)
     {

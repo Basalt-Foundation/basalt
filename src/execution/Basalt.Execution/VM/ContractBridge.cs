@@ -29,10 +29,12 @@ public static class ContractBridge
     public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
     {
         // C-5: Serialize SDK contract execution (static Context is not thread-safe)
-        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(30)))
+        // B5: Reduced timeout from 30s to 10s (5× block time) — sufficient for genesis;
+        // longer waits indicate a deadlock or excessively long contract execution.
+        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(10)))
             throw new InvalidOperationException(
-                "Timed out waiting for SDK contract execution lock. " +
-                "Contract execution must be single-threaded due to static Context/ContractStorage.");
+                "Contract execution lock timeout (10s). " +
+                "Likely deadlock or excessively long contract execution.");
 
         var scope = new BridgeScope();
 

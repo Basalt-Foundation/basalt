@@ -36,16 +36,15 @@ public static class SqrtPriceMath
         if (sqrtRatioAX96.IsZero)
             throw new DivideByZeroException("SqrtPriceMath: sqrtRatioA is zero");
 
-        // amount0 = liquidity * Q96 * (sqrtB - sqrtA) / (sqrtA * sqrtB)
-        var numerator = FullMath.MulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, Q96);
+        // amount0 = liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB / Q96)
+        // Split into two steps to avoid overflow in sqrtA * sqrtB:
+        // Step 1: numerator1 = liquidity * (sqrtB - sqrtA) / sqrtB
+        // Step 2: amount0 = numerator1 * Q96 / sqrtA
+        var numerator1 = FullMath.MulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, sqrtRatioBX96);
 
         return roundUp
-            ? FullMath.MulDivRoundingUp(numerator, Q96, sqrtRatioBX96) // Must use inner sqrtB
-            : FullMath.MulDiv(numerator, Q96, sqrtRatioBX96);
-
-        // Note: This is algebraically equivalent to:
-        // liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB / Q96)
-        // but avoids overflow in the intermediate sqrtA * sqrtB product.
+            ? FullMath.MulDivRoundingUp(numerator1, Q96, sqrtRatioAX96)
+            : FullMath.MulDiv(numerator1, Q96, sqrtRatioAX96);
     }
 
     /// <summary>
@@ -62,6 +61,9 @@ public static class SqrtPriceMath
     {
         if (sqrtRatioAX96 > sqrtRatioBX96)
             (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+
+        if (sqrtRatioAX96.IsZero || sqrtRatioBX96.IsZero)
+            throw new DivideByZeroException("SqrtPriceMath: sqrtRatio cannot be zero");
 
         // amount1 = liquidity * (sqrtB - sqrtA) / Q96
         return roundUp

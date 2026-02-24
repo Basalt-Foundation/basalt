@@ -214,4 +214,28 @@ public class DexMathTests
 
         newK.Should().BeGreaterThanOrEqualTo(oldK);
     }
+
+    // ────────── C-2 Regression: GetAmountIn rounding fix ──────────
+
+    [Fact]
+    public void GetAmountIn_ExactDivision_NoOvercharge()
+    {
+        // When the division is exact, MulDivRoundingUp should NOT add +1.
+        // Use reserves and amounts that produce an exact division:
+        // numerator = reserveIn * amountOut * 10000
+        // denominator = (reserveOut - amountOut) * (10000 - feeBps)
+        // Choose values where numerator % denominator == 0.
+        var reserveIn = new UInt256(10_000);
+        var reserveOut = new UInt256(10_000);
+        var feeBps = 0u; // Zero fee makes the math cleaner
+
+        // With zero fee: amountIn = reserveIn * amountOut * 10000 / ((reserveOut - amountOut) * 10000)
+        //              = reserveIn * amountOut / (reserveOut - amountOut)
+        // Choose amountOut = 5000: amountIn = 10000 * 5000 / 5000 = 10000 exactly
+        var amountOut = new UInt256(5_000);
+        var amountIn = DexLibrary.GetAmountIn(amountOut, reserveIn, reserveOut, feeBps);
+
+        // Before fix: would return 10001 (unconditional +1). After fix: returns 10000.
+        amountIn.Should().Be(new UInt256(10_000));
+    }
 }

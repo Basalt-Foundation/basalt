@@ -504,12 +504,14 @@ public class UInt256Tests
     }
 
     [Fact]
-    public void FromConfiguration_TestnetChainId_UsesMainnetSecurityProfile()
+    public void FromConfiguration_TestnetChainId_UsesTestnetSecurityProfile()
     {
         var p = ChainParameters.FromConfiguration(2, "testnet");
         p.ChainId.Should().Be(2u);
-        p.MinValidatorStake.Should().Be(UInt256.Parse("100000000000000000000000"));
-        p.ValidatorSetSize.Should().Be(ChainParameters.MaxValidatorSetSize);
+        // Testnet uses lower stake threshold than mainnet for easier validator onboarding
+        p.MinValidatorStake.Should().Be(UInt256.Parse("10000000000000000000000"));
+        p.ValidatorSetSize.Should().Be(32u);
+        p.DexAdminAddress.Should().NotBeNull();
     }
 
     [Fact]

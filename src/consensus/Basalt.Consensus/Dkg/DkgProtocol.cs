@@ -58,6 +58,7 @@ public sealed class DkgProtocol
     private readonly ulong _epochNumber;
     private readonly BlsPublicKey[] _validatorBlsKeys;
     private readonly BlsPublicKey _myBlsKey;
+    private readonly byte[]? _myPrivateKey; // C-03: private key for ECDH encryption
     private readonly ILogger _logger;
     private readonly object _lock = new();
 
@@ -106,6 +107,18 @@ public sealed class DkgProtocol
         ulong epochNumber,
         BlsPublicKey[] validatorBlsKeys,
         ILogger? logger = null)
+        : this(validatorIndex, validatorCount, epochNumber, validatorBlsKeys, null, logger) { }
+
+    /// <summary>
+    /// C-03: Constructor with private key for ECDH-based share encryption.
+    /// </summary>
+    public DkgProtocol(
+        int validatorIndex,
+        int validatorCount,
+        ulong epochNumber,
+        BlsPublicKey[] validatorBlsKeys,
+        byte[]? privateKey,
+        ILogger? logger = null)
     {
         if (validatorIndex < 0 || validatorIndex >= validatorCount)
             throw new ArgumentOutOfRangeException(nameof(validatorIndex));
@@ -118,6 +131,7 @@ public sealed class DkgProtocol
         _epochNumber = epochNumber;
         _validatorBlsKeys = validatorBlsKeys;
         _myBlsKey = validatorBlsKeys[validatorIndex];
+        _myPrivateKey = privateKey;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -143,11 +157,16 @@ public sealed class DkgProtocol
             _myCommitments = ThresholdCrypto.ComputeCommitments(_myPolynomial);
 
             // Compute and encrypt shares for each validator
+            // C-03: Use ECDH encryption when private key is available
             var encryptedShares = new byte[_validatorCount][];
             for (int i = 0; i < _validatorCount; i++)
             {
                 var share = ThresholdCrypto.EvaluatePolynomial(_myPolynomial, i + 1); // 1-based index
-                encryptedShares[i] = ThresholdCrypto.EncryptShare(share, _myBlsKey, _validatorBlsKeys[i]);
+                encryptedShares[i] = _myPrivateKey != null
+                    ? ThresholdCrypto.EncryptShare(share, _myPrivateKey, _validatorBlsKeys[i])
+#pragma warning disable CS0618 // L-03: Legacy XOR path — fallback when private key unavailable
+                    : ThresholdCrypto.EncryptShare(share, _myBlsKey, _validatorBlsKeys[i]);
+#pragma warning restore CS0618
             }
 
             // Store our own deal
@@ -230,8 +249,11 @@ public sealed class DkgProtocol
                     continue; // Don't verify our own deal
 
                 // Decrypt our share from this dealer
+                // C-03: Use ECDH decryption when private key is available
                 var encrypted = deal.EncryptedShares[_validatorIndex];
-                var share = ThresholdCrypto.DecryptShare(encrypted, _validatorBlsKeys[dealerIndex], _myBlsKey);
+                var share = _myPrivateKey != null
+                    ? ThresholdCrypto.DecryptShare(encrypted, _myPrivateKey, _validatorBlsKeys[dealerIndex])
+                    : ThresholdCrypto.DecryptShare(encrypted, _validatorBlsKeys[dealerIndex], _myBlsKey);
 
                 // Verify the share against the commitment vector
                 if (!ThresholdCrypto.VerifyShare(share, _validatorIndex + 1, deal.Commitments))
@@ -241,6 +263,10 @@ public sealed class DkgProtocol
 
                     _complaints[(_validatorIndex, dealerIndex)] = share;
 
+                    // L-13: Broadcast share * G1 instead of plaintext share to prevent leaking secrets
+                    var sharePointBE = ThresholdCrypto.ScalarToBytesBE(share);
+                    var shareG1 = BlsCrypto.ScalarMultG1(BlsCrypto.G1Generator(), sharePointBE);
+
                     var complaint = new DkgComplaintMessage
                     {
                         SenderId = myPeerId,
@@ -248,7 +274,7 @@ public sealed class DkgProtocol
                         EpochNumber = _epochNumber,
                         AccusedDealerIndex = dealerIndex,
                         ComplainerIndex = _validatorIndex,
-                        RevealedShare = ThresholdCrypto.ScalarToBytes(share),
+                        RevealedShare = shareG1, // L-13: G1 point instead of scalar
                     };
 
                     OnBroadcast?.Invoke(complaint);
@@ -368,7 +394,8 @@ public sealed class DkgProtocol
     {
         lock (_lock)
         {
-            if (_phase != DkgPhase.Justification && _phase != DkgPhase.Complaint)
+            // M-13: Only allow finalization from the Justification phase
+            if (_phase != DkgPhase.Justification)
                 return;
 
             _phase = DkgPhase.Finalize;
@@ -422,36 +449,25 @@ public sealed class DkgProtocol
                 else
                 {
                     // Decrypt the share from this dealer
-                    share = ThresholdCrypto.DecryptShare(
-                        deal.EncryptedShares[_validatorIndex],
-                        _validatorBlsKeys[dealerIdx],
-                        _myBlsKey);
+                    // C-03: Use ECDH decryption when private key is available
+                    share = _myPrivateKey != null
+                        ? ThresholdCrypto.DecryptShare(deal.EncryptedShares[_validatorIndex], _myPrivateKey, _validatorBlsKeys[dealerIdx])
+                        : ThresholdCrypto.DecryptShare(deal.EncryptedShares[_validatorIndex], _validatorBlsKeys[dealerIdx], _myBlsKey);
                 }
                 combinedShare = (combinedShare + share) % ThresholdCrypto.ScalarFieldOrder;
             }
 
             if (combinedShare < 0) combinedShare += ThresholdCrypto.ScalarFieldOrder;
 
-            // Derive the group public key from the combined share
-            // (this is our share's public key, not the group key — the group key
-            // is computed by summing C_0 commitments from all qualified dealers)
-            var combinedShareBytes = ThresholdCrypto.ScalarToBytes(combinedShare);
-            var mySharePubKey = new BlsPublicKey(BlsSigner.GetPublicKeyStatic(combinedShareBytes));
-
-            // For the group public key, since we can't add BLS points,
-            // we use the first qualified dealer's C_0 as a proxy.
-            // In a full implementation, all validators would agree on the group key
-            // through an additional consensus round.
-            // Here we compute it deterministically: the dealer with the lowest index
-            // among qualified dealers has their C_0 used, and other dealers'
-            // contributions are implicitly part of the combined shares.
-            //
-            // Actually, for correctness: each dealer's C_0 is their individual secret * G1.
-            // The group public key should be sum(C_0_j) for all qualified j.
-            // Since we can't add BLS points, we take the pragmatic approach:
-            // each validator broadcasts a DkgFinalize with their computed share's public key,
-            // and the group key is derived from the combined secret at reconstruction time.
-            var groupPk = mySharePubKey;
+            // C-02: Compute group public key as sum(C_0_j) for all qualified dealers
+            // Each dealer's C_0 = a_0_j * G1, so sum(C_0) = groupSecret * G1
+            byte[]? gpkBytes = null;
+            foreach (var dealerIdx in qualifiedDealers)
+            {
+                var c0 = _receivedDeals[dealerIdx].Commitments[0];
+                gpkBytes = gpkBytes == null ? c0.ToArray() : BlsCrypto.AddG1(gpkBytes, c0.ToArray());
+            }
+            var groupPk = new BlsPublicKey(gpkBytes!);
 
             Result = new DkgResult
             {

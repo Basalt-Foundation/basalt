@@ -19,8 +19,8 @@ public sealed class PeerConnection : IDisposable
 
     private const int LengthPrefixSize = 4;
 
-    /// <summary>NET-H02: Per-frame read timeout (120 seconds).</summary>
-    private static readonly TimeSpan FrameReadTimeout = TimeSpan.FromSeconds(120);
+    /// <summary>NET-H02: Per-frame read timeout. M11: Configurable via constructor.</summary>
+    private readonly TimeSpan _frameReadTimeout;
 
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
@@ -33,12 +33,14 @@ public sealed class PeerConnection : IDisposable
     /// <summary>NET-M02: Use int + Interlocked for thread-safe dispose.</summary>
     private int _disposed;
 
-    public PeerConnection(TcpClient client, PeerId peerId, Action<PeerId, byte[]> onMessageReceived)
+    public PeerConnection(TcpClient client, PeerId peerId, Action<PeerId, byte[]> onMessageReceived,
+        TimeSpan? frameReadTimeout = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _stream = client.GetStream();
         PeerId = peerId;
         _onMessageReceived = onMessageReceived ?? throw new ArgumentNullException(nameof(onMessageReceived));
+        _frameReadTimeout = frameReadTimeout ?? TimeSpan.FromSeconds(120);
     }
 
     /// <summary>
@@ -80,7 +82,7 @@ public sealed class PeerConnection : IDisposable
             {
                 // NET-H02: Per-frame read timeout
                 using var frameCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                frameCts.CancelAfter(FrameReadTimeout);
+                frameCts.CancelAfter(_frameReadTimeout);
 
                 // Read the 4-byte length header.
                 await ReadExactAsync(_stream, headerBuffer, frameCts.Token).ConfigureAwait(false);

@@ -1,6 +1,7 @@
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution.Dex;
+using Basalt.Execution.Dex.Math;
 using Basalt.Storage;
 using Microsoft.Extensions.Logging;
 
@@ -17,10 +18,23 @@ public sealed class BlockBuilder
     private readonly ILogger<BlockBuilder>? _logger;
 
     /// <summary>
-    /// DKG group public key for the current epoch, used to decrypt encrypted swap intents.
+    /// DKG group public key for the current epoch, used to validate encrypted swap intents.
     /// Set by NodeCoordinator after DKG completion.
     /// </summary>
     public BlsPublicKey? DkgGroupPublicKey { get; set; }
+
+    /// <summary>
+    /// DKG group secret key for the current epoch, used to decrypt encrypted swap intents.
+    /// This is the threshold-reconstructed secret (32-byte BLS scalar, big-endian).
+    /// Set by NodeCoordinator after DKG reconstruction.
+    /// </summary>
+    public byte[]? DkgGroupSecretKey { get; set; }
+
+    /// <summary>
+    /// Current DKG epoch number for encrypted intent validation.
+    /// Set by NodeCoordinator after DKG completion.
+    /// </summary>
+    public ulong CurrentDkgEpoch { get; set; }
 
     /// <summary>
     /// Optional external settlement provider. When set, the block builder will prefer
@@ -163,6 +177,28 @@ public sealed class BlockBuilder
         BlockHeader parentHeader,
         Address proposer)
     {
+        try
+        {
+        return BuildBlockWithDexCore(pendingTransactions, pendingDexIntents, stateDb, parentHeader, proposer);
+        }
+        finally
+        {
+            // L-11: Zero the DKG secret key after each block build (exception-safe)
+            if (DkgGroupSecretKey != null)
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(DkgGroupSecretKey);
+                DkgGroupSecretKey = null;
+            }
+        }
+    }
+
+    private Block BuildBlockWithDexCore(
+        IReadOnlyList<Transaction> pendingTransactions,
+        IReadOnlyList<Transaction> pendingDexIntents,
+        IStateDatabase stateDb,
+        BlockHeader parentHeader,
+        Address proposer)
+    {
         var validTxs = new List<Transaction>();
         var receipts = new List<TransactionReceipt>();
         ulong totalGasUsed = 0;
@@ -213,6 +249,33 @@ public sealed class BlockBuilder
             totalGasUsed += receipt.GasUsed;
         }
 
+        // ═══ TWAP carry-forward: update accumulators for all pools using current price ═══
+        {
+            var dexStateForCarry = new DexState(stateDb);
+            var poolCount = dexStateForCarry.GetPoolCount();
+            for (ulong pid = 0; pid < poolCount; pid++)
+            {
+                var acc = dexStateForCarry.GetTwapAccumulator(pid);
+                if (acc.LastBlock == 0 || acc.LastBlock >= blockNumber) continue;
+
+                // Get current price from concentrated pool or reserves
+                var concState = dexStateForCarry.GetConcentratedPoolState(pid);
+                UInt256 currentPrice;
+                if (concState != null && !concState.Value.SqrtPriceX96.IsZero)
+                {
+                    currentPrice = FullMath.MulDiv(concState.Value.SqrtPriceX96,
+                        concState.Value.SqrtPriceX96, TickMath.Q96);
+                }
+                else
+                {
+                    var reserves = dexStateForCarry.GetPoolReserves(pid);
+                    if (reserves == null || reserves.Value.Reserve0.IsZero) continue;
+                    currentPrice = BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1);
+                }
+                TwapOracle.CarryForwardAccumulator(dexStateForCarry, pid, currentPrice, blockNumber);
+            }
+        }
+
         // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
         var batchResults = new List<BatchResult>();
         var processedIntents = new List<Transaction>();
@@ -227,15 +290,15 @@ public sealed class BlockBuilder
             {
                 if (tx.Type == TransactionType.DexEncryptedSwapIntent)
                 {
-                    if (DkgGroupPublicKey == null)
+                    if (DkgGroupSecretKey == null)
                     {
-                        _logger?.LogWarning("Skipping encrypted intent {Hash}: no DKG group key available",
+                        _logger?.LogWarning("Skipping encrypted intent {Hash}: no DKG group secret key available",
                             tx.Hash.ToHexString()[..18] + "...");
                         continue;
                     }
                     var encrypted = EncryptedIntent.Parse(tx);
                     if (encrypted == null) continue;
-                    var decrypted = encrypted.Value.Decrypt(DkgGroupPublicKey.Value);
+                    var decrypted = encrypted.Value.Decrypt(DkgGroupSecretKey, CurrentDkgEpoch);
                     if (decrypted == null)
                     {
                         _logger?.LogWarning("Skipping encrypted intent {Hash}: decryption failed",
@@ -251,6 +314,11 @@ public sealed class BlockBuilder
                         allParsedIntents.Add(intent.Value);
                 }
             }
+
+            // Build intent tx map for failure receipts
+            var intentTxMap = new Dictionary<Hash256, Transaction>();
+            foreach (var tx in pendingDexIntents)
+                intentTxMap.TryAdd(tx.Hash, tx);
 
             // Group intents by trading pair
             var groups = GroupParsedIntentsByPair(allParsedIntents, dexState);
@@ -279,6 +347,8 @@ public sealed class BlockBuilder
 
                 var reserves = dexState.GetPoolReserves(poolId.Value);
                 if (reserves == null) continue;
+
+                OrderBook.CleanupExpiredOrders(dexState, stateDb, poolId.Value, blockNumber);
 
                 // Split into buy/sell sides
                 var (buys, sells) = BatchSettlementExecutor.SplitBuySell(intents, token0);
@@ -309,7 +379,7 @@ public sealed class BlockBuilder
                 result ??= BatchAuctionSolver.ComputeSettlement(
                     buys, sells,
                     [], [], // No crossing limit orders in Phase B
-                    reserves.Value, poolFeeBps, poolId.Value);
+                    reserves.Value, poolFeeBps, poolId.Value, dexState);
 
                 if (result != null)
                 {
@@ -321,19 +391,49 @@ public sealed class BlockBuilder
                     foreach (var intent in sells)
                         processedIntents.Add(intent.OriginalTx);
                 }
+                else
+                {
+                    // Generate failure receipts for unsettled intents
+                    foreach (var intent in buys.Concat(sells))
+                    {
+                        if (intentTxMap.TryGetValue(intent.TxHash, out var intentTx))
+                        {
+                            receipts.Add(new TransactionReceipt
+                            {
+                                TransactionHash = intent.TxHash,
+                                BlockHash = Hash256.Zero,
+                                BlockNumber = blockNumber,
+                                TransactionIndex = receipts.Count,
+                                From = intent.Sender,
+                                To = DexState.DexAddress,
+                                GasUsed = _chainParams.DexSwapGas,
+                                Success = false,
+                                ErrorCode = BasaltErrorCode.DexInsufficientLiquidity,
+                                PostStateRoot = Hash256.Zero,
+                                Logs = [],
+                                EffectiveGasPrice = UInt256.Zero,
+                            });
+                            totalGasUsed += _chainParams.DexSwapGas;
+                            validTxs.Add(intentTx);
+                        }
+                    }
+                }
             }
         }
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
+        bool gasLimitReached = false;
         foreach (var result in batchResults)
         {
+            if (gasLimitReached) break;
+
             var dexState = new DexState(stateDb);
             var intentTxMap = new Dictionary<Hash256, Transaction>();
             foreach (var tx in processedIntents)
                 intentTxMap.TryAdd(tx.Hash, tx);
 
             var batchReceipts = BatchSettlementExecutor.ExecuteSettlement(
-                result, stateDb, dexState, preliminaryHeader, intentTxMap, _executor.ContractRuntime);
+                result, stateDb, dexState, preliminaryHeader, intentTxMap, _executor.ContractRuntime, _chainParams);
 
             // Add batch-settled intents as valid transactions and their receipts
             foreach (var r in batchReceipts)
@@ -343,6 +443,12 @@ public sealed class BlockBuilder
                 if (intentTx != null)
                 {
                     var gasUsed = _chainParams.DexSwapGas;
+                    // M-07: Check block gas limit before adding intent — exit outer loop too
+                    if (totalGasUsed + gasUsed > _chainParams.BlockGasLimit)
+                    {
+                        gasLimitReached = true;
+                        break;
+                    }
                     totalGasUsed += gasUsed;
                     validTxs.Add(intentTx);
                 }
@@ -352,9 +458,10 @@ public sealed class BlockBuilder
 
         // Serialize TWAP data for block header ExtraData
         var dexStateForTwap = new DexState(stateDb);
+        var effectiveTwapWindow = dexStateForTwap.GetEffectiveTwapWindowBlocks(_chainParams);
         var extraData = batchResults.Count > 0
             ? TwapOracle.SerializeForBlockHeader(
-                batchResults, dexStateForTwap, blockNumber, _chainParams.MaxExtraDataBytes)
+                batchResults, dexStateForTwap, blockNumber, _chainParams.MaxExtraDataBytes, effectiveTwapWindow)
             : [];
 
         // Compute roots

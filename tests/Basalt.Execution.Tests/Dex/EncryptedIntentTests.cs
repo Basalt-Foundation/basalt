@@ -20,13 +20,17 @@ public class EncryptedIntentTests
         return new Address(bytes);
     }
 
-    private static BlsPublicKey GenerateBlsPublicKey()
+    /// <summary>
+    /// Generate a DKG keypair (secret scalar + group public key in G1).
+    /// </summary>
+    private static (byte[] SecretKey, BlsPublicKey PublicKey) GenerateDkgKeyPair()
     {
-        var key = new byte[32];
-        RandomNumberGenerator.Fill(key);
-        key[0] &= 0x3F;
-        if (key[0] == 0) key[0] = 1;
-        return new BlsPublicKey(BlsSigner.GetPublicKeyStatic(key));
+        var sk = new byte[32];
+        RandomNumberGenerator.Fill(sk);
+        sk[0] &= 0x3F;
+        if (sk[0] == 0 && sk[1] == 0) sk[1] = 1;
+        var pkBytes = BlsSigner.GetPublicKeyStatic(sk);
+        return (sk, new BlsPublicKey(pkBytes));
     }
 
     private static byte[] CreateSwapIntentPayload(Address tokenIn, Address tokenOut, UInt256 amountIn, UInt256 minAmountOut, ulong deadline = 0, byte flags = 0)
@@ -63,15 +67,15 @@ public class EncryptedIntentTests
     [Fact]
     public void Encrypt_ProducesValidTransactionData()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
 
         var txData = EncryptedIntent.Encrypt(payload, gpk, 1);
 
-        // Should be 8 (epoch) + 32 (nonce) + 114 (payload) = 154 bytes
-        txData.Length.Should().Be(154);
+        // Should be 8 (epoch) + 48 (C1) + 12 (GCM nonce) + 114 (payload) + 16 (tag) = 198 bytes
+        txData.Length.Should().Be(198);
 
         // Epoch should be 1
         var epoch = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(txData.AsSpan(0, 8));
@@ -81,7 +85,7 @@ public class EncryptedIntentTests
     [Fact]
     public void EncryptDecrypt_RoundTrip_RecoversOriginalIntent()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (sk, gpk) = GenerateDkgKeyPair();
         var tokenIn = MakeAddress(0xAA);
         var tokenOut = MakeAddress(0xBB);
         var amountIn = new UInt256(5000);
@@ -98,10 +102,12 @@ public class EncryptedIntentTests
         var encrypted = EncryptedIntent.Parse(tx);
         encrypted.Should().NotBeNull();
         encrypted!.Value.EpochNumber.Should().Be(5UL);
-        encrypted.Value.Nonce.Length.Should().Be(32);
+        encrypted.Value.EphemeralKey.Length.Should().Be(48);
+        encrypted.Value.GcmNonce.Length.Should().Be(12);
+        encrypted.Value.GcmTag.Length.Should().Be(16);
         encrypted.Value.Ciphertext.Length.Should().Be(114);
 
-        var decrypted = encrypted.Value.Decrypt(gpk);
+        var decrypted = encrypted.Value.Decrypt(sk);
         decrypted.Should().NotBeNull();
         decrypted!.Value.Sender.Should().Be(sender);
         decrypted.Value.TokenIn.Should().Be(tokenIn);
@@ -113,34 +119,30 @@ public class EncryptedIntentTests
     }
 
     [Fact]
-    public void Decrypt_WrongKey_ProducesDifferentResult()
+    public void Decrypt_WrongKey_ReturnsNull_DueToAuthFailure()
     {
-        var gpk1 = GenerateBlsPublicKey();
-        var gpk2 = GenerateBlsPublicKey();
+        var (sk1, gpk1) = GenerateDkgKeyPair();
+        var (sk2, _) = GenerateDkgKeyPair();
+
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
 
-        var nonce = new byte[32];
-        RandomNumberGenerator.Fill(nonce);
-        var txData = EncryptedIntent.EncryptWithNonce(payload, gpk1, 1, nonce);
+        var txData = EncryptedIntent.Encrypt(payload, gpk1, 1);
 
         var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
         var tx = MakeEncryptedTx(privKey, Ed25519Signer.DeriveAddress(pubKey), txData);
 
         var encrypted = EncryptedIntent.Parse(tx)!.Value;
 
-        // Decrypt with correct key
-        var correctDecrypted = encrypted.Decrypt(gpk1);
+        // Decrypt with correct key succeeds
+        var correctDecrypted = encrypted.Decrypt(sk1);
+        correctDecrypted.Should().NotBeNull();
         correctDecrypted!.Value.TokenIn.Should().Be(MakeAddress(0xAA));
 
-        // Decrypt with wrong key — should produce different token addresses
-        var wrongDecrypted = encrypted.Decrypt(gpk2);
-        if (wrongDecrypted != null)
-        {
-            (wrongDecrypted.Value.TokenIn == MakeAddress(0xAA) &&
-             wrongDecrypted.Value.TokenOut == MakeAddress(0xBB)).Should().BeFalse();
-        }
+        // Decrypt with wrong key fails (AES-GCM authentication rejects)
+        var wrongDecrypted = encrypted.Decrypt(sk2);
+        wrongDecrypted.Should().BeNull();
     }
 
     [Fact]
@@ -152,26 +154,31 @@ public class EncryptedIntentTests
     }
 
     [Fact]
-    public void EncryptWithNonce_Deterministic()
+    public void EncryptWithScalar_Deterministic()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
 
-        var nonce = new byte[32];
-        RandomNumberGenerator.Fill(nonce);
+        var rScalar = new byte[32];
+        RandomNumberGenerator.Fill(rScalar);
+        rScalar[0] &= 0x3F;
+        if (rScalar[0] == 0) rScalar[0] = 1;
 
-        var data1 = EncryptedIntent.EncryptWithNonce(payload, gpk, 1, nonce);
-        var data2 = EncryptedIntent.EncryptWithNonce(payload, gpk, 1, nonce);
+        var rScalar2 = (byte[])rScalar.Clone(); // L-12: EncryptWithScalar zeros the scalar
+        var data1 = EncryptedIntent.EncryptWithScalar(payload, gpk, 1, rScalar);
+        var data2 = EncryptedIntent.EncryptWithScalar(payload, gpk, 1, rScalar2);
 
-        data1.Should().BeEquivalentTo(data2);
+        // Ephemeral key (C1) should be the same
+        data1.AsSpan(8, 48).SequenceEqual(data2.AsSpan(8, 48)).Should().BeTrue();
+        // Note: GCM nonce is randomly generated each time, so full data differs
     }
 
     [Fact]
-    public void DifferentNonces_ProduceDifferentCiphertext()
+    public void DifferentScalars_ProduceDifferentEphemeralKeys()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
@@ -179,14 +186,38 @@ public class EncryptedIntentTests
         var data1 = EncryptedIntent.Encrypt(payload, gpk, 1);
         var data2 = EncryptedIntent.Encrypt(payload, gpk, 1);
 
-        // Different random nonces → different ciphertext
-        data1.AsSpan(40).SequenceEqual(data2.AsSpan(40)).Should().BeFalse();
+        // Different random scalars → different ephemeral keys (C1)
+        data1.AsSpan(8, 48).SequenceEqual(data2.AsSpan(8, 48)).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AesGcm_TamperedCiphertext_DecryptionFails()
+    {
+        var (sk, gpk) = GenerateDkgKeyPair();
+        var payload = CreateSwapIntentPayload(
+            MakeAddress(0xAA), MakeAddress(0xBB),
+            new UInt256(1000), new UInt256(900));
+
+        var txData = EncryptedIntent.Encrypt(payload, gpk, 1);
+
+        // Tamper with ciphertext (flip a byte in the encrypted payload area)
+        txData[EncryptedIntent.MinDataLength - 20] ^= 0xFF;
+
+        var (privKey, pubKey) = Ed25519Signer.GenerateKeyPair();
+        var tx = MakeEncryptedTx(privKey, Ed25519Signer.DeriveAddress(pubKey), txData);
+
+        var encrypted = EncryptedIntent.Parse(tx);
+        encrypted.Should().NotBeNull();
+
+        // Decryption should fail due to GCM authentication
+        var decrypted = encrypted!.Value.Decrypt(sk);
+        decrypted.Should().BeNull();
     }
 
     [Fact]
     public void ExecuteDexEncryptedSwapIntent_ValidData_Succeeds()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
@@ -254,7 +285,7 @@ public class EncryptedIntentTests
     [Fact]
     public void MempoolRouting_EncryptedIntent_GoesToDexPool()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
@@ -282,7 +313,7 @@ public class EncryptedIntentTests
     [Fact]
     public void BlockBuilder_DecryptsEncryptedIntents_InPhaseB()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (sk, gpk) = GenerateDkgKeyPair();
         var tokenA = Address.Zero; // native BST
         var tokenB = MakeAddress(0xBB);
 
@@ -322,9 +353,10 @@ public class EncryptedIntentTests
         var buyTxData = EncryptedIntent.Encrypt(buyPayload, gpk, 1);
         var buyTx = MakeEncryptedTx(privKey2, sender2, buyTxData);
 
-        // Build block with encrypted intents
+        // Build block with encrypted intents — using DkgGroupSecretKey
         var builder = new BlockBuilder(DefaultParams);
         builder.DkgGroupPublicKey = gpk;
+        builder.DkgGroupSecretKey = sk;
 
         var parentHeader = new BlockHeader
         {
@@ -356,7 +388,7 @@ public class EncryptedIntentTests
     [Fact]
     public void BlockBuilder_NoDkgKey_SkipsEncryptedIntents()
     {
-        var gpk = GenerateBlsPublicKey();
+        var (_, gpk) = GenerateDkgKeyPair();
         var payload = CreateSwapIntentPayload(
             MakeAddress(0xAA), MakeAddress(0xBB),
             new UInt256(1000), new UInt256(900));
@@ -370,7 +402,7 @@ public class EncryptedIntentTests
 
         var encTx = MakeEncryptedTx(privKey, sender, txData);
 
-        // Build block WITHOUT DKG key set
+        // Build block WITHOUT DKG secret key set
         var builder = new BlockBuilder(DefaultParams);
 
         var parentHeader = new BlockHeader

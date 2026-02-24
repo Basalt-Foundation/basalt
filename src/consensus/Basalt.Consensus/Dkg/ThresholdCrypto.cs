@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Security.Cryptography;
 using Basalt.Core;
 using Basalt.Crypto;
+using AesGcm = System.Security.Cryptography.AesGcm;
 
 namespace Basalt.Consensus.Dkg;
 
@@ -62,27 +63,27 @@ public static class ThresholdCrypto
 
     /// <summary>
     /// Compute Feldman commitments: C_j = a_j * G1 for each polynomial coefficient.
-    /// Uses BLS key derivation (private key → public key = scalar * G1).
+    /// M-01: Uses big-endian scalars with BlsCrypto.ScalarMultG1 for correct G1 point computation.
     /// </summary>
     /// <param name="coefficients">Polynomial coefficients.</param>
     /// <returns>Array of BLS public keys (G1 points) serving as commitments.</returns>
     public static BlsPublicKey[] ComputeCommitments(BigInteger[] coefficients)
     {
+        var g1Gen = BlsCrypto.G1Generator();
         var commitments = new BlsPublicKey[coefficients.Length];
         for (int i = 0; i < coefficients.Length; i++)
         {
-            var scalarBytes = ScalarToBytes(coefficients[i]);
-            var pubKeyBytes = BlsSigner.GetPublicKeyStatic(scalarBytes);
-            commitments[i] = new BlsPublicKey(pubKeyBytes);
+            var scalarBytesBE = ScalarToBytesBE(coefficients[i]);
+            var point = BlsCrypto.ScalarMultG1(g1Gen, scalarBytesBE);
+            commitments[i] = new BlsPublicKey(point);
         }
         return commitments;
     }
 
     /// <summary>
     /// Verify that a share is consistent with the Feldman commitment vector.
-    /// Checks: s_i * G1 == C_0 * C_1^i * C_2^(i^2) * ... * C_t^(i^t)
-    /// Since we can't do point arithmetic directly, we verify by:
-    /// GetPublicKey(share) == GetPublicKey(sum of commitments evaluated at i)
+    /// C-01: Real Feldman VSS verification using G1 point arithmetic.
+    /// Checks: share * G1 == sum(C_j * i^j) for j = 0..t
     /// </summary>
     /// <param name="share">The share value f(i).</param>
     /// <param name="validatorIndex">The validator index (1-based).</param>
@@ -90,37 +91,83 @@ public static class ThresholdCrypto
     /// <returns>True if the share is consistent with the commitments.</returns>
     public static bool VerifyShare(BigInteger share, int validatorIndex, BlsPublicKey[] commitments)
     {
-        // Compute the expected public key from the share: pk_share = share * G1
-        var shareBytes = ScalarToBytes(share);
-        var expectedPk = BlsSigner.GetPublicKeyStatic(shareBytes);
-
-        // For proper Feldman verification we would need point scalar multiplication
-        // to compute sum(C_j * i^j). Since we only have GetPublicKey (scalar * G1),
-        // we use a simplified verification: the share, when used as a BLS private key,
-        // should produce a valid public key. The full verification requires multi-scalar
-        // multiplication which the blst library supports but Nethermind doesn't expose.
-        //
-        // As a practical verification: check the share is in range [1, p-1] and
-        // the derived public key is not the point at infinity.
         if (share <= 0 || share >= ScalarFieldOrder) return false;
-        return expectedPk.Length == BlsPublicKey.Size;
+        if (commitments.Length == 0) return false;
+
+        // Compute share * G1 (the left side of the equation)
+        var shareBytesBE = ScalarToBytesBE(share);
+        var sharePoint = BlsCrypto.ScalarMultG1(BlsCrypto.G1Generator(), shareBytesBE);
+
+        // Compute sum(C_j * i^j) for j = 0..t (the right side)
+        // Start with C_0 * i^0 = C_0 * 1 = C_0
+        byte[]? expectedPoint = null;
+        var iPow = BigInteger.One; // i^j, starting with i^0 = 1
+        var iBig = new BigInteger(validatorIndex);
+
+        for (int j = 0; j < commitments.Length; j++)
+        {
+            // Compute C_j * i^j
+            var scalarBE = ScalarToBytesBE(iPow);
+            var term = BlsCrypto.ScalarMultG1(commitments[j].ToArray(), scalarBE);
+
+            expectedPoint = expectedPoint == null ? term : BlsCrypto.AddG1(expectedPoint, term);
+
+            iPow = iPow * iBig % ScalarFieldOrder;
+            if (iPow < 0) iPow += ScalarFieldOrder;
+        }
+
+        if (expectedPoint == null) return false;
+
+        // Compare the two G1 points
+        return sharePoint.AsSpan().SequenceEqual(expectedPoint);
     }
 
     /// <summary>
-    /// Encrypt a share for a specific recipient using a symmetric key derived from
-    /// BLAKE3(sender_bls_pubkey || recipient_bls_pubkey). This provides authentication
-    /// (only the intended parties can derive the key) without requiring a key exchange.
+    /// C-03: Encrypt a share for a specific recipient using ECDH + AES-256-GCM.
+    /// Derives a shared secret via BLS scalar multiplication (ECDH in G1),
+    /// then uses BLAKE3-derived key for AES-GCM authenticated encryption.
     /// </summary>
     /// <param name="share">The share to encrypt (as a BigInteger scalar).</param>
-    /// <param name="senderPubKey">Sender's BLS public key.</param>
+    /// <param name="senderPrivateKey">Sender's BLS private key (32 bytes, LE).</param>
     /// <param name="recipientPubKey">Recipient's BLS public key.</param>
-    /// <returns>Encrypted share bytes (32 bytes share XOR 32 bytes key).</returns>
+    /// <returns>Encrypted share bytes: [12B nonce][32B ciphertext][16B tag] = 60 bytes.</returns>
+    public static byte[] EncryptShare(BigInteger share, byte[] senderPrivateKey, BlsPublicKey recipientPubKey)
+    {
+        var symKey = DeriveEcdhKey(senderPrivateKey, recipientPubKey);
+        try
+        {
+            var shareBytes = ScalarToBytes(share);
+            var nonce = new byte[12];
+            RandomNumberGenerator.Fill(nonce);
+
+            var ciphertext = new byte[32];
+            var tag = new byte[16];
+
+            using var aes = new AesGcm(symKey, 16);
+            aes.Encrypt(nonce, shareBytes, ciphertext, tag);
+
+            // [12B nonce][32B ciphertext][16B tag]
+            var result = new byte[60];
+            Array.Copy(nonce, 0, result, 0, 12);
+            Array.Copy(ciphertext, 0, result, 12, 32);
+            Array.Copy(tag, 0, result, 44, 16);
+            return result;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(symKey);
+        }
+    }
+
+    /// <summary>
+    /// C-03: Legacy overload for backward compatibility (uses public keys only, XOR).
+    /// Kept for tests that don't have access to private keys.
+    /// </summary>
+    [Obsolete("Use ECDH-based EncryptShare(share, senderPrivateKey, recipientPubKey) instead")]
     public static byte[] EncryptShare(BigInteger share, BlsPublicKey senderPubKey, BlsPublicKey recipientPubKey)
     {
         var key = DeriveSharedKey(senderPubKey, recipientPubKey);
         var shareBytes = ScalarToBytes(share);
-
-        // Simple XOR encryption with derived key
         var encrypted = new byte[32];
         for (int i = 0; i < 32; i++)
             encrypted[i] = (byte)(shareBytes[i] ^ key[i]);
@@ -128,16 +175,51 @@ public static class ThresholdCrypto
     }
 
     /// <summary>
-    /// Decrypt a share using the symmetric key derived from the two public keys.
+    /// C-03: Decrypt a share using ECDH + AES-256-GCM.
+    /// </summary>
+    /// <param name="encrypted">Encrypted share: [12B nonce][32B ciphertext][16B tag] = 60 bytes.</param>
+    /// <param name="recipientPrivateKey">Recipient's BLS private key (32 bytes, LE).</param>
+    /// <param name="senderPubKey">Sender's BLS public key.</param>
+    /// <returns>The decrypted share scalar.</returns>
+    public static BigInteger DecryptShare(byte[] encrypted, byte[] recipientPrivateKey, BlsPublicKey senderPubKey)
+    {
+        if (encrypted.Length == 60)
+        {
+            // AES-GCM format: [12B nonce][32B ciphertext][16B tag]
+            var symKey = DeriveEcdhKey(recipientPrivateKey, senderPubKey);
+            try
+            {
+                var nonce = encrypted.AsSpan(0, 12);
+                var ciphertext = encrypted.AsSpan(12, 32);
+                var tag = encrypted.AsSpan(44, 16);
+
+                var shareBytes = new byte[32];
+                using var aes = new AesGcm(symKey, 16);
+                aes.Decrypt(nonce, ciphertext, tag, shareBytes);
+
+                var share = new BigInteger(shareBytes, isUnsigned: true, isBigEndian: false);
+                return share % ScalarFieldOrder;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(symKey);
+            }
+        }
+
+        // Legacy 32-byte XOR format
+        return DecryptShare(encrypted, new BlsPublicKey(BlsSigner.GetPublicKeyStatic(recipientPrivateKey)),
+            senderPubKey);
+    }
+
+    /// <summary>
+    /// Legacy overload for backward compatibility (uses public keys only, XOR).
     /// </summary>
     public static BigInteger DecryptShare(byte[] encrypted, BlsPublicKey senderPubKey, BlsPublicKey recipientPubKey)
     {
         var key = DeriveSharedKey(senderPubKey, recipientPubKey);
-
         var shareBytes = new byte[32];
         for (int i = 0; i < 32; i++)
             shareBytes[i] = (byte)(encrypted[i] ^ key[i]);
-
         var share = new BigInteger(shareBytes, isUnsigned: true, isBigEndian: false);
         return share % ScalarFieldOrder;
     }
@@ -220,6 +302,49 @@ public static class ThresholdCrypto
         var padded = new byte[32];
         Array.Copy(bytes, padded, Math.Min(bytes.Length, 32));
         return padded;
+    }
+
+    /// <summary>
+    /// M-01: Convert a BigInteger scalar to a 32-byte big-endian representation.
+    /// This is what BlsCrypto.ScalarMultG1 expects for scalar arguments.
+    /// </summary>
+    public static byte[] ScalarToBytesBE(BigInteger scalar)
+    {
+        scalar %= ScalarFieldOrder;
+        if (scalar < 0) scalar += ScalarFieldOrder;
+        if (scalar.IsZero) scalar = BigInteger.One;
+        var bytes = scalar.ToByteArray(isUnsigned: true, isBigEndian: true);
+        var padded = new byte[32];
+        // Right-align in 32-byte buffer (big-endian padding)
+        Array.Copy(bytes, 0, padded, 32 - bytes.Length, Math.Min(bytes.Length, 32));
+        return padded;
+    }
+
+    /// <summary>
+    /// C-03: Derive symmetric key via ECDH in G1: BLAKE3("basalt-dkg-share-v1" || sk * recipientPK).
+    /// </summary>
+    private static byte[] DeriveEcdhKey(byte[] privateKey, BlsPublicKey recipientPubKey)
+    {
+        // Convert LE private key to BE for ScalarMultG1
+        var skBE = new byte[32];
+        for (int i = 0; i < 32; i++)
+            skBE[i] = privateKey[31 - i];
+
+        var sharedPoint = BlsCrypto.ScalarMultG1(recipientPubKey.ToArray(), skBE);
+        try
+        {
+            var prefix = System.Text.Encoding.UTF8.GetBytes("basalt-dkg-share-v1");
+            var input = new byte[prefix.Length + sharedPoint.Length];
+            Array.Copy(prefix, input, prefix.Length);
+            Array.Copy(sharedPoint, 0, input, prefix.Length, sharedPoint.Length);
+            var hash = Blake3Hasher.Hash(input);
+            return hash.ToArray();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sharedPoint);
+            CryptographicOperations.ZeroMemory(skBE);
+        }
     }
 
     private static byte[] DeriveSharedKey(BlsPublicKey a, BlsPublicKey b)

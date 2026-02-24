@@ -58,6 +58,8 @@ public static class DexLibrary
     public static UInt256 GetAmountOut(
         UInt256 amountIn, UInt256 reserveIn, UInt256 reserveOut, uint feeBps)
     {
+        if (feeBps >= 10_000)
+            throw new ArgumentException("DexLibrary: feeBps must be < 10000");
         if (amountIn.IsZero)
             throw new ArgumentException("DexLibrary: INSUFFICIENT_INPUT_AMOUNT");
         if (reserveIn.IsZero || reserveOut.IsZero)
@@ -91,6 +93,8 @@ public static class DexLibrary
     public static UInt256 GetAmountIn(
         UInt256 amountOut, UInt256 reserveIn, UInt256 reserveOut, uint feeBps)
     {
+        if (feeBps >= 10_000)
+            throw new ArgumentException("DexLibrary: feeBps must be < 10000");
         if (amountOut.IsZero)
             throw new ArgumentException("DexLibrary: INSUFFICIENT_OUTPUT_AMOUNT");
         if (reserveIn.IsZero || reserveOut.IsZero)
@@ -104,7 +108,7 @@ public static class DexLibrary
         var numerator = UInt256.CheckedMul(reserveIn, UInt256.CheckedMul(amountOut, feeDenom));
         var denominator = UInt256.CheckedMul(reserveOut - amountOut, feeComplement);
 
-        return FullMath.MulDiv(numerator, UInt256.One, denominator) + UInt256.One;
+        return FullMath.MulDivRoundingUp(numerator, UInt256.One, denominator);
     }
 
     /// <summary>

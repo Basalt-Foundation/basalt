@@ -76,7 +76,7 @@ public static class DynamicFeeCalculator
     /// <returns>The effective dynamic fee in basis points.</returns>
     public static uint ComputeDynamicFeeFromState(
         DexState dexState, ulong poolId, uint baseFeeBps,
-        ulong currentBlock, ulong windowBlocks = 100)
+        ulong currentBlock, ulong windowBlocks = 7200)
     {
         var volatilityBps = TwapOracle.ComputeVolatilityBps(
             dexState, poolId, currentBlock, windowBlocks);

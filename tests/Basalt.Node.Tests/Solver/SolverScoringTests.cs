@@ -255,6 +255,77 @@ public class SolverScoringTests
             new Dictionary<Hash256, Transaction>()).Should().BeFalse();
     }
 
+    [Fact]
+    public void ValidateFeasibility_ValidSolution_ReturnsTrue()
+    {
+        // Test 11: ValidateFeasibility positive path returns true.
+        var stateDb = new InMemoryStateDb();
+        var dexState = new DexState(stateDb);
+
+        // Create a pool so it exists
+        dexState.CreatePool(MakeAddress(0x01), MakeAddress(0x02), 30);
+        dexState.SetPoolReserves(0, new PoolReserves
+        {
+            Reserve0 = new UInt256(100_000),
+            Reserve1 = new UInt256(100_000),
+            TotalSupply = new UInt256(10_000),
+        });
+
+        // Fund the participant
+        var participant = MakeAddress(0xAA);
+        stateDb.SetAccount(participant, new AccountState { Balance = new UInt256(10_000) });
+
+        var txHash = MakeHash(0x01);
+        var result = new BatchResult
+        {
+            PoolId = 0,
+            ClearingPrice = new UInt256(1000),
+            Fills =
+            [
+                new FillRecord
+                {
+                    Participant = participant,
+                    AmountIn = new UInt256(500),
+                    AmountOut = new UInt256(480),
+                    IsLimitOrder = false,
+                    TxHash = txHash,
+                },
+            ],
+            UpdatedReserves = new PoolReserves
+            {
+                Reserve0 = new UInt256(100_500),
+                Reserve1 = new UInt256(99_520),
+                TotalSupply = new UInt256(10_000),
+            },
+        };
+
+        // Build intent tx map with a real transaction
+        var (pk, pub) = Basalt.Crypto.Ed25519Signer.GenerateKeyPair();
+        var sender = Basalt.Crypto.Ed25519Signer.DeriveAddress(pub);
+        var intentData = new byte[114];
+        intentData[0] = 1;
+        MakeAddress(0x01).WriteTo(intentData.AsSpan(1, 20));
+        MakeAddress(0x02).WriteTo(intentData.AsSpan(21, 20));
+        new UInt256(500).WriteTo(intentData.AsSpan(41, 32));
+        new UInt256(480).WriteTo(intentData.AsSpan(73, 32));
+        var tx = Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.DexSwapIntent,
+            Nonce = 0,
+            Sender = sender,
+            To = DexState.DexAddress,
+            GasLimit = 200_000,
+            GasPrice = new UInt256(1),
+            ChainId = ChainParameters.Devnet.ChainId,
+            Data = intentData,
+        }, pk);
+
+        var intentTxMap = new Dictionary<Hash256, Transaction> { [txHash] = tx };
+
+        SolverScoring.ValidateFeasibility(result, stateDb, dexState, intentTxMap)
+            .Should().BeTrue("a valid solution with funded participants and existing pool should pass");
+    }
+
     // Helper to create a solution with a single fill
     private static SolverSolution MakeSolution(byte txByte, UInt256 amountIn, UInt256 amountOut, UInt256 clearingPrice, long receivedAt = 0)
     {

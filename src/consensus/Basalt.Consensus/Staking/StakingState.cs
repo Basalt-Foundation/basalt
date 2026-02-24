@@ -264,6 +264,34 @@ public sealed class StakingState : IStakingState
     }
 
     /// <summary>
+    /// B1: Flush all staking state to persistent storage.
+    /// </summary>
+    public void FlushToPersistence(IStakingPersistence persistence)
+    {
+        lock (_lock)
+        {
+            persistence.SaveStakes(_stakes);
+            persistence.SaveUnbondingQueue(_unbondingQueue);
+        }
+    }
+
+    /// <summary>
+    /// B1: Load staking state from persistent storage.
+    /// Merges loaded data into current state (does not clear existing).
+    /// </summary>
+    public void LoadFromPersistence(IStakingPersistence persistence)
+    {
+        lock (_lock)
+        {
+            var stakes = persistence.LoadStakes();
+            foreach (var (addr, info) in stakes)
+                _stakes[addr] = info;
+            var queue = persistence.LoadUnbondingQueue();
+            _unbondingQueue.AddRange(queue);
+        }
+    }
+
+    /// <summary>
     /// Total staked across all validators.
     /// </summary>
     public UInt256 TotalStaked

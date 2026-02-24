@@ -37,23 +37,26 @@ public static class OrderBook
         var buys = new List<(ulong Id, LimitOrder Order)>();
         var sells = new List<(ulong Id, LimitOrder Order)>();
 
-        var orderCount = dexState.GetOrderCount();
-
-        for (ulong orderId = 0; orderId < orderCount && (buys.Count < maxOrders || sells.Count < maxOrders); orderId++)
+        // L-15: Iterate per-pool linked list instead of scanning all orders globally
+        var orderId = dexState.GetPoolOrderHead(poolId);
+        while (orderId != ulong.MaxValue && (buys.Count < maxOrders || sells.Count < maxOrders))
         {
             var order = dexState.GetOrder(orderId);
-            if (order == null) continue;
-            if (order.Value.PoolId != poolId) continue;
-            if (order.Value.Amount.IsZero) continue;
+            var nextOrderId = dexState.GetOrderNext(orderId);
 
-            // Check expiry
-            if (order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock)
-                continue;
+            if (order != null && !order.Value.Amount.IsZero)
+            {
+                // Check expiry
+                if (order.Value.ExpiryBlock == 0 || currentBlock <= order.Value.ExpiryBlock)
+                {
+                    if (order.Value.IsBuy && order.Value.Price >= clearingPrice && buys.Count < maxOrders)
+                        buys.Add((orderId, order.Value));
+                    else if (!order.Value.IsBuy && order.Value.Price <= clearingPrice && sells.Count < maxOrders)
+                        sells.Add((orderId, order.Value));
+                }
+            }
 
-            if (order.Value.IsBuy && order.Value.Price >= clearingPrice && buys.Count < maxOrders)
-                buys.Add((orderId, order.Value));
-            else if (!order.Value.IsBuy && order.Value.Price <= clearingPrice && sells.Count < maxOrders)
-                sells.Add((orderId, order.Value));
+            orderId = nextOrderId;
         }
 
         // Sort buys by price descending (most eager first)
@@ -165,20 +168,28 @@ public static class OrderBook
         if (meta == null) return 0;
 
         var count = 0;
-        var orderCount = dexState.GetOrderCount();
 
-        for (ulong orderId = 0; orderId < orderCount; orderId++)
+        // L-15: Iterate per-pool linked list
+        var orderId = dexState.GetPoolOrderHead(poolId);
+        var expiredIds = new List<ulong>();
+        while (orderId != ulong.MaxValue)
         {
+            var nextOrderId = dexState.GetOrderNext(orderId);
             var order = dexState.GetOrder(orderId);
-            if (order == null) continue;
-            if (order.Value.PoolId != poolId) continue;
-            if (order.Value.ExpiryBlock == 0 || currentBlock <= order.Value.ExpiryBlock) continue;
+            if (order != null && order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock)
+            {
+                // Return escrowed tokens
+                var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
+                DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, order.Value.Amount);
+                expiredIds.Add(orderId);
+            }
+            orderId = nextOrderId;
+        }
 
-            // Return escrowed tokens
-            var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
-            DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, order.Value.Amount);
-
-            dexState.DeleteOrder(orderId);
+        // Delete expired orders (modifies list, so done after iteration)
+        foreach (var expiredId in expiredIds)
+        {
+            dexState.DeleteOrder(expiredId);
             count++;
         }
 

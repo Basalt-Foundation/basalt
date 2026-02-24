@@ -750,6 +750,8 @@ public static class RestApiEndpoints
 
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
         // HIGH-2: Only available when BASALT_DEBUG is set
+        // H8/B4: BASALT_DEBUG=1 is blocked on mainnet/testnet by Program.cs guard.
+        // This endpoint exposes internal mempool state for development diagnostics only.
         if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1")
         app.MapGet("/v1/debug/mempool", () =>
         {

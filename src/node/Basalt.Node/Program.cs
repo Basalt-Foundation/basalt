@@ -16,17 +16,44 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
 
-// Configure Serilog
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
-    .CreateLogger();
+// L17: Configurable log level via BASALT_LOG_LEVEL environment variable
+var logLevelStr = Environment.GetEnvironmentVariable("BASALT_LOG_LEVEL") ?? "Information";
+var logLevel = logLevelStr.ToLowerInvariant() switch
+{
+    "verbose" or "trace" => Serilog.Events.LogEventLevel.Verbose,
+    "debug" => Serilog.Events.LogEventLevel.Debug,
+    "information" or "info" => Serilog.Events.LogEventLevel.Information,
+    "warning" or "warn" => Serilog.Events.LogEventLevel.Warning,
+    "error" => Serilog.Events.LogEventLevel.Error,
+    "fatal" => Serilog.Events.LogEventLevel.Fatal,
+    _ => Serilog.Events.LogEventLevel.Information,
+};
+
+// L18: File logging when BASALT_DATA_DIR is set
+var logConfig = new LoggerConfiguration()
+    .MinimumLevel.Is(logLevel)
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+
+var dataDir = Environment.GetEnvironmentVariable("BASALT_DATA_DIR");
+if (!string.IsNullOrEmpty(dataDir))
+{
+    logConfig.WriteTo.File(
+        Path.Combine(dataDir, "basalt-.log"),
+        rollingInterval: Serilog.RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        fileSizeLimitBytes: 100 * 1024 * 1024); // 100MB per file
+}
+
+Log.Logger = logConfig.CreateLogger();
 
 RocksDbStore? rocksDbStore = null;
 IStateDatabase? stateDb = null;
 StateDbRef? stateDbRef = null;
 // LOW-N05: Declare outside try so finally can zero it on all exit paths.
 byte[]? faucetPrivateKey = null;
+// B1: Declare outside try so finally block can flush staking state.
+Basalt.Consensus.Staking.StakingState? stakingStateForShutdown = null;
+Basalt.Consensus.Staking.IStakingPersistence? stakingPersistenceForShutdown = null;
 try
 {
     var config = NodeConfiguration.FromEnvironment();
@@ -35,6 +62,28 @@ try
         config.IsConsensusMode ? "consensus" : "standalone");
 
     var chainParams = ChainParameters.FromConfiguration(config.ChainId, config.NetworkName);
+
+    // B4: Refuse BASALT_DEBUG=1 on mainnet/testnet — debug mode enables AllowAnyOrigin CORS
+    var isDebugMode = Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1";
+    if (isDebugMode && chainParams.ChainId <= 2)
+    {
+        Log.Fatal("BASALT_DEBUG=1 is not allowed on mainnet/testnet. Remove this flag.");
+        return 1;
+    }
+
+    // H7: Mainnet/testnet configuration guards
+    if (chainParams.ChainId <= 2)
+    {
+        if (chainParams.ChainId == 1 && chainParams.NetworkName != "basalt-mainnet")
+            throw new InvalidOperationException("ChainId 1 requires network name 'basalt-mainnet'");
+        if (chainParams.ChainId == 2 && chainParams.NetworkName != "basalt-testnet")
+            throw new InvalidOperationException("ChainId 2 requires network name 'basalt-testnet'");
+        if (config.DataDir == null)
+            throw new InvalidOperationException("BASALT_DATA_DIR must be set for mainnet/testnet");
+        if (config.IsConsensusMode && string.IsNullOrEmpty(config.ValidatorKeyHex))
+            throw new InvalidOperationException("BASALT_VALIDATOR_KEY must be set for mainnet/testnet validators");
+    }
+
     var chainManager = new ChainManager();
     var mempool = new Mempool();
     var validator = new TransactionValidator(chainParams);
@@ -46,6 +95,12 @@ try
     if (!string.IsNullOrEmpty(faucetKeyHex))
     {
         faucetPrivateKey = Convert.FromHexString(faucetKeyHex);
+    }
+    else if (chainParams.ChainId <= 2)
+    {
+        // B2: Reject startup on mainnet/testnet without explicit faucet key
+        Log.Fatal("BASALT_FAUCET_KEY must be set for mainnet/testnet. Cannot use deterministic dev key.");
+        return 1;
     }
     else
     {
@@ -69,6 +124,8 @@ try
 
     // Initialize staking state with genesis validators
     var stakingState = new StakingState();
+    stakingStateForShutdown = stakingState;
+    Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null;
     var validatorAddresses = new[]
     {
         Address.FromHexString("0x0000000000000000000000000000000000000100"),
@@ -126,6 +183,12 @@ try
 
                 stateDb = recoveredFlat;
                 chainManager.ResumeFromBlock(genesisBlock, latestBlock);
+
+                // B1: Load persisted staking state (overwrites genesis defaults with real data)
+                stakingPersistence = new Basalt.Node.RocksDbStakingPersistence(rocksDbStore);
+                stakingState.LoadFromPersistence(stakingPersistence);
+                Log.Information("Staking: loaded persisted staking state");
+
                 Log.Information("Recovered from persistent storage. Latest block: #{Number}, Hash: {Hash}",
                     latestBlockNumber.Value, latestBlock.Hash.ToHexString()[..18] + "...");
             }
@@ -133,6 +196,7 @@ try
             {
                 // Data corrupted — start fresh
                 Log.Warning("Persistent data corrupted, starting fresh");
+                stakingPersistence = new Basalt.Node.RocksDbStakingPersistence(rocksDbStore);
                 stateDb = new FlatStateDb(new TrieStateDb(trieNodeStore), new RocksDbFlatStatePersistence(rocksDbStore));
                 var genesisBlock = chainManager.CreateGenesisBlock(chainParams, genesisBalances, stateDb);
                 PersistBlock(blockStore, genesisBlock);
@@ -142,12 +206,14 @@ try
         else
         {
             // Fresh start with RocksDB
+            stakingPersistence = new Basalt.Node.RocksDbStakingPersistence(rocksDbStore);
             stateDb = new FlatStateDb(new TrieStateDb(trieNodeStore), new RocksDbFlatStatePersistence(rocksDbStore));
             var genesisBlock = chainManager.CreateGenesisBlock(chainParams, genesisBalances, stateDb);
             PersistBlock(blockStore, genesisBlock);
             Log.Information("Genesis block created (persistent). Hash: {Hash}", genesisBlock.Hash.ToHexString()[..18] + "...");
         }
 
+        stakingPersistenceForShutdown = stakingPersistence;
         Log.Information("Storage: RocksDB at {DataDir}", config.DataDir);
     }
     else
@@ -327,6 +393,8 @@ try
             try { return Convert.FromHexString(hexVk); }
             catch { return null; }
         });
+        // H9: No MockKycProvider in consensus mode — only governance-approved
+        // providers can issue attestations on mainnet/testnet.
         var complianceEngine = new Basalt.Compliance.ComplianceEngine(
             new Basalt.Compliance.IdentityRegistry(),
             new Basalt.Compliance.SanctionsList(),
@@ -337,7 +405,8 @@ try
             app.Services.GetRequiredService<ILoggerFactory>(),
             blockStore, receiptStore,
             stakingState, slashingEngine,
-            complianceEngine);
+            complianceEngine,
+            stakingPersistence);
 
         // E4: Wire solver manager into REST API adapter after NodeCoordinator is initialized
         if (coordinator.SolverManager != null)
@@ -366,6 +435,10 @@ try
 
         app.Lifetime.ApplicationStopping.Register(() =>
         {
+            // L20: Add random jitter to stagger validator restarts and avoid thundering herd
+            var jitterMs = Random.Shared.Next(0, 3000);
+            Thread.Sleep(jitterMs);
+
             Log.Information("Shutting down consensus coordinator...");
             // N-18: Timeout to prevent shutdown deadlock
             if (!coordinator.StopAsync().Wait(TimeSpan.FromSeconds(10)))
@@ -403,6 +476,10 @@ try
 
         app.Lifetime.ApplicationStopping.Register(() =>
         {
+            // L20: Add random jitter to stagger restarts
+            var jitterMs = Random.Shared.Next(0, 3000);
+            Thread.Sleep(jitterMs);
+
             Log.Information("Shutting down block production...");
             // N-18: Timeout to prevent shutdown deadlock
             if (!blockProduction.StopAsync().Wait(TimeSpan.FromSeconds(10)))
@@ -424,6 +501,13 @@ finally
     // LOW-N05: Zero faucet private key on shutdown for both consensus and standalone modes
     if (faucetPrivateKey != null)
         System.Security.Cryptography.CryptographicOperations.ZeroMemory(faucetPrivateKey);
+
+    // B1: Flush staking state to persistent storage on shutdown
+    if (stakingPersistenceForShutdown != null && stakingStateForShutdown != null)
+    {
+        stakingStateForShutdown.FlushToPersistence(stakingPersistenceForShutdown);
+        Log.Information("Staking state flushed to persistence");
+    }
 
     // Flush the current canonical state — after sync swaps this may differ
     // from the original stateDb variable.

@@ -227,4 +227,21 @@ public class SqrtPriceMathTests
         amount0.Should().BeGreaterThan(UInt256.Zero);
         amount1.Should().BeGreaterThan(UInt256.Zero);
     }
+
+    // ────────── H-2 Regression: GetAmount1Delta zero check ──────────
+
+    [Fact]
+    public void GetAmount1Delta_ZeroSqrtRatio_Throws()
+    {
+        // GetAmount1Delta should throw DivideByZeroException when either sqrtRatio is zero,
+        // mirroring the check in GetAmount0Delta.
+        var nonZero = TickMath.GetSqrtRatioAtTick(0);
+        var liquidity = new UInt256(1_000_000);
+
+        var act1 = () => SqrtPriceMath.GetAmount1Delta(UInt256.Zero, nonZero, liquidity, roundUp: false);
+        act1.Should().Throw<DivideByZeroException>();
+
+        var act2 = () => SqrtPriceMath.GetAmount1Delta(nonZero, UInt256.Zero, liquidity, roundUp: false);
+        act2.Should().Throw<DivideByZeroException>();
+    }
 }

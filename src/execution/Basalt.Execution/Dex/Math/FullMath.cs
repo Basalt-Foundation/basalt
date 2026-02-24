@@ -93,12 +93,12 @@ public static class FullMath
         return x;
     }
 
-    private static BigInteger ToBig(UInt256 value)
+    public static BigInteger ToBig(UInt256 value)
     {
         return new BigInteger(value.ToArray(isBigEndian: false), isUnsigned: true);
     }
 
-    private static UInt256 FromBig(BigInteger value)
+    public static UInt256 FromBig(BigInteger value)
     {
         if (value.Sign < 0)
             throw new OverflowException("FullMath: result is negative");

@@ -1,5 +1,24 @@
 namespace Basalt.Node;
 
+/// <summary>
+/// Node configuration populated from environment variables:
+/// <list type="bullet">
+/// <item><c>BASALT_VALIDATOR_INDEX</c> — Validator index (int, -1 = standalone)</item>
+/// <item><c>BASALT_VALIDATOR_ADDRESS</c> — Validator address (hex)</item>
+/// <item><c>BASALT_VALIDATOR_KEY</c> — Ed25519 private key (64 hex chars)</item>
+/// <item><c>BASALT_PEERS</c> — Comma-separated peer list (host:port)</item>
+/// <item><c>BASALT_NETWORK</c> — Network name (default: basalt-devnet)</item>
+/// <item><c>BASALT_CHAIN_ID</c> — Chain ID (default: 31337)</item>
+/// <item><c>HTTP_PORT</c> — REST API port (default: 5000)</item>
+/// <item><c>P2P_PORT</c> — P2P port (default: 30303)</item>
+/// <item><c>BASALT_DATA_DIR</c> — RocksDB data directory (null = in-memory)</item>
+/// <item><c>BASALT_USE_PIPELINING</c> — Enable pipelined consensus (true/false)</item>
+/// <item><c>BASALT_USE_SANDBOX</c> — Enable contract sandbox (true/false)</item>
+/// <item><c>BASALT_FAUCET_KEY</c> — Faucet private key (hex, required for mainnet)</item>
+/// <item><c>BASALT_DEBUG</c> — Enable debug endpoints (1 = enabled, blocked on mainnet)</item>
+/// <item><c>BASALT_LOG_LEVEL</c> — Log level (Verbose/Debug/Information/Warning/Error/Fatal)</item>
+/// </list>
+/// </summary>
 public sealed class NodeConfiguration
 {
     // Validator identity

@@ -35,8 +35,8 @@ public sealed class PipelinedConsensus
     // View change tracking per view
     private readonly ConcurrentDictionary<ulong, HashSet<PeerId>> _viewChangeVotes = new();
 
-    // Per-round view timeout
-    private readonly TimeSpan _roundTimeout = TimeSpan.FromSeconds(2);
+    // M10: Per-round view timeout (configurable via constructor)
+    private readonly TimeSpan _roundTimeout;
 
     // Finalization ordering
     private ulong _lastFinalizedBlock;
@@ -63,7 +63,8 @@ public sealed class PipelinedConsensus
         IBlsSigner blsSigner,
         ILogger<PipelinedConsensus> logger,
         ulong lastFinalizedBlock = 0,
-        uint chainId = 0)
+        uint chainId = 0,
+        TimeSpan? roundTimeout = null)
     {
         _validatorSet = validatorSet;
         _localPeerId = localPeerId;
@@ -72,6 +73,7 @@ public sealed class PipelinedConsensus
         _blsSigner = blsSigner;
         _logger = logger;
         _lastFinalizedBlock = lastFinalizedBlock;
+        _roundTimeout = roundTimeout ?? TimeSpan.FromSeconds(2);
     }
 
     /// <summary>

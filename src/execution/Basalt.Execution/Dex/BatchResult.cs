@@ -32,6 +32,19 @@ public sealed class BatchResult
 
     /// <summary>Updated AMM reserves after settlement.</summary>
     public PoolReserves UpdatedReserves { get; init; }
+
+    /// <summary>
+    /// L-01: True if the AMM bought token0 (sell pressure) during this batch.
+    /// Used by PaySolverReward to determine the correct reserve for reward deduction.
+    /// When true, fees were collected in token0 (Reserve0). When false, in token1 (Reserve1).
+    /// </summary>
+    public bool AmmBoughtToken0 { get; init; }
+
+    /// <summary>
+    /// Address of the winning external solver, or null if the built-in solver was used.
+    /// When set, the solver receives a fraction of AMM fees as reward (SolverRewardBps).
+    /// </summary>
+    public Address? WinningSolver { get; set; }
 }
 
 /// <summary>
@@ -51,6 +64,9 @@ public readonly struct FillRecord
 
     /// <summary>Whether this fill is from a limit order (vs. swap intent).</summary>
     public bool IsLimitOrder { get; init; }
+
+    /// <summary>Whether this fill is a buy (buying token0) or sell (selling token0).</summary>
+    public bool IsBuy { get; init; }
 
     /// <summary>Order ID if this is a limit order fill.</summary>
     public ulong OrderId { get; init; }

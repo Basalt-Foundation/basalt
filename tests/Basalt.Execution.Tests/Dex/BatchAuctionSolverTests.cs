@@ -398,6 +398,150 @@ public class BatchAuctionSolverTests
         mempool.Count.Should().Be(0);
     }
 
+    // ────────── C-05: Maximum-Volume Clearing Rule ──────────
+
+    [Fact]
+    public void MaxVolume_SelectsHigherVolumePriceOverHigherPrice()
+    {
+        // C-05: Create a scenario where a lower price matches more total volume.
+        // Reserve ratio 1:2 → spot = 2*PriceScale.
+        // Buy intent: willing to pay up to 3*PriceScale (200 token1 for ~67 token0).
+        // Sell intent: selling 500 token0, min 100 token1 (min price = PriceScale/5).
+        // At 3*PriceScale: buyVol = 200*PS/(3*PS) = 66. sellVol = 500. matched = 66.
+        // At PriceScale/5: buyVol = 200*PS/(PS/5) = 1000. sellVol = 500. matched = 500.
+        // Max-volume rule should pick PriceScale/5 (matched=500) over 3*PriceScale (matched=66).
+        var reserves = new PoolReserves
+        {
+            Reserve0 = new UInt256(10_000),
+            Reserve1 = new UInt256(20_000),
+            TotalSupply = new UInt256(10_000),
+        };
+
+        var buys = new List<ParsedIntent>
+        {
+            new()
+            {
+                Sender = User1,
+                TokenIn = Token1,
+                TokenOut = Token0,
+                AmountIn = new UInt256(200),
+                MinAmountOut = new UInt256(1), // Willing to accept any amount
+                AllowPartialFill = true,
+            },
+        };
+
+        var sells = new List<ParsedIntent>
+        {
+            new()
+            {
+                Sender = User2,
+                TokenIn = Token0,
+                TokenOut = Token1,
+                AmountIn = new UInt256(500),
+                MinAmountOut = new UInt256(100), // Min price = 100*PS/500 = PS/5
+                AllowPartialFill = true,
+            },
+        };
+
+        var result = BatchAuctionSolver.ComputeSettlement(
+            buys, sells, [], [], reserves, 30, 0);
+
+        result.Should().NotBeNull("settlement should succeed");
+        // The clearing price should be chosen to maximize volume.
+        // At the sell-intent's corrected limit price (PS/5), matched = 500.
+        // At the buy limit price (PS*200/1 = 200*PS), matched ≈ 1.
+        // At spot (2*PS), matched = min(200*PS/(2*PS), 500) = min(100, 500) = 100.
+        // Max volume is at PS/5 = 500.
+        result!.TotalVolume0.Should().BeGreaterThan(new UInt256(100),
+            "max-volume rule should pick the price with highest matched volume");
+    }
+
+    [Fact]
+    public void SellIntentLimitPrice_UsesCorrectConvention_AfterH04()
+    {
+        // H-04: Sell intent limit prices should use token1/token0 convention.
+        // Sell intent: selling 1000 token0, min 500 token1.
+        // Correct limit price = 500 * PriceScale / 1000 = PriceScale / 2.
+        // Before H-04, it would use AmountIn * PriceScale / MinAmountOut = 1000 * PriceScale / 500 = 2 * PriceScale.
+        var reserves = new PoolReserves
+        {
+            Reserve0 = new UInt256(100_000),
+            Reserve1 = new UInt256(100_000),
+            TotalSupply = new UInt256(10_000),
+        };
+
+        // Sell intent: min acceptable = PriceScale/2 (corrected)
+        var sells = new List<ParsedIntent>
+        {
+            new()
+            {
+                Sender = User2,
+                TokenIn = Token0,
+                TokenOut = Token1,
+                AmountIn = new UInt256(1000),
+                MinAmountOut = new UInt256(500),
+                AllowPartialFill = true,
+            },
+        };
+
+        // Buy intent: willing to pay at PriceScale (spot price)
+        var buys = new List<ParsedIntent>
+        {
+            new()
+            {
+                Sender = User1,
+                TokenIn = Token1,
+                TokenOut = Token0,
+                AmountIn = new UInt256(1000),
+                MinAmountOut = new UInt256(500),
+                AllowPartialFill = true,
+            },
+        };
+
+        var result = BatchAuctionSolver.ComputeSettlement(
+            buys, sells, [], [], reserves, 30, 0);
+
+        result.Should().NotBeNull("with overlapping buy and sell, settlement should succeed");
+        // The clearing price should be at or above the sell limit (PriceScale/2)
+        // and at or below the buy limit
+        var sellLimitPrice = FullMath.MulDiv(new UInt256(500), BatchAuctionSolver.PriceScale, new UInt256(1000));
+        result!.ClearingPrice.Should().BeGreaterThanOrEqualTo(sellLimitPrice,
+            "clearing price should be >= sell intent's limit price (token1/token0 convention)");
+    }
+
+    [Fact]
+    public void SingleIntent_AmmOnly_NoPeerToPeer()
+    {
+        // Test 10: Single buy intent with no sell counterparty — routes entirely through AMM.
+        var reserves = new PoolReserves
+        {
+            Reserve0 = new UInt256(100_000),
+            Reserve1 = new UInt256(100_000),
+            TotalSupply = new UInt256(10_000),
+        };
+
+        var buys = new List<ParsedIntent>
+        {
+            new()
+            {
+                Sender = User1,
+                TokenIn = Token1,
+                TokenOut = Token0,
+                AmountIn = new UInt256(5_000),
+                MinAmountOut = new UInt256(1),
+                AllowPartialFill = true,
+            },
+        };
+
+        var result = BatchAuctionSolver.ComputeSettlement(
+            buys, [], [], [], reserves, 30, 0);
+
+        result.Should().NotBeNull("single buy intent should settle through AMM");
+        result!.Fills.Should().HaveCount(1, "should have exactly one fill for the single intent");
+        result.Fills[0].IsBuy.Should().BeTrue();
+        result.AmmVolume.Should().BeGreaterThan(UInt256.Zero, "residual should route through AMM");
+    }
+
     private static byte[] MakeIntentData(Address tokenIn, Address tokenOut, UInt256 amountIn, UInt256 minOut)
     {
         var data = new byte[114];

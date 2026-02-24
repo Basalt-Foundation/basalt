@@ -29,20 +29,36 @@ public sealed class RocksDbStore : IDisposable
         public const string Metadata = "metadata";
         public const string TrieNodes = "trie_nodes";
         public const string BlockIndex = "block_index";
+        /// <summary>B1: Staking state persistence (validator stakes + unbonding queue).</summary>
+        public const string Staking = "staking";
     }
 
     public RocksDbStore(string path)
     {
+        // M12: Production-ready RocksDB options
         var options = new DbOptions()
             .SetCreateIfMissing(true)
-            .SetCreateMissingColumnFamilies(true);
+            .SetCreateMissingColumnFamilies(true)
+            .SetMaxBackgroundCompactions(4)
+            .SetMaxBackgroundFlushes(2)
+            .IncreaseParallelism(Environment.ProcessorCount);
 
         // M-01: Per-CF options tuned for each access pattern.
         // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
         var defaultOptions = new ColumnFamilyOptions();
 
         var pointLookupOptions = new ColumnFamilyOptions()
-            .SetBloomLocality(1);
+            .SetBloomLocality(1)
+            .SetWriteBufferSize(64UL * 1024 * 1024)     // 64MB write buffer
+            .SetMaxWriteBufferNumber(3)
+            .SetTargetFileSizeBase(64UL * 1024 * 1024);  // 64MB SST files
+
+        // TrieNodes CF: write-heavy, point lookup — larger buffers
+        var trieOptions = new ColumnFamilyOptions()
+            .SetBloomLocality(1)
+            .SetWriteBufferSize(128UL * 1024 * 1024)     // 128MB write buffer
+            .SetMaxWriteBufferNumber(4)
+            .SetTargetFileSizeBase(128UL * 1024 * 1024);  // 128MB SST files
 
         var cfs = new RocksDbSharp.ColumnFamilies();
         cfs.Add("default", defaultOptions);
@@ -50,13 +66,14 @@ public sealed class RocksDbStore : IDisposable
         cfs.Add(CF.Blocks, pointLookupOptions);        // point lookups by hash, raw block reads
         cfs.Add(CF.Receipts, pointLookupOptions);      // point lookups by tx hash
         cfs.Add(CF.Metadata, defaultOptions);           // very few keys, no bloom needed
-        cfs.Add(CF.TrieNodes, pointLookupOptions);     // write-heavy, point lookups by hash
+        cfs.Add(CF.TrieNodes, trieOptions);             // M12: write-heavy, larger buffers
         cfs.Add(CF.BlockIndex, defaultOptions);         // sequential scans by block number
+        cfs.Add(CF.Staking, pointLookupOptions);        // B1: staking state persistence
 
         _db = RocksDbSharp.RocksDb.Open(options, path, cfs);
         _columnFamilies = new Dictionary<string, ColumnFamilyHandle>();
 
-        var cfNames = new[] { "default", CF.State, CF.Blocks, CF.Receipts, CF.Metadata, CF.TrieNodes, CF.BlockIndex };
+        var cfNames = new[] { "default", CF.State, CF.Blocks, CF.Receipts, CF.Metadata, CF.TrieNodes, CF.BlockIndex, CF.Staking };
         foreach (var name in cfNames)
         {
             _columnFamilies[name] = _db.GetColumnFamily(name);
@@ -194,8 +211,11 @@ public sealed class WriteBatchScope : IDisposable
     {
         if (_hasOperations && !_committed)
         {
-            Console.Error.WriteLine(
-                "WARNING: WriteBatchScope disposed with uncommitted operations. " +
+            // B3: Dispose the native batch first to prevent memory leak, then throw.
+            // This represents a programming bug — callers must call Commit() before Dispose().
+            _batch.Dispose();
+            throw new InvalidOperationException(
+                "WriteBatchScope disposed with uncommitted operations. " +
                 "Data was silently dropped. Ensure Commit() is called before Dispose().");
         }
         _batch.Dispose();

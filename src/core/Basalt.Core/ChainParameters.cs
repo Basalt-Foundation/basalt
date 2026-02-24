@@ -52,6 +52,9 @@ public sealed class ChainParameters
 
     /// <summary>
     /// Maximum validator set size supported by the ulong commit voter bitmap.
+    /// The consensus vote bitmap is a 64-bit ulong where each bit represents one validator.
+    /// Supporting more than 64 validators requires migrating to a variable-length bitmap
+    /// (e.g., byte[] with length = ceil(validatorCount/8)) and a corresponding wire format change.
     /// </summary>
     public const uint MaxValidatorSetSize = 64;
 
@@ -118,7 +121,33 @@ public sealed class ChainParameters
     public int MaxSolvers { get; init; } = 32;
 
     /// <summary>Fraction of swap fees rewarded to the winning solver (basis points, e.g. 1000 = 10%).</summary>
-    public uint SolverRewardBps { get; init; } = 1000;
+    public uint SolverRewardBps { get; init; } = 500;
+
+    /// <summary>Admin address authorized to pause the DEX and set governance parameters. Null means no admin.</summary>
+    public Address? DexAdminAddress { get; init; }
+
+    /// <summary>TWAP oracle window in blocks (~4 hours at 2s blocks). Governance-overridable.</summary>
+    public ulong TwapWindowBlocks { get; init; } = 7200;
+
+    /// <summary>Maximum pool creations per block (0 = unlimited). Governance-overridable.</summary>
+    public uint MaxPoolCreationsPerBlock { get; init; } = 10;
+
+    /// <summary>Number of blocks to retain nullifiers for cross-block replay prevention.</summary>
+    public uint NullifierWindowBlocks { get; init; } = 256;
+
+    // ── Configurable Timeouts (M10, M11) ──
+
+    /// <summary>M10: Consensus round timeout in milliseconds. Default 2000ms (2s).</summary>
+    public uint ConsensusTimeoutMs { get; init; } = 2000;
+
+    /// <summary>M11: P2P handshake timeout in milliseconds.</summary>
+    public uint P2PHandshakeTimeoutMs { get; init; } = 5000;
+
+    /// <summary>M11: P2P frame read timeout in milliseconds.</summary>
+    public uint P2PFrameReadTimeoutMs { get; init; } = 120_000;
+
+    /// <summary>M11: P2P connect timeout in milliseconds.</summary>
+    public uint P2PConnectTimeoutMs { get; init; } = 10_000;
 
     /// <summary>Token decimals (18 like Ethereum).</summary>
     public byte TokenDecimals { get; init; } = 18;
@@ -159,18 +188,59 @@ public sealed class ChainParameters
             throw new InvalidOperationException("MaxTransactionsPerBlock must be greater than zero.");
         if (string.IsNullOrEmpty(NetworkName))
             throw new InvalidOperationException("NetworkName must not be empty.");
+        if (ChainId <= 2 && DexAdminAddress == null)
+            throw new InvalidOperationException(
+                "DexAdminAddress must be set for mainnet/testnet. DEX governance cannot function without an admin.");
+    }
+
+    private static Address MakeDexGovernanceAddress()
+    {
+        var bytes = new byte[20];
+        bytes[18] = 0x10;
+        bytes[19] = 0x0A; // 0x...100A — dedicated DEX governance address
+        return new Address(bytes);
     }
 
     private static readonly ChainParameters _mainnet = new()
     {
         ChainId = 1,
         NetworkName = "basalt-mainnet",
+        BlockTimeMs = 2000,
+        MaxBlockSizeBytes = 2 * 1024 * 1024,
+        MaxTransactionsPerBlock = 10_000,
+        MaxTransactionDataBytes = 128 * 1024,
+        InitialBaseFee = new UInt256(1_000_000_000),
+        BaseFeeChangeDenominator = 8,
+        ElasticityMultiplier = 2,
+        BlockGasLimit = 100_000_000,
+        ValidatorSetSize = 64,
+        MinValidatorStake = UInt256.Parse("100000000000000000000000"),
+        EpochLength = 1000,
+        UnbondingPeriod = 907_200,
+        InactivityThresholdPercent = 50,
+        NullifierWindowBlocks = 256,
+        DexAdminAddress = MakeDexGovernanceAddress(),
+        TwapWindowBlocks = 7200,
+        MaxPoolCreationsPerBlock = 10,
+        SolverRewardBps = 500,
+        DexMaxIntentsPerBatch = 500,
     };
 
     private static readonly ChainParameters _testnet = new()
     {
         ChainId = 2,
         NetworkName = "basalt-testnet",
+        BlockTimeMs = 2000,
+        InitialBaseFee = new UInt256(100_000_000),
+        ValidatorSetSize = 32,
+        MinValidatorStake = UInt256.Parse("10000000000000000000000"),
+        EpochLength = 500,
+        UnbondingPeriod = 43_200,
+        InactivityThresholdPercent = 50,
+        NullifierWindowBlocks = 128,
+        DexAdminAddress = MakeDexGovernanceAddress(),
+        TwapWindowBlocks = 3600,
+        MaxPoolCreationsPerBlock = 20,
     };
 
     /// <summary>Pre-defined Basalt mainnet parameters.</summary>
@@ -205,13 +275,41 @@ public sealed class ChainParameters
             {
                 ChainId = chainId,
                 NetworkName = networkName,
-                // Mainnet security parameters (defaults from property initializers)
+                BlockTimeMs = 2000,
+                MaxBlockSizeBytes = 2 * 1024 * 1024,
+                MaxTransactionsPerBlock = 10_000,
+                MaxTransactionDataBytes = 128 * 1024,
+                InitialBaseFee = new UInt256(1_000_000_000),
+                BaseFeeChangeDenominator = 8,
+                ElasticityMultiplier = 2,
+                BlockGasLimit = 100_000_000,
+                ValidatorSetSize = 64,
+                MinValidatorStake = UInt256.Parse("100000000000000000000000"),
+                EpochLength = 1000,
+                UnbondingPeriod = 907_200,
+                InactivityThresholdPercent = 50,
+                NullifierWindowBlocks = 256,
+                DexAdminAddress = MakeDexGovernanceAddress(),
+                TwapWindowBlocks = 7200,
+                MaxPoolCreationsPerBlock = 10,
+                SolverRewardBps = 500,
+                DexMaxIntentsPerBatch = 500,
             },
             2 => new ChainParameters
             {
                 ChainId = chainId,
                 NetworkName = networkName,
-                // Testnet: same security profile as mainnet
+                BlockTimeMs = 2000,
+                InitialBaseFee = new UInt256(100_000_000),
+                ValidatorSetSize = 32,
+                MinValidatorStake = UInt256.Parse("10000000000000000000000"),
+                EpochLength = 500,
+                UnbondingPeriod = 43_200,
+                InactivityThresholdPercent = 50,
+                NullifierWindowBlocks = 128,
+                DexAdminAddress = MakeDexGovernanceAddress(),
+                TwapWindowBlocks = 3600,
+                MaxPoolCreationsPerBlock = 20,
             },
             _ => new ChainParameters
             {
@@ -224,6 +322,7 @@ public sealed class ChainParameters
                 EpochLength = 100,
                 InitialBaseFee = new UInt256(1),
                 InactivityThresholdPercent = 50,
+                NullifierWindowBlocks = 16,
             },
         };
     }

@@ -79,6 +79,24 @@ public static class SolverScoring
             }
         }
 
+        // H6/M-12: BST-20 balance check deferred to settlement execution.
+        // The BatchSettlementExecutor reverts fills with insufficient balances,
+        // and SolverManager tracks revert rates for solver reputation scoring.
+        // This is safe because invalid settlements waste gas but cannot extract value.
+
+        // M-11: Check constant-product invariant — updated reserves must preserve k
+        var oldReserves = dexState.GetPoolReserves(result.PoolId);
+        if (oldReserves != null)
+        {
+            var oldK = Execution.Dex.Math.FullMath.ToBig(oldReserves.Value.Reserve0)
+                     * Execution.Dex.Math.FullMath.ToBig(oldReserves.Value.Reserve1);
+            var newK = Execution.Dex.Math.FullMath.ToBig(result.UpdatedReserves.Reserve0)
+                     * Execution.Dex.Math.FullMath.ToBig(result.UpdatedReserves.Reserve1);
+            // Allow small rounding tolerance (0.1%)
+            if (newK < oldK * 999 / 1000)
+                return false;
+        }
+
         // Check updated reserves are non-negative (basic sanity)
         if (result.UpdatedReserves.Reserve0.IsZero && result.UpdatedReserves.Reserve1.IsZero)
             return false;

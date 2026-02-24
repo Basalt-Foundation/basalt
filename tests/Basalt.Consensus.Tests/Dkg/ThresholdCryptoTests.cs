@@ -146,8 +146,10 @@ public class ThresholdCryptoTests
         var pk2 = new BlsPublicKey(BlsSigner.GetPublicKeyStatic(key2));
 
         var share = ThresholdCrypto.GenerateRandomScalar();
+#pragma warning disable CS0618 // Testing legacy XOR encrypt/decrypt path
         var encrypted = ThresholdCrypto.EncryptShare(share, pk1, pk2);
         var decrypted = ThresholdCrypto.DecryptShare(encrypted, pk1, pk2);
+#pragma warning restore CS0618
 
         decrypted.Should().Be(share % ThresholdCrypto.ScalarFieldOrder);
     }
@@ -170,7 +172,9 @@ public class ThresholdCryptoTests
         var pk3 = new BlsPublicKey(BlsSigner.GetPublicKeyStatic(key3));
 
         var share = ThresholdCrypto.GenerateRandomScalar();
+#pragma warning disable CS0618 // Testing legacy XOR encrypt path
         var encrypted = ThresholdCrypto.EncryptShare(share, pk1, pk2);
+#pragma warning restore CS0618
 
         // Decrypt with wrong key
         var decrypted = ThresholdCrypto.DecryptShare(encrypted, pk1, pk3);

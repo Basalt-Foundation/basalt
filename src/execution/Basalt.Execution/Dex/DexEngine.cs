@@ -86,6 +86,26 @@ public sealed class DexEngine
     }
 
     /// <summary>
+    /// Create a new liquidity pool with rate limiting per block.
+    /// </summary>
+    public DexResult CreatePool(Address sender, Address tokenA, Address tokenB, uint feeBps,
+        ulong blockNumber, uint maxCreationsPerBlock)
+    {
+        if (maxCreationsPerBlock > 0)
+        {
+            var count = _state.GetBlockPoolCreations(blockNumber);
+            if (count >= maxCreationsPerBlock)
+                return DexResult.Error(BasaltErrorCode.DexPoolCreationLimitReached,
+                    $"Maximum {maxCreationsPerBlock} pool creations per block reached");
+        }
+
+        var result = CreatePool(sender, tokenA, tokenB, feeBps);
+        if (result.Success)
+            _state.IncrementBlockPoolCreations(blockNumber);
+        return result;
+    }
+
+    /// <summary>
     /// Add liquidity to an existing pool. The actual amounts deposited may differ from the
     /// desired amounts to maintain the pool's price ratio.
     /// </summary>
@@ -123,6 +143,8 @@ public sealed class DexEngine
             // First deposit — use desired amounts directly
             amount0 = amount0Desired;
             amount1 = amount1Desired;
+            if (amount0 < amount0Min || amount1 < amount1Min)
+                return DexResult.Error(BasaltErrorCode.DexSlippageExceeded, "Initial deposit below minimum amounts");
             shares = DexLibrary.ComputeInitialLiquidity(amount0, amount1);
 
             // Lock MINIMUM_LIQUIDITY permanently by adding it to total supply
@@ -223,13 +245,24 @@ public sealed class DexEngine
         if (amount1 < amount1Min)
             return DexResult.Error(BasaltErrorCode.DexSlippageExceeded, "Insufficient token1 output");
 
+        // Prevent pool drain below minimum reserves (allow full drain only when last real LP exits)
+        var remainingSupply = UInt256.CheckedSub(res.TotalSupply, sharesToBurn);
+        if (remainingSupply > DexLibrary.MinimumLiquidity)
+        {
+            var remainingR0 = UInt256.CheckedSub(res.Reserve0, amount0);
+            var remainingR1 = UInt256.CheckedSub(res.Reserve1, amount1);
+            if (remainingR0 < DexLibrary.MinimumLiquidity || remainingR1 < DexLibrary.MinimumLiquidity)
+                return DexResult.Error(BasaltErrorCode.DexInsufficientLiquidity,
+                    "Cannot drain pool below minimum reserves");
+        }
+
         // Burn LP shares
         _state.SetLpBalance(poolId, sender, lpBalance - sharesToBurn);
 
         // Update reserves
-        res.Reserve0 = res.Reserve0 - amount0;
-        res.Reserve1 = res.Reserve1 - amount1;
-        res.TotalSupply = res.TotalSupply - sharesToBurn;
+        res.Reserve0 = UInt256.CheckedSub(res.Reserve0, amount0);
+        res.Reserve1 = UInt256.CheckedSub(res.Reserve1, amount1);
+        res.TotalSupply = UInt256.CheckedSub(res.TotalSupply, sharesToBurn);
         res.KLast = UInt256.CheckedMul(res.Reserve0, res.Reserve1);
         _state.SetPoolReserves(poolId, res);
 
@@ -299,11 +332,11 @@ public sealed class DexEngine
         if (isToken0In)
         {
             res.Reserve0 = UInt256.CheckedAdd(res.Reserve0, amountIn);
-            res.Reserve1 = res.Reserve1 - amountOut;
+            res.Reserve1 = UInt256.CheckedSub(res.Reserve1, amountOut);
         }
         else
         {
-            res.Reserve0 = res.Reserve0 - amountOut;
+            res.Reserve0 = UInt256.CheckedSub(res.Reserve0, amountOut);
             res.Reserve1 = UInt256.CheckedAdd(res.Reserve1, amountIn);
         }
         res.KLast = UInt256.CheckedMul(res.Reserve0, res.Reserve1);
@@ -506,7 +539,9 @@ public sealed class DexEngine
             }
             else if (runtime != null)
             {
-                ExecuteBst20Transfer(stateDb, runtime, token0, sender, DexState.DexAddress, amount0);
+                // M-10: Check BST-20 transfer return value
+                if (!ExecuteBst20Transfer(stateDb, runtime, token0, sender, DexState.DexAddress, amount0))
+                    return DexResult.Error(BasaltErrorCode.DexTransferFailed, "BST-20 token0 transfer failed");
             }
         }
         if (!amount1.IsZero)
@@ -519,7 +554,9 @@ public sealed class DexEngine
             }
             else if (runtime != null)
             {
-                ExecuteBst20Transfer(stateDb, runtime, token1, sender, DexState.DexAddress, amount1);
+                // M-10: Check BST-20 transfer return value
+                if (!ExecuteBst20Transfer(stateDb, runtime, token1, sender, DexState.DexAddress, amount1))
+                    return DexResult.Error(BasaltErrorCode.DexTransferFailed, "BST-20 token1 transfer failed");
             }
         }
         return DexResult.PoolCreated(0); // dummy success
@@ -540,7 +577,8 @@ public sealed class DexEngine
             }
             else if (runtime != null)
             {
-                ExecuteBst20Transfer(stateDb, runtime, token0, DexState.DexAddress, recipient, amount0);
+                if (!ExecuteBst20Transfer(stateDb, runtime, token0, DexState.DexAddress, recipient, amount0))
+                    throw new BasaltException(BasaltErrorCode.DexTransferFailed, "BST-20 token0 outbound transfer failed");
             }
         }
         if (!amount1.IsZero)
@@ -552,7 +590,8 @@ public sealed class DexEngine
             }
             else if (runtime != null)
             {
-                ExecuteBst20Transfer(stateDb, runtime, token1, DexState.DexAddress, recipient, amount1);
+                if (!ExecuteBst20Transfer(stateDb, runtime, token1, DexState.DexAddress, recipient, amount1))
+                    throw new BasaltException(BasaltErrorCode.DexTransferFailed, "BST-20 token1 outbound transfer failed");
             }
         }
     }
@@ -564,6 +603,9 @@ public sealed class DexEngine
         {
             // Native BST: debit sender, credit DEX address
             var senderState = stateDb.GetAccount(sender) ?? AccountState.Empty;
+            // L-10: Check balance before debit
+            if (senderState.Balance < amount)
+                throw new BasaltException(BasaltErrorCode.DexInsufficientBalance, "Insufficient balance for DEX debit");
             stateDb.SetAccount(sender, senderState with
             {
                 Balance = UInt256.CheckedSub(senderState.Balance, amount),
@@ -578,7 +620,8 @@ public sealed class DexEngine
         {
             // BST-20: call token.Transfer(dexAddress, amount) with caller = sender.
             // The protocol authorizes this transfer because the user signed a DEX transaction.
-            ExecuteBst20Transfer(stateDb, runtime, token, sender, DexState.DexAddress, amount);
+            if (!ExecuteBst20Transfer(stateDb, runtime, token, sender, DexState.DexAddress, amount))
+                throw new BasaltException(BasaltErrorCode.DexTransferFailed, "BST-20 inbound transfer failed");
         }
     }
 
@@ -603,7 +646,8 @@ public sealed class DexEngine
         {
             // BST-20: call token.Transfer(recipient, amount) with caller = DexAddress.
             // The DEX system account holds the tokens and authorizes their release.
-            ExecuteBst20Transfer(stateDb, runtime, token, DexState.DexAddress, recipient, amount);
+            if (!ExecuteBst20Transfer(stateDb, runtime, token, DexState.DexAddress, recipient, amount))
+                throw new BasaltException(BasaltErrorCode.DexTransferFailed, "BST-20 outbound transfer failed");
         }
     }
 
@@ -625,9 +669,10 @@ public sealed class DexEngine
         var code = stateDb.GetStorage(token, codeKey);
 
         // No contract code at this address — not a BST-20 token.
-        // Fall through silently to maintain backward compatibility with native-like token pairs.
+        // Return true (no-op success) to maintain backward compatibility with native-like token pairs.
+        // M-10 only catches failures from actual BST-20 contracts, not missing contracts.
         if (code == null || code.Length == 0)
-            return false;
+            return true;
 
         // Build calldata: [4B Transfer selector (FNV-1a)][20B to][32B amount (LE)]
         var selector = SelectorHelper.ComputeSelectorBytes("Transfer");
