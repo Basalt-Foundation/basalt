@@ -23,7 +23,8 @@ public partial class BST1155Token : IBST1155
         _tokenURIs = new StorageMap<string, string>("m_uris");
         _nextTokenId = new StorageValue<ulong>("m_next_id");
         _contractAdmin = new StorageMap<string, string>("m_admin");
-        _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
+        if (Context.IsDeploying)
+            _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
 
     [BasaltView]

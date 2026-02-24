@@ -60,11 +60,13 @@ public partial class BridgeETH
         _processedWithdrawals = new StorageMap<string, bool>("bch_proc");
         _totalLocked = new StorageValue<UInt256>("bch_locked");
 
-        // BRIDGE-04: Validate threshold
-        Context.Require(threshold >= 2, "BRIDGE: threshold must be >= 2");
-
-        _admin.Set("admin", Convert.ToHexString(Context.Caller));
-        _threshold.Set(threshold);
+        if (Context.IsDeploying)
+        {
+            // BRIDGE-04: Validate threshold
+            Context.Require(threshold >= 2, "BRIDGE: threshold must be >= 2");
+            _admin.Set("admin", Convert.ToHexString(Context.Caller));
+            _threshold.Set(threshold);
+        }
     }
 
     // --- Admin ---

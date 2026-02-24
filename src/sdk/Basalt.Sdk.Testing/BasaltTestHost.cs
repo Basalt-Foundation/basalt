@@ -22,6 +22,10 @@ public sealed class BasaltTestHost : IDisposable
         ContractStorage.Clear();
         Context.Reset();
 
+        // Tests construct contracts directly (new BST20Token(...)) — mark as deploying
+        // so constructor side-effects (admin set, initial mint, etc.) execute correctly.
+        Context.IsDeploying = true;
+
         // Wire up the Context
         Context.EventEmitted = (name, evt) => _emittedEvents.Add((name, evt));
         Context.BlockTimestamp = (long)_blockTimestamp;

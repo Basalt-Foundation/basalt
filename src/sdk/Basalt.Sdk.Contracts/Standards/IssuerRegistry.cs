@@ -31,7 +31,8 @@ public partial class IssuerRegistry
         _schemas = new StorageMap<string, bool>("ir_schemas");
 
         // Set deployer as initial admin
-        _admin.Set("admin", Convert.ToHexString(Context.Caller));
+        if (Context.IsDeploying)
+            _admin.Set("admin", Convert.ToHexString(Context.Caller));
     }
 
     /// <summary>

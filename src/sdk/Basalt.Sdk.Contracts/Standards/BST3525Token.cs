@@ -40,7 +40,8 @@ public partial class BST3525Token : IBST3525
         _slotUris = new StorageMap<string, string>("sft_suri");
         _tokenUris = new StorageMap<string, string>("sft_turi");
         _contractAdmin = new StorageMap<string, string>("sft_admin");
-        _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
+        if (Context.IsDeploying)
+            _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
 
     // --- Views ---

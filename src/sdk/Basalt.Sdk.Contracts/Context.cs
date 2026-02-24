@@ -51,6 +51,14 @@ public static class Context
     public static ulong GasRemaining { get; set; }
 
     /// <summary>
+    /// True when the contract is being instantiated during deployment (first time).
+    /// False when the contract is being re-hydrated for a regular call.
+    /// Constructors should check this before executing one-time side effects
+    /// (e.g. minting initial supply, setting admin).
+    /// </summary>
+    public static bool IsDeploying { get; set; }
+
+    /// <summary>
     /// Assert a condition; revert the transaction if it fails.
     /// </summary>
     public static void Require(bool condition, string message = "Require failed")
@@ -188,6 +196,7 @@ public static class Context
         BlockHeight = 0;
         ChainId = 0;
         GasRemaining = 0;
+        IsDeploying = false;
         CallDepth = 0;
         ReentrancyGuard.Clear();
         EventEmitted = null;

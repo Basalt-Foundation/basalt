@@ -51,6 +51,7 @@ public sealed class ManagedContractRuntime : IContractRuntime
             {
                 var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
                 using var scope = ContractBridge.Setup(ctx, host);
+                Context.IsDeploying = true;
                 // Instantiate the contract — constructor runs and initializes storage
                 _registry.CreateInstance(typeId, ctorArgs);
             }
