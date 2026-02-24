@@ -29,8 +29,11 @@ public sealed class RocksDbStakingPersistence : IStakingPersistence
 
     public void SaveStakes(IReadOnlyDictionary<Address, StakeInfo> stakes)
     {
-        // Clear existing stakes first
-        foreach (var (key, _) in _store.IteratePrefix(RocksDbStore.CF.Staking, [0x01]))
+        // CR-6: Materialize keys before deleting — IteratePrefix uses a lazy iterator,
+        // and deleting while iterating is unsafe with RocksDB iterators
+        var existingKeys = _store.IteratePrefix(RocksDbStore.CF.Staking, [0x01])
+            .Select(kv => kv.Key).ToList();
+        foreach (var key in existingKeys)
             _store.Delete(RocksDbStore.CF.Staking, key);
 
         foreach (var (addr, info) in stakes)
@@ -62,8 +65,10 @@ public sealed class RocksDbStakingPersistence : IStakingPersistence
 
     public void SaveUnbondingQueue(IReadOnlyList<UnbondingEntry> queue)
     {
-        // Clear existing unbonding entries first
-        foreach (var (key, _) in _store.IteratePrefix(RocksDbStore.CF.Staking, [0x02]))
+        // CR-6: Materialize keys before deleting — see SaveStakes comment
+        var existingKeys = _store.IteratePrefix(RocksDbStore.CF.Staking, [0x02])
+            .Select(kv => kv.Key).ToList();
+        foreach (var key in existingKeys)
             _store.Delete(RocksDbStore.CF.Staking, key);
 
         for (int i = 0; i < queue.Count; i++)

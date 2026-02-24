@@ -502,18 +502,27 @@ finally
     if (faucetPrivateKey != null)
         System.Security.Cryptography.CryptographicOperations.ZeroMemory(faucetPrivateKey);
 
-    // B1: Flush staking state to persistent storage on shutdown
-    if (stakingPersistenceForShutdown != null && stakingStateForShutdown != null)
+    // CR-7: Wrap persistence flushes in try/catch so I/O errors don't prevent
+    // subsequent cleanup (RocksDB dispose, log flush)
+    try
     {
-        stakingStateForShutdown.FlushToPersistence(stakingPersistenceForShutdown);
-        Log.Information("Staking state flushed to persistence");
-    }
+        // B1: Flush staking state to persistent storage on shutdown
+        if (stakingPersistenceForShutdown != null && stakingStateForShutdown != null)
+        {
+            stakingStateForShutdown.FlushToPersistence(stakingPersistenceForShutdown);
+            Log.Information("Staking state flushed to persistence");
+        }
 
-    // Flush the current canonical state — after sync swaps this may differ
-    // from the original stateDb variable.
-    var canonical = stateDbRef?.Inner ?? stateDb;
-    if (canonical is FlatStateDb flatState)
-        flatState.FlushToPersistence();
+        // Flush the current canonical state — after sync swaps this may differ
+        // from the original stateDb variable.
+        var canonical = stateDbRef?.Inner ?? stateDb;
+        if (canonical is FlatStateDb flatState)
+            flatState.FlushToPersistence();
+    }
+    catch (Exception flushEx)
+    {
+        Log.Error(flushEx, "Failed to flush state to persistence during shutdown");
+    }
     rocksDbStore?.Dispose();
     Log.CloseAndFlush();
 }

@@ -121,14 +121,35 @@ public static class BatchSettlementExecutor
                     // Credit output to order owner
                     DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
 
-                    // Update order remaining amount
+                    // CR-3a: Update order remaining amount (subtract filled amount, not wipe to zero)
                     if (fill.OrderId > 0)
-                        dexState.UpdateOrderAmount(fill.OrderId, UInt256.Zero); // Simplified: mark as fully filled
+                    {
+                        var existingOrder = dexState.GetOrder(fill.OrderId);
+                        if (existingOrder != null)
+                        {
+                            var remaining = existingOrder.Value.Amount > fill.AmountIn
+                                ? UInt256.CheckedSub(existingOrder.Value.Amount, fill.AmountIn)
+                                : UInt256.Zero;
+                            if (remaining.IsZero)
+                                dexState.DeleteOrder(fill.OrderId);
+                            else
+                                dexState.UpdateOrderAmount(fill.OrderId, remaining);
+                        }
+                    }
+
+                    // CR-3b: Generate deterministic receipt hash for limit order fills
+                    // BLAKE3(blockHash || poolId || orderId || fillIndex) — unique per fill
+                    var receiptHashData = new byte[32 + 8 + 8 + 4];
+                    blockHeader.Hash.WriteTo(receiptHashData.AsSpan(0, 32));
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(receiptHashData.AsSpan(32, 8), result.PoolId);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(receiptHashData.AsSpan(40, 8), fill.OrderId);
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(receiptHashData.AsSpan(48, 4), receipts.Count);
+                    var limitOrderReceiptHash = Blake3Hasher.Hash(receiptHashData);
 
                     // L-08: Generate receipts for limit order fills
                     receipts.Add(new TransactionReceipt
                     {
-                        TransactionHash = Hash256.Zero, // No tx hash for limit orders
+                        TransactionHash = limitOrderReceiptHash,
                         BlockHash = blockHeader.Hash,
                         BlockNumber = blockHeader.Number,
                         TransactionIndex = receipts.Count,

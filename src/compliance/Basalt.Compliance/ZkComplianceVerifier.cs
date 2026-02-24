@@ -32,6 +32,19 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     public ulong NullifierWindowBlocks { get => _nullifierWindowBlocks; set => _nullifierWindowBlocks = value; }
 
     /// <summary>
+    /// Number of nullifiers currently tracked. Useful for testing and metrics.
+    /// </summary>
+    public int NullifierCount { get { lock (_lock) return _usedNullifiers.Count; } }
+
+    /// <summary>
+    /// Add a nullifier directly for a specific block number (testing only).
+    /// </summary>
+    public void TrackNullifier(Hash256 nullifier, ulong blockNumber)
+    {
+        lock (_lock) { _usedNullifiers[nullifier] = blockNumber; }
+    }
+
+    /// <summary>
     /// Create a verifier with a VK lookup function.
     /// </summary>
     /// <param name="getVerificationKey">

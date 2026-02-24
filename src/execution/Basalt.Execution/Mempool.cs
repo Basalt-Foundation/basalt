@@ -80,8 +80,9 @@ public sealed class Mempool
     /// the caller handles gossip separately (e.g., peer-received transactions).</param>
     public bool Add(Transaction tx, bool raiseEvent = true)
     {
-        // Early rejection: base fee gate and data size limit
-        var baseFee = _currentBaseFee;
+        // CR-4: Read base fee under lock to prevent torn reads on multi-word UInt256
+        UInt256 baseFee;
+        lock (_lock) { baseFee = _currentBaseFee; }
         if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
             return false;
         if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
@@ -324,8 +325,9 @@ public sealed class Mempool
 
     private bool AddToDexIntentPool(Transaction tx, bool raiseEvent)
     {
-        // Early rejection: base fee gate and data size limit
-        var baseFee = _currentBaseFee;
+        // CR-4: Read base fee under lock to prevent torn reads on multi-word UInt256
+        UInt256 baseFee;
+        lock (_lock) { baseFee = _currentBaseFee; }
         if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
             return false;
         if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
@@ -434,7 +436,11 @@ public sealed class Mempool
     /// Called after each block finalization so newly submitted transactions
     /// that can't cover the current base fee are rejected early.
     /// </summary>
-    public void UpdateBaseFee(UInt256 baseFee) => _currentBaseFee = baseFee;
+    // CR-4: Use lock to prevent torn reads on multi-word UInt256 struct
+    public void UpdateBaseFee(UInt256 baseFee)
+    {
+        lock (_lock) { _currentBaseFee = baseFee; }
+    }
 
     private void DecrementSenderCount(Address sender)
     {

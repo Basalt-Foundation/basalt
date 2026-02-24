@@ -293,17 +293,22 @@ public sealed class SolverManager
     public static byte[] ComputeSolutionSignData(ulong blockNumber, ulong poolId, UInt256 clearingPrice, List<FillRecord>? fills = null)
     {
         // H-09: Hash fills data for signature coverage
+        // CR-2: Include IsBuy, IsLimitOrder, OrderId to prevent field tampering
         byte[] fillsHash;
         if (fills != null && fills.Count > 0)
         {
-            // Each fill: [20B participant][32B amountIn][32B amountOut] = 84 bytes
-            var fillsData = new byte[fills.Count * 84];
+            // Each fill: [20B participant][32B amountIn][32B amountOut][1B isBuy][1B isLimitOrder][8B orderId] = 94 bytes
+            var fillsData = new byte[fills.Count * 94];
             for (int i = 0; i < fills.Count; i++)
             {
-                var offset = i * 84;
+                var offset = i * 94;
                 fills[i].Participant.WriteTo(fillsData.AsSpan(offset, 20));
                 fills[i].AmountIn.WriteTo(fillsData.AsSpan(offset + 20, 32));
                 fills[i].AmountOut.WriteTo(fillsData.AsSpan(offset + 52, 32));
+                fillsData[offset + 84] = fills[i].IsBuy ? (byte)1 : (byte)0;
+                fillsData[offset + 85] = fills[i].IsLimitOrder ? (byte)1 : (byte)0;
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(
+                    fillsData.AsSpan(offset + 86, 8), fills[i].OrderId);
             }
             fillsHash = Blake3Hasher.Hash(fillsData).ToArray();
         }

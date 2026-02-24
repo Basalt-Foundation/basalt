@@ -75,23 +75,15 @@ public class NullifierWindowTests
         var verifier = new ZkComplianceVerifier(_ => new byte[128]);
         verifier.NullifierWindowBlocks = 256;
 
-        // Simulate block 10: add a nullifier directly via reflection-free approach
-        // We use the windowed reset to set block numbers
-        verifier.ResetNullifiers(10);
+        // CR-10: Track nullifiers directly and verify they survive within the window
+        verifier.TrackNullifier(Nullifier(42), 10);
+        verifier.TrackNullifier(Nullifier(43), 11);
+        verifier.NullifierCount.Should().Be(2);
 
-        // Verify a proof at block 10 (will fail Groth16 but consume nullifier internally)
-        var schema = SchemaId(1);
-        var nullifier = Nullifier(42);
-        var proof = MakeProof(schema, nullifier);
-        var req = MakeRequirement(schema);
-
-        // This fails at Groth16 but nullifier gets rolled back
-        verifier.VerifyProofs([proof], [req], 1000);
-
-        // After reset at block 11, nullifiers from block 10 are still in window
-        verifier.ResetNullifiers(11);
-        // Window is 256, so block 10 nullifiers should survive
-        // (block 11 - 256 = cutoff would be 0, so block 10 > 0 → retained)
+        // After reset at block 12, window cutoff = max(0, 12-256) = 0
+        // Both nullifiers (blocks 10, 11) are > 0 → retained
+        verifier.ResetNullifiers(12);
+        verifier.NullifierCount.Should().Be(2, "nullifiers within window should be retained");
     }
 
     [Fact]
@@ -100,10 +92,15 @@ public class NullifierWindowTests
         var verifier = new ZkComplianceVerifier(_ => new byte[128]);
         verifier.NullifierWindowBlocks = 10; // Small window for testing
 
-        verifier.ResetNullifiers(5); // current block = 5
-        // At block 20, cutoff = 20 - 10 = 10, so block 5 < 10 → pruned
+        // Add nullifiers at block 5 and 15
+        verifier.TrackNullifier(Nullifier(1), 5);
+        verifier.TrackNullifier(Nullifier(2), 15);
+        verifier.NullifierCount.Should().Be(2);
+
+        // At block 20, cutoff = 20 - 10 = 10
+        // Nullifier from block 5 (< 10) → pruned; block 15 (>= 10) → retained
         verifier.ResetNullifiers(20);
-        // Nullifiers from block 5 should be pruned now
+        verifier.NullifierCount.Should().Be(1, "nullifier from block 5 should be pruned");
     }
 
     [Fact]
@@ -112,19 +109,27 @@ public class NullifierWindowTests
         var verifier = new ZkComplianceVerifier(_ => new byte[128]);
         verifier.NullifierWindowBlocks = 0;
 
-        verifier.ResetNullifiers(10);
+        verifier.TrackNullifier(Nullifier(1), 10);
+        verifier.TrackNullifier(Nullifier(2), 11);
+        verifier.NullifierCount.Should().Be(2);
+
         // With window=0, ResetNullifiers should clear everything
-        verifier.ResetNullifiers(11);
-        // Should not throw
+        verifier.ResetNullifiers(12);
+        verifier.NullifierCount.Should().Be(0, "window=0 should clear all nullifiers");
     }
 
     [Fact]
     public void BackwardCompatible_FullReset()
     {
         var verifier = new ZkComplianceVerifier(_ => new byte[128]);
-        // Calling the parameterless ResetNullifiers should still work
+
+        verifier.TrackNullifier(Nullifier(1), 5);
+        verifier.TrackNullifier(Nullifier(2), 10);
+        verifier.NullifierCount.Should().Be(2);
+
+        // Parameterless ResetNullifiers should clear all
         verifier.ResetNullifiers();
-        // Should not throw
+        verifier.NullifierCount.Should().Be(0, "full reset should clear all nullifiers");
     }
 
     [Fact]
