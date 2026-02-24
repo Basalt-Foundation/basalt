@@ -829,6 +829,29 @@ public static class RestApiEndpoints
             return Microsoft.AspNetCore.Http.Results.Ok(DexPoolResponse.From(poolId, meta.Value, reserves));
         });
 
+        app.MapGet("/v1/dex/pools/{poolId}/lp/{address}", (ulong poolId, string address) =>
+        {
+            if (!Address.TryFromHexString(address, out var addr))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                {
+                    Code = 400,
+                    Message = "Invalid address format.",
+                });
+
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var balance = dexState.GetLpBalance(poolId, addr);
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexLpBalanceResponse
+            {
+                PoolId = poolId,
+                Address = addr.ToHexString(),
+                Balance = balance.ToString(),
+            });
+        });
+
         // CR-8: Walk per-pool linked list instead of O(totalOrders) global scan
         app.MapGet("/v1/dex/pools/{poolId}/orders", (ulong poolId) =>
         {
@@ -1330,6 +1353,13 @@ public sealed class DexOrderResponse
     }
 }
 
+public sealed class DexLpBalanceResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("balance")] public string Balance { get; set; } = "0";
+}
+
 public sealed class DexTwapResponse
 {
     [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
@@ -1365,6 +1395,7 @@ public sealed class DexTwapResponse
 [JsonSerializable(typeof(LogResponse[]))]
 [JsonSerializable(typeof(ComplianceProofDto))]
 [JsonSerializable(typeof(ComplianceProofDto[]))]
+[JsonSerializable(typeof(DexLpBalanceResponse))]
 [JsonSerializable(typeof(DexPoolResponse))]
 [JsonSerializable(typeof(DexPoolResponse[]))]
 [JsonSerializable(typeof(DexOrderResponse))]
