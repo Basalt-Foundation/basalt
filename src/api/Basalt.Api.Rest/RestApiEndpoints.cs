@@ -441,6 +441,11 @@ public static class RestApiEndpoints
                         : Math.Min(1_000_000UL, maxGas);
                     var gasMeter = new GasMeter(effectiveGasLimit);
 
+                    // Charge TxBase + DataGas to match TransactionExecutor.ExecuteContractCall,
+                    // so the returned gasUsed reflects the actual cost of submitting the transaction.
+                    gasMeter.Consume(GasTable.TxBase);
+                    gasMeter.Consume(GasTable.ComputeDataGas(callData));
+
                     // Fork state to prevent read-only calls from mutating canonical state
                     var forkedDb = stateDb.Fork();
 
@@ -468,6 +473,15 @@ public static class RestApiEndpoints
                             : null,
                         GasUsed = gasMeter.GasUsed,
                         Error = result.ErrorMessage,
+                    });
+                }
+                catch (OutOfGasException ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.Ok(new CallResponse
+                    {
+                        Success = false,
+                        GasUsed = ex.GasUsed,
+                        Error = "Out of gas",
                     });
                 }
                 catch (Exception ex)
