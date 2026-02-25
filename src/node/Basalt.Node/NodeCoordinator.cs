@@ -711,9 +711,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         var effectiveMaxIntents = dexStateP.GetEffectiveMaxIntentsPerBatch(_chainParams);
         var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = pendingDexIntents.Count > 0
-            ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
-            : _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _consensus.ProposeBlock(blockData, block.Hash);
@@ -754,9 +752,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         var effectiveMaxIntents2 = dexStateP2.GetEffectiveMaxIntentsPerBatch(_chainParams);
         var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents2, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = pendingDexIntents.Count > 0
-            ? _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress)
-            : _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _pipelinedConsensus.StartRound(nextBlock, blockData, block.Hash);
