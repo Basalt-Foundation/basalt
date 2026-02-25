@@ -164,6 +164,14 @@ public sealed class ManagedContractRuntime : IContractRuntime
                 ErrorMessage = ex.Message,
             };
         }
+        catch (InvalidOperationException ex)
+        {
+            return new ContractCallResult
+            {
+                Success = false,
+                ErrorMessage = ex.Message,
+            };
+        }
     }
 
     private ContractCallResult ExecuteSdkContract(byte[] code, byte[] callData, VmExecutionContext ctx, HostInterface host)
