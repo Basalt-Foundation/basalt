@@ -180,8 +180,9 @@ public static class OrderBook
             {
                 // Return escrowed tokens
                 var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
-                DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, order.Value.Amount);
-                expiredIds.Add(orderId);
+                var refund = DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, order.Value.Amount);
+                if (refund.Success)
+                    expiredIds.Add(orderId);
             }
             orderId = nextOrderId;
         }

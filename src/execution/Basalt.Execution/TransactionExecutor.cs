@@ -1395,9 +1395,23 @@ public sealed class TransactionExecutor
         if (poolMeta != null)
         {
             if (!owed0.IsZero)
-                DexEngine.TransferSingleTokenOut(fork, tx.Sender, poolMeta.Value.Token0, owed0, _contractRuntime);
+            {
+                var t0 = DexEngine.TransferSingleTokenOut(fork, tx.Sender, poolMeta.Value.Token0, owed0, _contractRuntime);
+                if (!t0.Success)
+                {
+                    CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+                    return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, t0.ErrorCode, stateDb, effectiveGasPrice);
+                }
+            }
             if (!owed1.IsZero)
-                DexEngine.TransferSingleTokenOut(fork, tx.Sender, poolMeta.Value.Token1, owed1, _contractRuntime);
+            {
+                var t1 = DexEngine.TransferSingleTokenOut(fork, tx.Sender, poolMeta.Value.Token1, owed1, _contractRuntime);
+                if (!t1.Success)
+                {
+                    CreditProposerTip(stateDb, blockHeader, effectiveGasPrice, gasUsed);
+                    return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, t1.ErrorCode, stateDb, effectiveGasPrice);
+                }
+            }
         }
 
         MergeForkState(fork, stateDb, DexState.DexAddress);

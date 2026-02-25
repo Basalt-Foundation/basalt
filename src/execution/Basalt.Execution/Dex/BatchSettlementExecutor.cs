@@ -81,10 +81,48 @@ public static class BatchSettlementExecutor
                         }
 
                         // Debit input tokens from sender
-                        DexEngine.TransferSingleTokenIn(stateDb, fill.Participant, intent.Value.TokenIn, fill.AmountIn, runtime);
+                        var debitResult = DexEngine.TransferSingleTokenIn(stateDb, fill.Participant, intent.Value.TokenIn, fill.AmountIn, runtime);
+                        if (!debitResult.Success)
+                        {
+                            receipts.Add(new TransactionReceipt
+                            {
+                                TransactionHash = fill.TxHash,
+                                BlockHash = blockHeader.Hash,
+                                BlockNumber = blockHeader.Number,
+                                TransactionIndex = receipts.Count,
+                                From = fill.Participant,
+                                To = DexState.DexAddress,
+                                GasUsed = chainParams?.DexSwapGas ?? 80_000,
+                                Success = false,
+                                ErrorCode = debitResult.ErrorCode,
+                                PostStateRoot = Hash256.Zero,
+                                Logs = [],
+                                EffectiveGasPrice = intentTx.EffectiveGasPrice(blockHeader.BaseFee),
+                            });
+                            continue;
+                        }
 
                         // Credit output tokens to sender
-                        DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, intent.Value.TokenOut, fill.AmountOut, runtime);
+                        var creditResult = DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, intent.Value.TokenOut, fill.AmountOut, runtime);
+                        if (!creditResult.Success)
+                        {
+                            receipts.Add(new TransactionReceipt
+                            {
+                                TransactionHash = fill.TxHash,
+                                BlockHash = blockHeader.Hash,
+                                BlockNumber = blockHeader.Number,
+                                TransactionIndex = receipts.Count,
+                                From = fill.Participant,
+                                To = DexState.DexAddress,
+                                GasUsed = chainParams?.DexSwapGas ?? 80_000,
+                                Success = false,
+                                ErrorCode = creditResult.ErrorCode,
+                                PostStateRoot = Hash256.Zero,
+                                Logs = [],
+                                EffectiveGasPrice = intentTx.EffectiveGasPrice(blockHeader.BaseFee),
+                            });
+                            continue;
+                        }
 
                         // Generate receipt
                         var logs = new List<EventLog>
@@ -116,10 +154,12 @@ public static class BatchSettlementExecutor
                     var inputToken = fill.IsBuy ? m.Token1 : m.Token0;
 
                     // H-02: Transfer escrowed input from DEX → pool reserves
-                    DexEngine.TransferSingleTokenIn(stateDb, DexState.DexAddress, inputToken, fill.AmountIn, runtime);
+                    var orderDebit = DexEngine.TransferSingleTokenIn(stateDb, DexState.DexAddress, inputToken, fill.AmountIn, runtime);
+                    if (!orderDebit.Success) continue;
 
                     // Credit output to order owner
-                    DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
+                    var orderCredit = DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
+                    if (!orderCredit.Success) continue;
 
                     // CR-3a: Update order remaining amount (subtract filled amount, not wipe to zero)
                     if (fill.OrderId > 0)
@@ -253,8 +293,8 @@ public static class BatchSettlementExecutor
         }
         dexState.SetPoolReserves(result.PoolId, updatedReserves);
 
-        // Credit reward to solver
-        DexEngine.TransferSingleTokenOut(stateDb, result.WinningSolver.Value, rewardToken, reward, runtime);
+        // Credit reward to solver (best-effort — don't crash if transfer fails)
+        _ = DexEngine.TransferSingleTokenOut(stateDb, result.WinningSolver.Value, rewardToken, reward, runtime);
     }
 
     /// <summary>
