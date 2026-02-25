@@ -150,14 +150,11 @@ public static class BatchSettlementExecutor
                 else
                 {
                     // H-01: Limit order fill — use IsBuy to determine correct token directions
+                    // Escrowed tokens are already held by the DEX address (deposited at order placement).
+                    // We only need to send the matched output to each participant.
                     var outputToken = fill.IsBuy ? m.Token0 : m.Token1;
-                    var inputToken = fill.IsBuy ? m.Token1 : m.Token0;
 
-                    // H-02: Transfer escrowed input from DEX → pool reserves
-                    var orderDebit = DexEngine.TransferSingleTokenIn(stateDb, DexState.DexAddress, inputToken, fill.AmountIn, runtime);
-                    if (!orderDebit.Success) continue;
-
-                    // Credit output to order owner
+                    // Credit output to order owner from DEX escrow
                     var orderCredit = DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
                     if (!orderCredit.Success) continue;
 
