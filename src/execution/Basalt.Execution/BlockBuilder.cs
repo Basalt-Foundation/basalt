@@ -279,6 +279,7 @@ public sealed class BlockBuilder
         // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
         var batchResults = new List<BatchResult>();
         var processedIntents = new List<Transaction>();
+        var settledPoolIds = new HashSet<ulong>(); // Track pools already settled via intents
 
         if (pendingDexIntents.Count > 0)
         {
@@ -383,15 +384,19 @@ public sealed class BlockBuilder
                         intentMinAmounts, stateDb, dexState, intentTxMapForSolver);
                 }
 
+                // Gather active limit orders for this pool to include in the settlement
+                var (activeBuyOrders, activeSellOrders) = GetAllActiveOrders(dexState, poolId.Value, blockNumber);
+
                 // Fall back to built-in solver
                 result ??= BatchAuctionSolver.ComputeSettlement(
                     buys, sells,
-                    [], [], // No crossing limit orders in Phase B
+                    activeBuyOrders, activeSellOrders,
                     reserves.Value, poolFeeBps, poolId.Value, dexState);
 
                 if (result != null)
                 {
                     batchResults.Add(result);
+                    settledPoolIds.Add(poolId.Value);
 
                     // Track which intents were processed
                     foreach (var intent in buys)
@@ -429,6 +434,38 @@ public sealed class BlockBuilder
             }
         }
         SkipBatchAuction:
+
+        // ═══ Phase B2: Standalone limit order matching for pools not covered by swap intents ═══
+        {
+            var dexStateForOrders = new DexState(stateDb);
+            if (!dexStateForOrders.IsDexPaused())
+            {
+                var poolCount = dexStateForOrders.GetPoolCount();
+                for (ulong pid = 0; pid < poolCount; pid++)
+                {
+                    if (settledPoolIds.Contains(pid)) continue; // Already settled in Phase B
+
+                    var reserves = dexStateForOrders.GetPoolReserves(pid);
+                    if (reserves == null) continue;
+
+                    var meta = dexStateForOrders.GetPoolMetadata(pid);
+                    if (meta == null) continue;
+
+                    OrderBook.CleanupExpiredOrders(dexStateForOrders, stateDb, pid, blockNumber);
+
+                    var (activeBuyOrders, activeSellOrders) = GetAllActiveOrders(dexStateForOrders, pid, blockNumber);
+                    if (activeBuyOrders.Count == 0 || activeSellOrders.Count == 0) continue;
+
+                    var result = BatchAuctionSolver.ComputeSettlement(
+                        [], [], // No swap intents
+                        activeBuyOrders, activeSellOrders,
+                        reserves.Value, meta.Value.FeeBps, pid, dexStateForOrders);
+
+                    if (result != null)
+                        batchResults.Add(result);
+                }
+            }
+        }
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
         bool gasLimitReached = false;
@@ -508,6 +545,36 @@ public sealed class BlockBuilder
     /// <summary>
     /// Group already-parsed intents by canonical token pair (used when encrypted intents have been decrypted).
     /// </summary>
+    /// <summary>
+    /// Get all active (non-expired, non-zero) limit orders for a pool, split by side.
+    /// </summary>
+    private static (List<LimitOrder> Buys, List<LimitOrder> Sells) GetAllActiveOrders(
+        DexState dexState, ulong poolId, ulong currentBlock)
+    {
+        var buys = new List<LimitOrder>();
+        var sells = new List<LimitOrder>();
+
+        var orderId = dexState.GetPoolOrderHead(poolId);
+        while (orderId != ulong.MaxValue)
+        {
+            var order = dexState.GetOrder(orderId);
+            var next = dexState.GetOrderNext(orderId);
+
+            if (order != null && !order.Value.Amount.IsZero)
+            {
+                if (order.Value.ExpiryBlock == 0 || currentBlock <= order.Value.ExpiryBlock)
+                {
+                    if (order.Value.IsBuy) buys.Add(order.Value);
+                    else sells.Add(order.Value);
+                }
+            }
+
+            orderId = next;
+        }
+
+        return (buys, sells);
+    }
+
     private static Dictionary<(Address, Address), List<ParsedIntent>> GroupParsedIntentsByPair(
         List<ParsedIntent> intents, DexState dexState)
     {
