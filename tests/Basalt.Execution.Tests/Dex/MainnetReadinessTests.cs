@@ -319,7 +319,7 @@ public class MainnetReadinessTests
     // ────────── C-1: BST-20 transfer failure propagation ──────────
 
     [Fact]
-    public void C1_TransferSingleTokenIn_FailingRuntime_Throws()
+    public void C1_TransferSingleTokenIn_FailingRuntime_ReturnsError()
     {
         var failingRuntime = new FailingContractRuntime();
         var tokenAddr = MakeAddress(0xCC);
@@ -327,44 +327,44 @@ public class MainnetReadinessTests
         // Plant fake contract code at the token address so ExecuteBst20Transfer doesn't no-op
         PlantFakeContractCode(tokenAddr);
 
-        // ExecuteBst20Transfer throws BasaltException(DexInsufficientLiquidity) when the
-        // contract call fails. This is then caught by the C-1 check, but the inner throw
-        // fires first. The key invariant: the transfer DOES throw rather than silently failing.
-        var act = () => DexEngine.TransferSingleTokenIn(
+        // ExecuteBst20Transfer returns false when the contract call fails,
+        // and the caller returns DexResult.Error instead of throwing —
+        // so the consensus loop doesn't crash.
+        var result = DexEngine.TransferSingleTokenIn(
             _stateDb, Alice, tokenAddr, new UInt256(1_000), failingRuntime);
 
-        act.Should().Throw<BasaltException>(
-            "BST-20 transfer failure must propagate as an exception");
+        result.Success.Should().BeFalse(
+            "BST-20 transfer failure must be reported as an error");
     }
 
     [Fact]
-    public void C1_TransferSingleTokenOut_FailingRuntime_Throws()
+    public void C1_TransferSingleTokenOut_FailingRuntime_ReturnsError()
     {
         var failingRuntime = new FailingContractRuntime();
         var tokenAddr = MakeAddress(0xCC);
 
         PlantFakeContractCode(tokenAddr);
 
-        var act = () => DexEngine.TransferSingleTokenOut(
+        var result = DexEngine.TransferSingleTokenOut(
             _stateDb, Alice, tokenAddr, new UInt256(1_000), failingRuntime);
 
-        act.Should().Throw<BasaltException>(
-            "BST-20 transfer failure must propagate as an exception");
+        result.Success.Should().BeFalse(
+            "BST-20 transfer failure must be reported as an error");
     }
 
     [Fact]
-    public void C1_TransferTokensOut_FailingRuntime_Token0_Throws()
+    public void C1_TransferTokensOut_FailingRuntime_Token0_ReturnsError()
     {
         var failingRuntime = new FailingContractRuntime();
         var token0 = MakeAddress(0xCC);
 
         PlantFakeContractCode(token0);
 
-        var act = () => DexEngine.TransferSingleTokenOut(
+        var result = DexEngine.TransferSingleTokenOut(
             _stateDb, Alice, token0, new UInt256(100), failingRuntime);
 
-        act.Should().Throw<BasaltException>(
-            "BST-20 transfer failure must propagate as an exception");
+        result.Success.Should().BeFalse(
+            "BST-20 transfer failure must be reported as an error");
     }
 
     [Fact]
