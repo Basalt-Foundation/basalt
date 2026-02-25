@@ -687,12 +687,18 @@ public sealed class DexEngine
         if (code == null || code.Length == 0)
             return true;
 
-        // Build calldata: [4B Transfer selector (FNV-1a)][20B to][32B amount (LE)]
+        // Build calldata: [4B Transfer selector (FNV-1a)][varint+20B to][32B amount (LE)]
+        // Must use BasaltWriter to match the BasaltReader decoding in generated dispatch.
         var selector = SelectorHelper.ComputeSelectorBytes("Transfer");
-        var callData = new byte[4 + Address.Size + 32];
+        var argBuf = new byte[1 + Address.Size + 32]; // 1B varint(20) + 20B addr + 32B uint256
+        var writer = new Codec.BasaltWriter(argBuf);
+        writer.WriteBytes(to.ToArray());
+        writer.WriteUInt256(amount);
+        var args = argBuf[..writer.Position];
+
+        var callData = new byte[4 + args.Length];
         selector.CopyTo(callData, 0);
-        to.WriteTo(callData.AsSpan(4, Address.Size));
-        amount.WriteTo(callData.AsSpan(4 + Address.Size, 32));
+        args.CopyTo(callData, 4);
 
         var ctx = new VmExecutionContext
         {
