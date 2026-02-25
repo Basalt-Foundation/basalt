@@ -548,11 +548,11 @@ public sealed class BlockBuilder
     /// <summary>
     /// Get all active (non-expired, non-zero) limit orders for a pool, split by side.
     /// </summary>
-    private static (List<LimitOrder> Buys, List<LimitOrder> Sells) GetAllActiveOrders(
+    private static (List<(ulong Id, LimitOrder Order)> Buys, List<(ulong Id, LimitOrder Order)> Sells) GetAllActiveOrders(
         DexState dexState, ulong poolId, ulong currentBlock)
     {
-        var buys = new List<LimitOrder>();
-        var sells = new List<LimitOrder>();
+        var buys = new List<(ulong Id, LimitOrder Order)>();
+        var sells = new List<(ulong Id, LimitOrder Order)>();
 
         var orderId = dexState.GetPoolOrderHead(poolId);
         while (orderId != ulong.MaxValue)
@@ -564,8 +564,8 @@ public sealed class BlockBuilder
             {
                 if (order.Value.ExpiryBlock == 0 || currentBlock <= order.Value.ExpiryBlock)
                 {
-                    if (order.Value.IsBuy) buys.Add(order.Value);
-                    else sells.Add(order.Value);
+                    if (order.Value.IsBuy) buys.Add((orderId, order.Value));
+                    else sells.Add((orderId, order.Value));
                 }
             }
 

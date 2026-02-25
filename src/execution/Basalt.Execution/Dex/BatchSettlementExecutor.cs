@@ -162,19 +162,16 @@ public static class BatchSettlementExecutor
                     if (!orderCredit.Success) continue;
 
                     // CR-3a: Update order remaining amount (subtract filled amount, not wipe to zero)
-                    if (fill.OrderId > 0)
+                    var existingOrder = dexState.GetOrder(fill.OrderId);
+                    if (existingOrder != null)
                     {
-                        var existingOrder = dexState.GetOrder(fill.OrderId);
-                        if (existingOrder != null)
-                        {
-                            var remaining = existingOrder.Value.Amount > fill.AmountIn
-                                ? UInt256.CheckedSub(existingOrder.Value.Amount, fill.AmountIn)
-                                : UInt256.Zero;
-                            if (remaining.IsZero)
-                                dexState.DeleteOrder(fill.OrderId);
-                            else
-                                dexState.UpdateOrderAmount(fill.OrderId, remaining);
-                        }
+                        var remaining = existingOrder.Value.Amount > fill.AmountIn
+                            ? UInt256.CheckedSub(existingOrder.Value.Amount, fill.AmountIn)
+                            : UInt256.Zero;
+                        if (remaining.IsZero)
+                            dexState.DeleteOrder(fill.OrderId);
+                        else
+                            dexState.UpdateOrderAmount(fill.OrderId, remaining);
                     }
 
                     // CR-3b: Generate deterministic receipt hash for limit order fills

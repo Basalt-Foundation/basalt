@@ -45,8 +45,8 @@ public static class BatchAuctionSolver
     public static BatchResult? ComputeSettlement(
         List<ParsedIntent> buyIntents,
         List<ParsedIntent> sellIntents,
-        List<LimitOrder> buyOrders,
-        List<LimitOrder> sellOrders,
+        List<(ulong Id, LimitOrder Order)> buyOrders,
+        List<(ulong Id, LimitOrder Order)> sellOrders,
         PoolReserves reserves,
         uint feeBps,
         ulong poolId,
@@ -73,9 +73,13 @@ public static class BatchAuctionSolver
                 return null;
         }
 
+        // Extract plain order lists for volume/price computation
+        var buyOrderPlain = buyOrders.Select(o => o.Order).ToList();
+        var sellOrderPlain = sellOrders.Select(o => o.Order).ToList();
+
         // Step 1: Collect all critical prices
         var criticalPrices = CollectCriticalPrices(
-            buyIntents, sellIntents, buyOrders, sellOrders, reserves, dexState, poolId);
+            buyIntents, sellIntents, buyOrderPlain, sellOrderPlain, reserves, dexState, poolId);
 
         if (criticalPrices.Count == 0)
             return null;
@@ -90,8 +94,8 @@ public static class BatchAuctionSolver
         {
             if (price.IsZero) continue;
 
-            var buyVol = ComputeBuyVolume(price, buyIntents, buyOrders);
-            var sellVol = ComputeSellVolume(price, sellIntents, sellOrders);
+            var buyVol = ComputeBuyVolume(price, buyIntents, buyOrderPlain);
+            var sellVol = ComputeSellVolume(price, sellIntents, sellOrderPlain);
 
             // Include AMM as passive liquidity
             var ammSellVol = ComputeAmmSellVolume(price, reserves, feeBps, dexState, poolId);
@@ -376,7 +380,7 @@ public static class BatchAuctionSolver
     private static BatchResult GenerateFills(
         UInt256 clearingPrice, UInt256 matchedVolume,
         List<ParsedIntent> buyIntents, List<ParsedIntent> sellIntents,
-        List<LimitOrder> buyOrders, List<LimitOrder> sellOrders,
+        List<(ulong Id, LimitOrder Order)> buyOrders, List<(ulong Id, LimitOrder Order)> sellOrders,
         PoolReserves reserves, uint feeBps, ulong poolId)
     {
         var fills = new List<FillRecord>();
@@ -419,7 +423,7 @@ public static class BatchAuctionSolver
             peerSellVolume = UInt256.CheckedAdd(peerSellVolume, fillAmount0); // L-09
         }
 
-        foreach (var order in sellOrders)
+        foreach (var (orderId, order) in sellOrders)
         {
             if (remainingSellVolume.IsZero) break;
             if (clearingPrice < order.Price) continue;
@@ -434,7 +438,7 @@ public static class BatchAuctionSolver
                 AmountOut = fillAmount1,
                 IsLimitOrder = true,
                 IsBuy = false,
-                OrderId = 0, // L-07: Would need order ID tracking from caller
+                OrderId = orderId,
             });
 
             remainingSellVolume = UInt256.CheckedSub(remainingSellVolume, fillAmount0); // L-09
@@ -473,7 +477,7 @@ public static class BatchAuctionSolver
             peerBuyVolume = UInt256.CheckedAdd(peerBuyVolume, fillAmount0); // L-09
         }
 
-        foreach (var order in buyOrders)
+        foreach (var (orderId, order) in buyOrders)
         {
             if (remainingBuyVolume.IsZero) break;
             if (order.Price < clearingPrice) continue;
@@ -489,7 +493,7 @@ public static class BatchAuctionSolver
                 AmountOut = fillAmount0,
                 IsLimitOrder = true,
                 IsBuy = true,
-                OrderId = 0, // L-07: Would need order ID tracking from caller
+                OrderId = orderId,
             });
 
             remainingBuyVolume = UInt256.CheckedSub(remainingBuyVolume, fillAmount0); // L-09
