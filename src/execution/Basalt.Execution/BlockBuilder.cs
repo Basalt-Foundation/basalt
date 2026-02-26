@@ -256,7 +256,7 @@ public sealed class BlockBuilder
             for (ulong pid = 0; pid < poolCount; pid++)
             {
                 var acc = dexStateForCarry.GetTwapAccumulator(pid);
-                if (acc.LastBlock == 0 || acc.LastBlock >= blockNumber) continue;
+                if (acc.LastBlock >= blockNumber) continue;
 
                 // Get current price from concentrated pool or reserves
                 var concState = dexStateForCarry.GetConcentratedPoolState(pid);

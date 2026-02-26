@@ -5,6 +5,7 @@ using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution;
 using Basalt.Execution.Dex;
+using Basalt.Execution.Dex.Math;
 using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -912,6 +913,126 @@ public static class RestApiEndpoints
             });
         });
 
+        app.MapGet("/v1/dex/pools/{poolId}/price-history", (ulong poolId, ulong? startBlock, ulong? endBlock, ulong? interval) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var currentBlock = chainManager.LatestBlockNumber;
+            var end = endBlock ?? currentBlock;
+            var start = startBlock ?? (end > 200 ? end - 200 : 0);
+            var step = interval ?? 1;
+            if (step == 0) step = 1;
+
+            // Cap at 500 data points — auto-adjust interval upward
+            var totalBlocks = end > start ? end - start : 0;
+            if (totalBlocks / step > 500)
+                step = totalBlocks / 500;
+            if (step == 0) step = 1;
+
+            var blockTimeMs = chainParams?.BlockTimeMs ?? 2000u;
+
+            // Compute current spot price for fallback
+            var reserves = dexState.GetPoolReserves(poolId);
+            var spotPrice = reserves != null && !reserves.Value.Reserve0.IsZero
+                ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
+                : UInt256.Zero;
+
+            // Precompute latest block timestamp for estimation fallback
+            var latestBlock = chainManager.GetBlockByNumber(currentBlock);
+            var latestTs = latestBlock?.Header.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            var points = new List<DexPricePointResponse>();
+            for (ulong b = start; b <= end; b += step)
+            {
+                // Find the snapshot at block b (or scan backwards up to 64 blocks)
+                UInt256? snapshotEnd = null;
+                ulong actualEnd = b;
+                ulong scanFloor = b > 64 ? b - 64 : 0;
+                for (ulong scan = b; scan >= scanFloor; scan--)
+                {
+                    snapshotEnd = dexState.GetTwapSnapshot(poolId, scan);
+                    if (snapshotEnd != null) { actualEnd = scan; break; }
+                    if (scan == 0) break;
+                }
+                if (snapshotEnd == null) continue;
+
+                // Find a prior snapshot to compute average price over the span
+                UInt256? snapshotPrev = null;
+                ulong actualPrev = 0;
+                if (actualEnd > 0)
+                {
+                    ulong prevFloor = actualEnd > 65 ? actualEnd - 65 : 0;
+                    for (ulong scan = actualEnd - 1; scan >= prevFloor; scan--)
+                    {
+                        snapshotPrev = dexState.GetTwapSnapshot(poolId, scan);
+                        if (snapshotPrev != null) { actualPrev = scan; break; }
+                        if (scan == 0) break;
+                    }
+                }
+
+                UInt256 price;
+                if (snapshotPrev != null && actualEnd > actualPrev && snapshotEnd.Value >= snapshotPrev.Value)
+                {
+                    var span = new UInt256(actualEnd - actualPrev);
+                    price = FullMath.MulDiv(snapshotEnd.Value - snapshotPrev.Value, UInt256.One, span);
+                }
+                else
+                {
+                    // No prior snapshot — use spot price as best estimate
+                    price = spotPrice;
+                }
+
+                // Determine timestamp from block header, with estimation fallback
+                long timestamp;
+                var block = chainManager.GetBlockByNumber(b);
+                if (block != null)
+                {
+                    timestamp = block.Header.Timestamp;
+                }
+                else
+                {
+                    timestamp = latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
+                }
+
+                points.Add(new DexPricePointResponse
+                {
+                    Block = b,
+                    Timestamp = timestamp,
+                    Price = price.ToString(),
+                });
+            }
+
+            // If no snapshot data at all, generate spot-price points so the chart is not empty
+            if (points.Count == 0 && !spotPrice.IsZero)
+            {
+                for (ulong b = start; b <= end; b += step)
+                {
+                    var block = chainManager.GetBlockByNumber(b);
+                    var timestamp = block != null
+                        ? block.Header.Timestamp
+                        : latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
+
+                    points.Add(new DexPricePointResponse
+                    {
+                        Block = b,
+                        Timestamp = timestamp,
+                        Price = spotPrice.ToString(),
+                    });
+                }
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexPriceHistoryResponse
+            {
+                PoolId = poolId,
+                Points = points.ToArray(),
+                CurrentBlock = currentBlock,
+                BlockTimeMs = blockTimeMs,
+            });
+        });
+
         // ═══ Solver Network Endpoints (Phase E4) ═══
 
         if (solverProvider != null)
@@ -1370,6 +1491,21 @@ public sealed class DexTwapResponse
     [JsonPropertyName("currentBlock")] public ulong CurrentBlock { get; set; }
 }
 
+public sealed class DexPricePointResponse
+{
+    [JsonPropertyName("block")] public ulong Block { get; set; }
+    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
+    [JsonPropertyName("price")] public string Price { get; set; } = "0";
+}
+
+public sealed class DexPriceHistoryResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("points")] public DexPricePointResponse[] Points { get; set; } = [];
+    [JsonPropertyName("currentBlock")] public ulong CurrentBlock { get; set; }
+    [JsonPropertyName("blockTimeMs")] public uint BlockTimeMs { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -1401,4 +1537,7 @@ public sealed class DexTwapResponse
 [JsonSerializable(typeof(DexOrderResponse))]
 [JsonSerializable(typeof(DexOrderResponse[]))]
 [JsonSerializable(typeof(DexTwapResponse))]
+[JsonSerializable(typeof(DexPricePointResponse))]
+[JsonSerializable(typeof(DexPricePointResponse[]))]
+[JsonSerializable(typeof(DexPriceHistoryResponse))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;
