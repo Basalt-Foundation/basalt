@@ -483,8 +483,9 @@ public static class BatchAuctionSolver
             if (order.Price < clearingPrice) continue;
 
             var token0Want = FullMath.MulDiv(order.Amount, PriceScale, clearingPrice);
-            var fillAmount0 = token0Want < remainingBuyVolume ? token0Want : remainingBuyVolume;
-            var fillAmount1 = FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
+            var isFullFill = token0Want <= remainingBuyVolume;
+            var fillAmount0 = isFullFill ? token0Want : remainingBuyVolume;
+            var fillAmount1 = isFullFill ? order.Amount : FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
 
             fills.Add(new FillRecord
             {

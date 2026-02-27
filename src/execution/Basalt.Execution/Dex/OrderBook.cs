@@ -125,7 +125,8 @@ public static class OrderBook
             });
 
             // Update remaining amounts
-            var remainingBuy = buyOrder.Amount >= matchToken1 ? buyOrder.Amount - matchToken1 : UInt256.Zero;
+            var isBuyFullFill = matchToken1 >= buyOrder.Amount || matchToken0 >= buyToken0;
+            var remainingBuy = isBuyFullFill ? UInt256.Zero : buyOrder.Amount - matchToken1;
             var remainingSell = sellOrder.Amount >= matchToken0 ? sellOrder.Amount - matchToken0 : UInt256.Zero;
 
             if (remainingBuy.IsZero)
@@ -176,7 +177,12 @@ public static class OrderBook
         {
             var nextOrderId = dexState.GetOrderNext(orderId);
             var order = dexState.GetOrder(orderId);
-            if (order != null && order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock)
+            if (order != null && order.Value.Amount.IsZero)
+            {
+                // Zero-amount order (dust from rounding) — delete without refund
+                expiredIds.Add(orderId);
+            }
+            else if (order != null && order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock)
             {
                 // Return escrowed tokens
                 var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
