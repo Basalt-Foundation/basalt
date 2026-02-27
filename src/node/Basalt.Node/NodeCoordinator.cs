@@ -548,10 +548,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 _mempool.RemoveConfirmed(block.Transactions);
 
-                // Prune stale/underpriced transactions that can no longer be included
+                // Prune stale, underpriced, or unaffordable transactions
                 var pruned = _mempool.PruneStale(_stateDb, block.Header.BaseFee);
                 if (pruned > 0)
-                    _logger.LogInformation("Pruned {Count} stale/underpriced transactions from mempool", pruned);
+                    _logger.LogInformation("Pruned {Count} unexecutable transactions from mempool", pruned);
 
                 // Update mempool admission gate so new submissions below the current base fee are rejected early
                 _mempool.UpdateBaseFee(block.Header.BaseFee);

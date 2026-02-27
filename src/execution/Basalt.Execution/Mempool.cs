@@ -363,8 +363,8 @@ public sealed class Mempool
     }
 
     /// <summary>
-    /// Remove transactions that are no longer executable: stale nonces (already confirmed)
-    /// or gas price below the current base fee.
+    /// Remove transactions that are no longer executable: stale nonces (already confirmed),
+    /// gas price below the current base fee, or insufficient balance for value + gas.
     /// Returns the number of evicted transactions.
     /// </summary>
     public int PruneStale(IStateDatabase stateDb, UInt256 baseFee)
@@ -389,6 +389,21 @@ public sealed class Mempool
                 if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
                 {
                     toRemove.Add(tx.Hash);
+                    continue;
+                }
+
+                // Unaffordable: sender cannot cover value + gas at current balance
+                var balance = account?.Balance ?? UInt256.Zero;
+                var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+                if (UInt256.TryAdd(tx.Value, gasCost, out var totalCost))
+                {
+                    if (balance < totalCost)
+                        toRemove.Add(tx.Hash);
+                }
+                else
+                {
+                    // Overflow means cost is impossibly large — evict
+                    toRemove.Add(tx.Hash);
                 }
             }
 
@@ -405,6 +420,20 @@ public sealed class Mempool
                 }
 
                 if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+                {
+                    toRemoveIntents.Add(tx.Hash);
+                    continue;
+                }
+
+                // Unaffordable: sender cannot cover value + gas at current balance
+                var balance = account?.Balance ?? UInt256.Zero;
+                var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+                if (UInt256.TryAdd(tx.Value, gasCost, out var totalCost))
+                {
+                    if (balance < totalCost)
+                        toRemoveIntents.Add(tx.Hash);
+                }
+                else
                 {
                     toRemoveIntents.Add(tx.Hash);
                 }
