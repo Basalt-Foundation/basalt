@@ -861,6 +861,7 @@ public static class RestApiEndpoints
             if (meta == null)
                 return Microsoft.AspNetCore.Http.Results.NotFound();
 
+            var currentBlock = chainManager.LatestBlockNumber;
             var orders = new List<DexOrderResponse>();
             var current = dexState.GetPoolOrderHead(poolId);
 
@@ -868,7 +869,11 @@ public static class RestApiEndpoints
             {
                 var order = dexState.GetOrder(current);
                 if (order != null)
-                    orders.Add(DexOrderResponse.From(current, order.Value));
+                {
+                    bool isExpired = order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock;
+                    if (!isExpired && !order.Value.Amount.IsZero)
+                        orders.Add(DexOrderResponse.From(current, order.Value));
+                }
                 current = dexState.GetOrderNext(current);
             }
 

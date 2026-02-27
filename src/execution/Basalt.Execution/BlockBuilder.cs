@@ -250,31 +250,7 @@ public sealed class BlockBuilder
         }
 
         // ═══ TWAP carry-forward: update accumulators for all pools using current price ═══
-        {
-            var dexStateForCarry = new DexState(stateDb);
-            var poolCount = dexStateForCarry.GetPoolCount();
-            for (ulong pid = 0; pid < poolCount; pid++)
-            {
-                var acc = dexStateForCarry.GetTwapAccumulator(pid);
-                if (acc.LastBlock >= blockNumber) continue;
-
-                // Get current price from concentrated pool or reserves
-                var concState = dexStateForCarry.GetConcentratedPoolState(pid);
-                UInt256 currentPrice;
-                if (concState != null && !concState.Value.SqrtPriceX96.IsZero)
-                {
-                    currentPrice = FullMath.MulDiv(concState.Value.SqrtPriceX96,
-                        concState.Value.SqrtPriceX96, TickMath.Q96);
-                }
-                else
-                {
-                    var reserves = dexStateForCarry.GetPoolReserves(pid);
-                    if (reserves == null || reserves.Value.Reserve0.IsZero) continue;
-                    currentPrice = BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1);
-                }
-                TwapOracle.CarryForwardAccumulator(dexStateForCarry, pid, currentPrice, blockNumber);
-            }
-        }
+        RunTwapCarryForward(stateDb, blockNumber);
 
         // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
         var batchResults = new List<BatchResult>();
@@ -436,36 +412,8 @@ public sealed class BlockBuilder
         SkipBatchAuction:
 
         // ═══ Phase B2: Standalone limit order matching for pools not covered by swap intents ═══
-        {
-            var dexStateForOrders = new DexState(stateDb);
-            if (!dexStateForOrders.IsDexPaused())
-            {
-                var poolCount = dexStateForOrders.GetPoolCount();
-                for (ulong pid = 0; pid < poolCount; pid++)
-                {
-                    if (settledPoolIds.Contains(pid)) continue; // Already settled in Phase B
-
-                    var reserves = dexStateForOrders.GetPoolReserves(pid);
-                    if (reserves == null) continue;
-
-                    var meta = dexStateForOrders.GetPoolMetadata(pid);
-                    if (meta == null) continue;
-
-                    OrderBook.CleanupExpiredOrders(dexStateForOrders, stateDb, pid, blockNumber);
-
-                    var (activeBuyOrders, activeSellOrders) = GetAllActiveOrders(dexStateForOrders, pid, blockNumber);
-                    if (activeBuyOrders.Count == 0 || activeSellOrders.Count == 0) continue;
-
-                    var result = BatchAuctionSolver.ComputeSettlement(
-                        [], [], // No swap intents
-                        activeBuyOrders, activeSellOrders,
-                        reserves.Value, meta.Value.FeeBps, pid, dexStateForOrders);
-
-                    if (result != null)
-                        batchResults.Add(result);
-                }
-            }
-        }
+        var standaloneResults = RunStandaloneLimitOrderMatching(stateDb, blockNumber, settledPoolIds);
+        batchResults.AddRange(standaloneResults);
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
         bool gasLimitReached = false;
@@ -540,6 +488,101 @@ public sealed class BlockBuilder
             Transactions = validTxs,
             Receipts = receipts,
         };
+    }
+
+    /// <summary>
+    /// Update TWAP accumulators for all pools using current price.
+    /// </summary>
+    private static void RunTwapCarryForward(IStateDatabase stateDb, ulong blockNumber)
+    {
+        var dexState = new DexState(stateDb);
+        var poolCount = dexState.GetPoolCount();
+        for (ulong pid = 0; pid < poolCount; pid++)
+        {
+            var acc = dexState.GetTwapAccumulator(pid);
+            if (acc.LastBlock >= blockNumber) continue;
+
+            var concState = dexState.GetConcentratedPoolState(pid);
+            UInt256 currentPrice;
+            if (concState != null && !concState.Value.SqrtPriceX96.IsZero)
+            {
+                currentPrice = FullMath.MulDiv(concState.Value.SqrtPriceX96,
+                    concState.Value.SqrtPriceX96, TickMath.Q96);
+            }
+            else
+            {
+                var reserves = dexState.GetPoolReserves(pid);
+                if (reserves == null || reserves.Value.Reserve0.IsZero) continue;
+                currentPrice = BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1);
+            }
+            TwapOracle.CarryForwardAccumulator(dexState, pid, currentPrice, blockNumber);
+        }
+    }
+
+    /// <summary>
+    /// Match limit orders for pools not already settled by swap intents.
+    /// </summary>
+    private static List<BatchResult> RunStandaloneLimitOrderMatching(
+        IStateDatabase stateDb, ulong blockNumber, HashSet<ulong> excludePoolIds)
+    {
+        var results = new List<BatchResult>();
+        var dexState = new DexState(stateDb);
+        if (dexState.IsDexPaused()) return results;
+
+        var poolCount = dexState.GetPoolCount();
+        for (ulong pid = 0; pid < poolCount; pid++)
+        {
+            if (excludePoolIds.Contains(pid)) continue;
+
+            var reserves = dexState.GetPoolReserves(pid);
+            if (reserves == null) continue;
+
+            var meta = dexState.GetPoolMetadata(pid);
+            if (meta == null) continue;
+
+            OrderBook.CleanupExpiredOrders(dexState, stateDb, pid, blockNumber);
+
+            var (activeBuyOrders, activeSellOrders) = GetAllActiveOrders(dexState, pid, blockNumber);
+            if (activeBuyOrders.Count == 0 || activeSellOrders.Count == 0) continue;
+
+            var result = BatchAuctionSolver.ComputeSettlement(
+                [], [],
+                activeBuyOrders, activeSellOrders,
+                reserves.Value, meta.Value.FeeBps, pid, dexState);
+
+            if (result != null)
+                results.Add(result);
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Run DEX settlement phases (TWAP carry-forward + limit order matching + settlement execution)
+    /// on the given state database. Called during block finalization and sync to ensure canonical
+    /// state reflects DEX activity.
+    /// </summary>
+    public List<TransactionReceipt> ApplyDexSettlement(IStateDatabase stateDb, BlockHeader blockHeader)
+    {
+        var allReceipts = new List<TransactionReceipt>();
+
+        RunTwapCarryForward(stateDb, blockHeader.Number);
+
+        var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
+        if (batchResults.Count == 0)
+            return allReceipts;
+
+        var emptyIntentMap = new Dictionary<Hash256, Transaction>();
+        foreach (var result in batchResults)
+        {
+            var dexState = new DexState(stateDb);
+            var batchReceipts = BatchSettlementExecutor.ExecuteSettlement(
+                result, stateDb, dexState, blockHeader, emptyIntentMap,
+                _executor.ContractRuntime, _chainParams);
+            allReceipts.AddRange(batchReceipts);
+        }
+
+        return allReceipts;
     }
 
     /// <summary>

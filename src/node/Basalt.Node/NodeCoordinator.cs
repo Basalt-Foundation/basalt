@@ -532,6 +532,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 block.Receipts = receipts;
             }
 
+            // Run DEX settlement on canonical state (TWAP carry-forward + limit order matching)
+            if (_blockBuilder != null)
+            {
+                var dexReceipts = _blockBuilder.ApplyDexSettlement(_stateDb, block.Header);
+                if (dexReceipts.Count > 0)
+                {
+                    block.Receipts ??= new List<TransactionReceipt>();
+                    block.Receipts.AddRange(dexReceipts);
+                }
+            }
+
             var result = _chainManager.AddBlock(block);
             if (result.IsSuccess)
             {
@@ -1336,6 +1347,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         receipts.Add(receipt);
                     }
                     block.Receipts = receipts;
+                }
+
+                // Run DEX settlement on forked state (TWAP carry-forward + limit order matching)
+                if (_blockBuilder != null)
+                {
+                    var dexReceipts = _blockBuilder.ApplyDexSettlement(forkedState, block.Header);
+                    if (dexReceipts.Count > 0)
+                    {
+                        block.Receipts ??= new List<TransactionReceipt>();
+                        block.Receipts.AddRange(dexReceipts);
+                    }
                 }
 
                 blocksToApply.Add((block, blockBytes, idx));
