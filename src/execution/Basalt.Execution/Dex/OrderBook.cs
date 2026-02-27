@@ -90,8 +90,8 @@ public static class OrderBook
             var (buyId, buyOrder) = buyOrders[buyIdx];
             var (sellId, sellOrder) = sellOrders[sellIdx];
 
-            // Convert buy order amount (token1) to token0 at clearing price
-            var buyToken0 = FullMath.MulDiv(buyOrder.Amount, BatchAuctionSolver.PriceScale, clearingPrice);
+            // Buy order Amount is already in token0 units
+            var buyToken0 = buyOrder.Amount;
             var sellToken0 = sellOrder.Amount;
 
             // Match the smaller side
@@ -124,10 +124,13 @@ public static class OrderBook
                 OrderId = sellId,
             });
 
-            // Update remaining amounts
-            var isBuyFullFill = matchToken1 >= buyOrder.Amount || matchToken0 >= buyToken0;
-            var remainingBuy = isBuyFullFill ? UInt256.Zero : buyOrder.Amount - matchToken1;
-            var remainingSell = sellOrder.Amount >= matchToken0 ? sellOrder.Amount - matchToken0 : UInt256.Zero;
+            // Update remaining amounts (both in token0 units)
+            var remainingBuy = buyOrder.Amount >= matchToken0
+                ? UInt256.CheckedSub(buyOrder.Amount, matchToken0)
+                : UInt256.Zero;
+            var remainingSell = sellOrder.Amount >= matchToken0
+                ? UInt256.CheckedSub(sellOrder.Amount, matchToken0)
+                : UInt256.Zero;
 
             if (remainingBuy.IsZero)
             {
@@ -184,9 +187,12 @@ public static class OrderBook
             }
             else if (order != null && order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock)
             {
-                // Return escrowed tokens
+                // Return escrowed tokens (buy orders: convert remaining token0 back to token1 at limit price)
                 var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
-                var refund = DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, order.Value.Amount);
+                var refundAmount = order.Value.IsBuy
+                    ? FullMath.MulDiv(order.Value.Amount, order.Value.Price, BatchAuctionSolver.PriceScale)
+                    : order.Value.Amount;
+                var refund = DexEngine.TransferSingleTokenOut(stateDb, order.Value.Owner, escrowToken, refundAmount);
                 if (refund.Success)
                     expiredIds.Add(orderId);
             }

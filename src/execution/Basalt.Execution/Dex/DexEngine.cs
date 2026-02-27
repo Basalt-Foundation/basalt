@@ -382,9 +382,12 @@ public sealed class DexEngine
         if (price.IsZero)
             return DexResult.Error(BasaltErrorCode.DexInvalidAmount, "Order price is zero");
 
-        // Escrow input tokens: buy orders escrow token1, sell orders escrow token0
+        // Escrow input tokens: buy orders escrow token1 (amount × price / PriceScale), sell orders escrow token0
         var escrowToken = isBuy ? meta.Value.Token1 : meta.Value.Token0;
-        var escrowResult = TransferSingleTokenIn(stateDb, sender, escrowToken, amount, _runtime);
+        var escrowAmount = isBuy
+            ? FullMath.MulDiv(amount, price, BatchAuctionSolver.PriceScale)
+            : amount;
+        var escrowResult = TransferSingleTokenIn(stateDb, sender, escrowToken, escrowAmount, _runtime);
         if (!escrowResult.Success)
             return escrowResult;
 
@@ -419,9 +422,12 @@ public sealed class DexEngine
         if (meta == null)
             return DexResult.Error(BasaltErrorCode.DexPoolNotFound, "Pool does not exist");
 
-        // Return escrowed tokens
+        // Return escrowed tokens (buy orders: convert remaining token0 amount back to token1 at limit price)
         var escrowToken = order.Value.IsBuy ? meta.Value.Token1 : meta.Value.Token0;
-        var returnResult = TransferSingleTokenOut(stateDb, sender, escrowToken, order.Value.Amount, _runtime);
+        var refundAmount = order.Value.IsBuy
+            ? FullMath.MulDiv(order.Value.Amount, order.Value.Price, BatchAuctionSolver.PriceScale)
+            : order.Value.Amount;
+        var returnResult = TransferSingleTokenOut(stateDb, sender, escrowToken, refundAmount, _runtime);
         if (!returnResult.Success)
             return returnResult;
 

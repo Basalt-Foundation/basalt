@@ -67,6 +67,8 @@ Core protocol logic for pool creation, liquidity management, single swaps, and l
 
 Pool creation supports a per-block rate limit (default 10, governance-overridable). Tokens are canonically sorted (`token0 < token1`). Only allowed fee tiers: `[1, 5, 30, 100]` bps.
 
+Limit orders store `Amount` in **token0 units** for both buy and sell sides. For buy orders, the escrowed token1 is computed as `amount × price / PriceScale` at placement. Cancellation and expiry refunds reverse this computation to return the correct token1 amount.
+
 ### BatchAuctionSolver
 Computes uniform clearing prices for batch auction settlements. This is the core MEV-elimination mechanism: all swap intents in a block receive the same price, eliminating front-running and sandwich attacks.
 
@@ -84,7 +86,7 @@ All prices use fixed-point representation scaled by 2^64 (`PriceScale`).
 ### BatchSettlementExecutor
 Applies batch auction results to the state: debits/credits participant balances, updates AMM reserves, pays solver rewards, refreshes TWAP accumulators, and generates transaction receipts.
 
-For limit order fills, uses `FillRecord.IsBuy` to determine correct token directions (buy orders receive token0, sell orders receive token1). Escrowed input tokens are transferred from the DEX address to the pool/counterparty.
+For limit order fills, uses `FillRecord.IsBuy` to determine correct token directions (buy orders receive token0, sell orders receive token1). Escrowed input tokens are transferred from the DEX address to the pool/counterparty. Buy order remaining amounts are decremented by the token0 received (`fill.AmountOut`), and price improvement refunds are issued when `clearingPrice < limitPrice` (excess escrowed token1 is returned to the buyer).
 
 **Solver reward flow:** When `BatchResult.WinningSolver` is set and `AmmVolume > 0`, the executor computes the reward as a fraction of AMM fee revenue: `reward = (AmmVolume * feeBps / 10000) * SolverRewardBps / 10000`. The reward is deducted from the correct reserve based on `AmmBoughtToken0` (sell pressure → token0 fees → Reserve0; buy pressure → token1 fees → Reserve1) and credited to the solver's account. `SolverRewardBps` is governance-overridable (default 500 = 5%).
 
@@ -95,7 +97,7 @@ Limit order matching using per-pool linked lists for efficient traversal. Orders
 
 `FindCrossingOrders` walks the linked list, collecting buy orders with price >= clearing price and sell orders with price <= clearing price. Results are capped at `maxOrders` (default 100) per side and sorted by price priority.
 
-`CleanupExpiredOrders` walks the same linked list, removing expired orders and returning escrowed tokens to owners.
+`CleanupExpiredOrders` walks the same linked list, removing expired orders and returning escrowed tokens to owners. Buy order refunds are computed as `Amount × Price / PriceScale` (converting remaining token0 back to token1 at the order's limit price).
 
 ### TwapOracle
 On-chain Time-Weighted Average Price oracle using cumulative price accumulators and per-block snapshots. Default window: 7200 blocks (~4 hours at 2s blocks), governance-overridable.

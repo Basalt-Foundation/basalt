@@ -125,7 +125,7 @@ public struct LimitOrder
     /// </summary>
     public UInt256 Price { get; set; }
 
-    /// <summary>Remaining amount to fill (in input token units).</summary>
+    /// <summary>Remaining amount to fill (in token0 units).</summary>
     public UInt256 Amount { get; set; }
 
     /// <summary>True if this is a buy order (buying token0 with token1), false for sell.</summary>

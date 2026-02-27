@@ -214,11 +214,7 @@ public static class BatchAuctionSolver
         foreach (var order in buyOrders)
         {
             if (order.Price >= price)
-            {
-                // Buy order amount is in token1; convert to token0
-                var token0Vol = FullMath.MulDiv(order.Amount, PriceScale, price);
-                vol = UInt256.CheckedAdd(vol, token0Vol); // L-09: checked add
-            }
+                vol = UInt256.CheckedAdd(vol, order.Amount); // L-09: checked add
         }
 
         return vol;
@@ -482,10 +478,8 @@ public static class BatchAuctionSolver
             if (remainingBuyVolume.IsZero) break;
             if (order.Price < clearingPrice) continue;
 
-            var token0Want = FullMath.MulDiv(order.Amount, PriceScale, clearingPrice);
-            var isFullFill = token0Want <= remainingBuyVolume;
-            var fillAmount0 = isFullFill ? token0Want : remainingBuyVolume;
-            var fillAmount1 = isFullFill ? order.Amount : FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
+            var fillAmount0 = order.Amount < remainingBuyVolume ? order.Amount : remainingBuyVolume;
+            var fillAmount1 = FullMath.MulDiv(fillAmount0, clearingPrice, PriceScale);
 
             fills.Add(new FillRecord
             {

@@ -158,17 +158,30 @@ public static class BatchSettlementExecutor
                     var orderCredit = DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, outputToken, fill.AmountOut, runtime);
                     if (!orderCredit.Success) continue;
 
-                    // CR-3a: Update order remaining amount (subtract filled amount, not wipe to zero)
+                    // CR-3a: Update order remaining amount (subtract filled token0, not wipe to zero)
                     var existingOrder = dexState.GetOrder(fill.OrderId);
                     if (existingOrder != null)
                     {
-                        var remaining = existingOrder.Value.Amount > fill.AmountIn
-                            ? UInt256.CheckedSub(existingOrder.Value.Amount, fill.AmountIn)
+                        var filledToken0 = fill.IsBuy ? fill.AmountOut : fill.AmountIn;
+                        var remaining = existingOrder.Value.Amount > filledToken0
+                            ? UInt256.CheckedSub(existingOrder.Value.Amount, filledToken0)
                             : UInt256.Zero;
                         if (remaining.IsZero)
                             dexState.DeleteOrder(fill.OrderId);
                         else
                             dexState.UpdateOrderAmount(fill.OrderId, remaining);
+
+                        // Price improvement refund: escrowed at limitPrice, filled at clearingPrice
+                        if (fill.IsBuy)
+                        {
+                            var escrowedForFill = FullMath.MulDiv(
+                                filledToken0, existingOrder.Value.Price, BatchAuctionSolver.PriceScale);
+                            if (escrowedForFill > fill.AmountIn)
+                            {
+                                var refund = UInt256.CheckedSub(escrowedForFill, fill.AmountIn);
+                                DexEngine.TransferSingleTokenOut(stateDb, fill.Participant, m.Token1, refund, runtime);
+                            }
+                        }
                     }
 
                     // CR-3b: Generate deterministic receipt hash for limit order fills
