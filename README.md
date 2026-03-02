@@ -60,7 +60,7 @@ dotnet build
 dotnet test
 ```
 
-2,781 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
+2,789 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -76,16 +76,19 @@ The node starts in standalone mode on the devnet (chain ID 31337) with a REST AP
 docker compose up --build
 ```
 
-Spins up 4 validator nodes with pre-configured genesis accounts, RocksDB persistent storage, and automatic peer discovery via static peer lists.
+Spins up 4 validator nodes and 1 RPC node with pre-configured genesis accounts, RocksDB persistent storage, and automatic peer discovery via static peer lists.
 
-| Validator | REST API | P2P |
-|-----------|----------|-----|
-| validator-0 | `localhost:5100` | `30300` |
-| validator-1 | `localhost:5101` | `30301` |
-| validator-2 | `localhost:5102` | `30302` |
-| validator-3 | `localhost:5103` | `30303` |
+| Service | REST API | P2P | Role |
+|---------|----------|-----|------|
+| validator-0 | `localhost:5100` | `30300` | Consensus validator |
+| validator-1 | `localhost:5101` | `30301` | Consensus validator |
+| validator-2 | `localhost:5102` | `30302` | Consensus validator |
+| validator-3 | `localhost:5103` | `30303` | Consensus validator |
+| rpc-0 | `localhost:5200` | -- | Read-only RPC node |
 
-Each validator has a Docker volume (`validator-N-data`) for RocksDB persistence and connects to all other validators via environment-configured peer lists. Health checks poll `/v1/status` every 5 seconds.
+The RPC node (`rpc-0`) syncs blocks from `validator-0` via HTTP and serves the full API without participating in consensus. It has no P2P port and no validator keys. Submitted transactions are forwarded to the validator.
+
+Each service has a Docker volume for RocksDB persistence. Health checks poll `/v1/status` (validators) or `/v1/health` (RPC) every 5 seconds.
 
 ### CLI
 
@@ -210,6 +213,8 @@ Basalt.sln                              (42 C# projects)
 | `GET` | `/v1/solvers` | List registered solvers |
 | `POST` | `/v1/solvers/register` | Register an external solver |
 | `GET` | `/v1/dex/intents/pending` | Pending swap intent hashes (for solvers) |
+| `GET` | `/v1/sync/status` | Sync source status (latest block, hash, chain ID) |
+| `GET` | `/v1/sync/blocks?from=&count=` | Bulk block fetch for sync (max 100) |
 | `GET` | `/metrics` | Prometheus metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 
@@ -219,6 +224,8 @@ The node is configured via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BASALT_MODE` | `auto` | Node mode: `auto`, `validator`, `rpc`, or `standalone` |
+| `BASALT_SYNC_SOURCE` | -- | HTTP URL of sync source (required for `rpc` mode) |
 | `BASALT_CHAIN_ID` | `31337` | Chain identifier |
 | `BASALT_NETWORK` | `basalt-devnet` | Network name |
 | `BASALT_VALIDATOR_INDEX` | `-1` | Validator index in the set (enables consensus mode when >= 0 and peers are set) |

@@ -1,8 +1,17 @@
 namespace Basalt.Node;
 
+public enum NodeMode
+{
+    Standalone,
+    Validator,
+    Rpc,
+}
+
 /// <summary>
 /// Node configuration populated from environment variables:
 /// <list type="bullet">
+/// <item><c>BASALT_MODE</c> — Node mode: auto (default), validator, rpc, standalone</item>
+/// <item><c>BASALT_SYNC_SOURCE</c> — HTTP URL of sync source (required for rpc mode)</item>
 /// <item><c>BASALT_VALIDATOR_INDEX</c> — Validator index (int, -1 = standalone)</item>
 /// <item><c>BASALT_VALIDATOR_ADDRESS</c> — Validator address (hex)</item>
 /// <item><c>BASALT_VALIDATOR_KEY</c> — Ed25519 private key (64 hex chars)</item>
@@ -44,8 +53,37 @@ public sealed class NodeConfiguration
     // Contract sandboxing (opt-in)
     public bool UseSandbox { get; init; }
 
-    // Mode detection
-    public bool IsConsensusMode => Peers.Length > 0 && ValidatorIndex >= 0;
+    // Mode selection
+    public string Mode { get; init; } = "auto";
+    public string? SyncSource { get; init; }
+
+    // Tri-state mode detection
+    public NodeMode ResolvedMode
+    {
+        get
+        {
+            if (string.Equals(Mode, "rpc", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(SyncSource))
+                    throw new InvalidOperationException(
+                        "BASALT_MODE=rpc requires BASALT_SYNC_SOURCE to be set (e.g. http://validator-0:5000)");
+                return NodeMode.Rpc;
+            }
+
+            if (string.Equals(Mode, "validator", StringComparison.OrdinalIgnoreCase)
+                || (Peers.Length > 0 && ValidatorIndex >= 0))
+                return NodeMode.Validator;
+
+            if (string.Equals(Mode, "standalone", StringComparison.OrdinalIgnoreCase))
+                return NodeMode.Standalone;
+
+            // auto: fall back to standalone
+            return NodeMode.Standalone;
+        }
+    }
+
+    // Backward-compat alias
+    public bool IsConsensusMode => ResolvedMode == NodeMode.Validator;
 
     public static NodeConfiguration FromEnvironment()
     {
@@ -78,6 +116,9 @@ public sealed class NodeConfiguration
         // N-12: Validate DataDir to prevent path traversal
         var validatedDataDir = string.IsNullOrWhiteSpace(dataDir) ? null : ValidateDataDir(dataDir);
 
+        var mode = Environment.GetEnvironmentVariable("BASALT_MODE") ?? "auto";
+        var syncSource = Environment.GetEnvironmentVariable("BASALT_SYNC_SOURCE");
+
         return new NodeConfiguration
         {
             ValidatorIndex = validatorIndex,
@@ -91,6 +132,8 @@ public sealed class NodeConfiguration
             DataDir = validatedDataDir,
             UsePipelining = usePipelining,
             UseSandbox = useSandbox,
+            Mode = mode,
+            SyncSource = syncSource,
         };
     }
 

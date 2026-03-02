@@ -30,22 +30,22 @@ http://caldera.basalt.foundation {
 :80 {
 	# REST API
 	handle /v1/* {
-		reverse_proxy validator-0:5000
+		reverse_proxy rpc-0:5000
 	}
 
 	# GraphQL
 	handle /graphql {
-		reverse_proxy validator-0:5000
+		reverse_proxy rpc-0:5000
 	}
 
 	# WebSocket
 	handle /ws/* {
-		reverse_proxy validator-0:5000
+		reverse_proxy rpc-0:5000
 	}
 
 	# Health check
 	handle /health {
-		reverse_proxy validator-0:5000 {
+		reverse_proxy rpc-0:5000 {
 			rewrite /v1/status
 		}
 	}

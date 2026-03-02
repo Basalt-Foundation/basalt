@@ -113,4 +113,81 @@ public class NodeConfigurationTests
         result.Should().StartWith("/");
         result.Should().EndWith("data/basalt");
     }
+
+    // ── ResolvedMode tests ──
+
+    [Fact]
+    public void ResolvedMode_Default_ReturnsStandalone()
+    {
+        var config = new NodeConfiguration();
+        config.ResolvedMode.Should().Be(NodeMode.Standalone);
+    }
+
+    [Fact]
+    public void ResolvedMode_ExplicitStandalone_ReturnsStandalone()
+    {
+        var config = new NodeConfiguration { Mode = "standalone" };
+        config.ResolvedMode.Should().Be(NodeMode.Standalone);
+    }
+
+    [Fact]
+    public void ResolvedMode_ExplicitValidator_ReturnsValidator()
+    {
+        var config = new NodeConfiguration { Mode = "validator" };
+        config.ResolvedMode.Should().Be(NodeMode.Validator);
+    }
+
+    [Fact]
+    public void ResolvedMode_AutoWithPeersAndIndex_ReturnsValidator()
+    {
+        var config = new NodeConfiguration
+        {
+            Mode = "auto",
+            ValidatorIndex = 0,
+            Peers = ["peer1:30303"],
+        };
+        config.ResolvedMode.Should().Be(NodeMode.Validator);
+    }
+
+    [Fact]
+    public void ResolvedMode_Rpc_WithSyncSource_ReturnsRpc()
+    {
+        var config = new NodeConfiguration
+        {
+            Mode = "rpc",
+            SyncSource = "http://validator-0:5000",
+        };
+        config.ResolvedMode.Should().Be(NodeMode.Rpc);
+    }
+
+    [Fact]
+    public void ResolvedMode_Rpc_WithoutSyncSource_Throws()
+    {
+        var config = new NodeConfiguration { Mode = "rpc" };
+        var act = () => config.ResolvedMode;
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*BASALT_SYNC_SOURCE*");
+    }
+
+    [Fact]
+    public void ResolvedMode_CaseInsensitive()
+    {
+        var config = new NodeConfiguration
+        {
+            Mode = "RPC",
+            SyncSource = "http://validator-0:5000",
+        };
+        config.ResolvedMode.Should().Be(NodeMode.Rpc);
+    }
+
+    [Fact]
+    public void IsConsensusMode_RpcMode_ReturnsFalse()
+    {
+        var config = new NodeConfiguration
+        {
+            Mode = "rpc",
+            SyncSource = "http://validator-0:5000",
+        };
+        config.IsConsensusMode.Should().BeFalse();
+    }
 }
