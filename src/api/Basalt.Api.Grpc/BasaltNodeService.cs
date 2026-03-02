@@ -14,6 +14,7 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
     private readonly Mempool _mempool;
     private readonly TransactionValidator _validator;
     private readonly IStateDatabase _stateDb;
+    private readonly ITxForwarder? _txForwarder;
 
     /// <summary>H-3: Maximum concurrent SubscribeBlocks streams.</summary>
     private const int MaxSubscribeStreams = 100;
@@ -23,12 +24,14 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
         ChainManager chainManager,
         Mempool mempool,
         TransactionValidator validator,
-        IStateDatabase stateDb)
+        IStateDatabase stateDb,
+        ITxForwarder? txForwarder = null)
     {
         _chainManager = chainManager;
         _mempool = mempool;
         _validator = validator;
         _stateDb = stateDb;
+        _txForwarder = txForwarder;
     }
 
     public override Task<StatusReply> GetStatus(GetStatusRequest request, ServerCallContext context)
@@ -119,6 +122,9 @@ public sealed class BasaltNodeService : BasaltNode.BasaltNodeBase
             if (!_mempool.Add(tx))
                 throw new RpcException(new Status(StatusCode.AlreadyExists,
                     "Transaction already in mempool or mempool is full"));
+
+            // Forward to validator (RPC mode — gRPC txs bypass REST tx endpoint)
+            _ = _txForwarder?.ForwardAsync(tx, context.CancellationToken);
 
             return Task.FromResult(new TransactionReply
             {

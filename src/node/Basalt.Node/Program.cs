@@ -252,6 +252,9 @@ try
     builder.Services.AddSingleton(chainManager);
     builder.Services.AddSingleton(mempool);
     builder.Services.AddSingleton(validator);
+    // TxForwarderRef: inner forwarder is set later in the RPC branch; DI resolves lazily
+    var txForwarderRef = new TxForwarderRef();
+    builder.Services.AddSingleton<ITxForwarder>(txForwarderRef);
     builder.Services.AddGrpc();
 
     // R3-NEW-1: Use GlobalLimiter instead of named policy. Named policies require
@@ -309,13 +312,11 @@ try
     var contractRuntime = new ManagedContractRuntime();
     var solverInfoAdapter = new Basalt.Node.Solver.SolverInfoAdapter();
     solverInfoAdapter.SetMempool(mempool);
-    // TxForwarderRef is set later in the RPC branch (mutable wrapper avoids re-registration)
-    var txForwarderRef = new TxForwarderRef();
     RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams, solverProvider: solverInfoAdapter, blockStore: blockStore, txForwarder: txForwarderRef);
 
-    // Map faucet endpoint
+    // Map faucet endpoint (txForwarderRef set later in RPC branch)
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
-    FaucetEndpoint.MapFaucetEndpoint(app, stateDbRef, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager);
+    FaucetEndpoint.MapFaucetEndpoint(app, stateDbRef, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager, txForwarder: txForwarderRef);
 
     // Map WebSocket endpoint
     app.UseWebSockets();

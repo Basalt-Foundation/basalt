@@ -1591,25 +1591,6 @@ public sealed class SyncBlocksResponse
 /// <summary>
 /// Forwards transactions from RPC nodes to validators.
 /// </summary>
-public interface ITxForwarder
-{
-    Task ForwardAsync(Transaction tx, CancellationToken ct);
-}
-
-/// <summary>
-/// Mutable reference to an <see cref="ITxForwarder"/>. Allows the RPC mode branch in
-/// Program.cs to set the forwarder after endpoint registration, since
-/// <see cref="RestApiEndpoints.MapBasaltEndpoints"/> is called before mode detection.
-/// </summary>
-public sealed class TxForwarderRef : ITxForwarder
-{
-    private volatile ITxForwarder? _inner;
-
-    public void Set(ITxForwarder forwarder) => _inner = forwarder;
-
-    public Task ForwardAsync(Transaction tx, CancellationToken ct)
-        => _inner?.ForwardAsync(tx, ct) ?? Task.CompletedTask;
-}
 
 [JsonSerializable(typeof(SyncStatusResponse))]
 [JsonSerializable(typeof(SyncBlockEntry))]
