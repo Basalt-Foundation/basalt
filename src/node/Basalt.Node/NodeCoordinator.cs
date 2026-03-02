@@ -85,6 +85,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Block production (consensus-driven — no BlockProductionLoop)
     private BlockBuilder? _blockBuilder;
     private TransactionExecutor? _txExecutor;
+    private BlockApplier? _blockApplier;
     private Address _proposerAddress;
 
     // Solver network (Phase E4)
@@ -94,6 +95,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Exposes the solver manager for wiring into the REST API adapter.
     /// </summary>
     public Solver.SolverManager? SolverManager => _solverManager;
+
+    /// <summary>
+    /// Exposes the block applier for reuse by other components (e.g., BlockSyncService in RPC mode).
+    /// </summary>
+    public BlockApplier? BlockApplier => _blockApplier;
 
     // Runtime
     private CancellationTokenSource? _cts;
@@ -519,43 +525,12 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 }
             }
 
-            // All validators execute finalized transactions against canonical state.
-            // Proposals use a forked state, so the leader's live state is never speculatively mutated.
-            if (block.Transactions.Count > 0)
+            // Apply block via shared BlockApplier (executes txs, DEX settlement, chain update,
+            // mempool pruning, persistence, epoch transitions, WebSocket broadcast, metrics).
+            var applyResult = _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap);
+
+            if (applyResult.Success)
             {
-                var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                for (int i = 0; i < block.Transactions.Count; i++)
-                {
-                    var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
-                    receipts.Add(receipt);
-                }
-                block.Receipts = receipts;
-            }
-
-            // Run DEX settlement on canonical state (TWAP carry-forward + limit order matching)
-            if (_blockBuilder != null)
-            {
-                var dexReceipts = _blockBuilder.ApplyDexSettlement(_stateDb, block.Header);
-                if (dexReceipts.Count > 0)
-                {
-                    block.Receipts ??= new List<TransactionReceipt>();
-                    block.Receipts.AddRange(dexReceipts);
-                }
-            }
-
-            var result = _chainManager.AddBlock(block);
-            if (result.IsSuccess)
-            {
-                _mempool.RemoveConfirmed(block.Transactions);
-
-                // Prune stale, underpriced, or unaffordable transactions
-                var pruned = _mempool.PruneStale(_stateDb, block.Header.BaseFee);
-                if (pruned > 0)
-                    _logger.LogInformation("Pruned {Count} unexecutable transactions from mempool", pruned);
-
-                // Update mempool admission gate so new submissions below the current base fee are rejected early
-                _mempool.UpdateBaseFee(block.Header.BaseFee);
-
                 // Circuit breaker: reset on success
                 Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
                 if (_circuitBreakerTripped)
@@ -564,24 +539,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     _logger.LogWarning("Circuit breaker reset after successful block finalization");
                 }
 
-                MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
-
-                // M13: Record additional Prometheus metrics
+                // M13: Additional consensus-specific metrics
                 var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var prevFinalizedMs = Volatile.Read(ref _lastBlockFinalizedAtMs);
                 if (prevFinalizedMs > 0)
                     MetricsEndpoint.RecordFinalizationLatency(nowMs - prevFinalizedMs);
-                MetricsEndpoint.RecordBaseFee(block.Header.BaseFee.IsZero ? 0 : (long)(ulong)block.Header.BaseFee);
-                MetricsEndpoint.RecordConsensusView((long)block.Number);
                 MetricsEndpoint.RecordPeerCount(_peerManager?.ConnectedCount ?? 0);
-                MetricsEndpoint.RecordDexIntentCount(_mempool.DexIntentCount);
-
-                _ = _wsHandler.BroadcastNewBlock(block);
 
                 Volatile.Write(ref _lastBlockFinalizedAtMs, nowMs);
 
-                // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
-                // This preserves recent evidence for double-sign detection while preventing unbounded growth.
+                // N-10: Sliding window — retain evidence for last 10 views
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
@@ -590,22 +557,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         _proposalsByView.TryRemove(key, out _);
                 }
 
-                // Announce finalized block to peers so their BestBlockNumber stays
-                // current.  Without this, TrySyncFromPeers can't find an up-to-date
-                // peer and validators that fall behind are unable to catch up.
+                // Announce finalized block to peers
                 _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
-
-                // Persist block + commit bitmap atomically to RocksDB
-                PersistBlock(block, blockData, commitBitmap);
-                PersistReceipts(block.Receipts);
-
-                // Record commit participation for deterministic epoch-boundary slashing
-                _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
-
-                // Check for epoch transition — rebuild validator set if at boundary
-                var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                if (newSet != null)
-                    ApplyEpochTransition(newSet, block.Number);
 
                 _logger.LogInformation(
                     "Block #{Number} finalized via consensus. Hash: {Hash}, Txs: {TxCount}",
@@ -621,7 +574,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             else
             {
                 _logger.LogError("Failed to add consensus-finalized block #{Number}: {Error}",
-                    block.Number, result.Message);
+                    block.Number, applyResult.Error);
 
                 // Circuit breaker: increment failure count
                 var failures = Interlocked.Increment(ref _consecutiveFinalizationFailures);
@@ -633,7 +586,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 }
 
                 // If we're behind (block number > our tip + 1), trigger a sync
-                // to catch up on missed blocks before the next round.
                 if (block.Number > _chainManager.LatestBlockNumber + 1)
                 {
                     _logger.LogWarning(
@@ -677,6 +629,36 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _solverManager.GetBestSettlement(
                 poolId, buys, sells, reserves, feeBps,
                 intentMinAmounts, stateDb, dexState, intentTxMap);
+
+        // Create shared BlockApplier for finalization and sync paths
+        _blockApplier = new BlockApplier(
+            _chainParams, _chainManager, _mempool, _txExecutor, _blockBuilder,
+            _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
+            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>());
+
+        // Hook epoch transitions to rewire consensus-specific components
+        _blockApplier.OnEpochTransition += (newSet, blockNumber) =>
+        {
+            var oldCount = _validatorSet?.Count ?? 0;
+            _validatorSet = newSet;
+
+            if (_stakingState != null)
+            {
+                _leaderSelector = new WeightedLeaderSelector(_validatorSet);
+                _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
+            }
+
+            if (_config.UsePipelining)
+                _pipelinedConsensus?.UpdateValidatorSet(newSet);
+            else
+                _consensus?.UpdateValidatorSet(newSet);
+
+            // N-10: Sliding window — retain evidence for last 10 views on epoch transition
+            var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
+            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
+            foreach (var key in oldKeys)
+                _proposalsByView.TryRemove(key, out _);
+        };
 
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
@@ -1214,36 +1196,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (block.Number != _chainManager.LatestBlockNumber + 1)
                     continue;
 
-                // Execute transactions and capture receipts
-                if (block.Transactions.Count > 0)
-                {
-                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                    for (int i = 0; i < block.Transactions.Count; i++)
-                    {
-                        var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
-                        receipts.Add(receipt);
-                    }
-                    block.Receipts = receipts;
-                }
+                var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
+                var result = _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap);
 
-                var result = _chainManager.AddBlock(block);
-                if (result.IsSuccess)
-                {
-                    _mempool.RemoveConfirmed(block.Transactions);
-                    var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                    PersistBlock(block, blockBytes, bitmap);
-                    PersistReceipts(block.Receipts);
-
-                    // Use propagated commit bitmap from the serving peer
-                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
-
-                    // Apply epoch transitions for blocks received via gossip
-                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                    if (newSet != null)
-                        ApplyEpochTransition(newSet, block.Number);
-
+                if (result.Success)
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
-                }
             }
             catch (Exception ex)
             {
@@ -1316,12 +1273,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleSyncResponse(PeerId sender, SyncResponseMessage response)
     {
-        var applied = 0;
-
-        // N-05: Fork state for sync — execute all blocks on a forked state database.
-        // Only replace canonical state if all blocks in the batch succeed.
-        var forkedState = _stateDb.Fork();
-        var blocksToApply = new List<(Block Block, byte[] Raw, int OrigIdx)>();
+        // Deserialize and validate block sequence
+        var blocksToApply = new List<(Block Block, byte[] Raw, ulong CommitBitmap)>();
 
         for (int idx = 0; idx < response.Blocks.Length; idx++)
         {
@@ -1337,82 +1290,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
                 }
 
-                // Execute transactions against the forked state
-                if (block.Transactions.Count > 0)
-                {
-                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                    for (int i = 0; i < block.Transactions.Count; i++)
-                    {
-                        var receipt = _txExecutor!.Execute(block.Transactions[i], forkedState, block.Header, i);
-                        receipts.Add(receipt);
-                    }
-                    block.Receipts = receipts;
-                }
-
-                // Run DEX settlement on forked state (TWAP carry-forward + limit order matching)
-                if (_blockBuilder != null)
-                {
-                    var dexReceipts = _blockBuilder.ApplyDexSettlement(forkedState, block.Header);
-                    if (dexReceipts.Count > 0)
-                    {
-                        block.Receipts ??= new List<TransactionReceipt>();
-                        block.Receipts.AddRange(dexReceipts);
-                    }
-                }
-
-                blocksToApply.Add((block, blockBytes, idx));
+                var bitmap = idx < response.CommitBitmaps.Length ? response.CommitBitmaps[idx] : 0UL;
+                blocksToApply.Add((block, blockBytes, bitmap));
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to process synced block from {Sender}", sender);
+                _logger.LogWarning(ex, "Failed to deserialize synced block from {Sender}", sender);
                 break;
             }
         }
 
-        // Apply all successfully executed blocks to the chain
-        foreach (var (block, blockBytes, origIdx) in blocksToApply)
-        {
-            var result = _chainManager.AddBlock(block);
-            if (result.IsSuccess)
-            {
-                _mempool.RemoveConfirmed(block.Transactions);
-                var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
-                PersistBlock(block, blockBytes, bitmap);
-                PersistReceipts(block.Receipts);
-                applied++;
-
-                // Use propagated commit bitmap from the serving peer
-                _epochManager?.RecordBlockSigners(block.Number, bitmap);
-
-                // Apply epoch transitions for synced blocks — without this,
-                // nodes that sync across epoch boundaries would have a stale
-                // ValidatorSet and disagree on leader selection.
-                var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                if (newSet != null)
-                    ApplyEpochTransition(newSet, block.Number);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to apply synced block #{Number}: {Error}", block.Number, result.Message);
-                break;
-            }
-        }
-
-        // N-05: Only adopt the forked state if all blocks were applied successfully.
-        // Swap() updates the shared StateDbRef so the API layer sees the new state.
-        if (applied == blocksToApply.Count && applied > 0)
-        {
-            _stateDb.Swap(forkedState);
-            _logger.LogInformation("Synced {Count} blocks, now at #{Height}", applied, _chainManager.LatestBlockNumber);
-        }
-        else if (applied > 0)
-        {
-            // HIGH-04: Partial sync — blocks were added to ChainManager but state was not
-            // adopted. Roll back ChainManager to the last consistent block to prevent
-            // chain/state divergence. The next sync attempt will re-fetch these blocks.
-            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — rolling back chain to consistent state",
-                applied, blocksToApply.Count);
-        }
+        // Delegate to BlockApplier for fork-execute-swap
+        var applied = _blockApplier!.ApplyBatch(blocksToApply, _stateDb);
 
         // Signal the sync loop under lock to prevent stale responses completing wrong TCS
         lock (this)
@@ -1891,121 +1780,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         return best;
     }
 
-    /// <summary>
-    /// Apply an epoch transition: swap the validator set, rewire consensus and leader selection.
-    /// </summary>
-    private void ApplyEpochTransition(ValidatorSet newSet, ulong blockNumber)
-    {
-        var oldCount = _validatorSet?.Count ?? 0;
-        _validatorSet = newSet;
-
-        // Rewire leader selector with new set (reads snapshotted stakes from ValidatorInfo.Stake)
-        if (_stakingState != null)
-        {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet);
-            _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
-        }
-
-        // Update consensus engine
-        if (_config.UsePipelining)
-            _pipelinedConsensus?.UpdateValidatorSet(newSet);
-        else
-            _consensus?.UpdateValidatorSet(newSet);
-
-        // N-10: Sliding window — retain evidence for last 10 views on epoch transition
-        {
-            var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
-            foreach (var key in oldKeys)
-                _proposalsByView.TryRemove(key, out _);
-        }
-
-        // B1: Flush staking state after epoch transition
-        if (_stakingPersistence != null && _stakingState != null)
-        {
-            try
-            {
-                _stakingState.FlushToPersistence(_stakingPersistence);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to flush staking state after epoch transition");
-            }
-        }
-
-        _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",
-            blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
-    }
-
-    private void PersistBlock(Block block, byte[] serializedBlockData, ulong? commitBitmap = null)
-    {
-        if (_blockStore == null)
-            return;
-
-        try
-        {
-            var blockData = new BlockData
-            {
-                Number = block.Number,
-                Hash = block.Hash,
-                ParentHash = block.Header.ParentHash,
-                StateRoot = block.Header.StateRoot,
-                TransactionsRoot = block.Header.TransactionsRoot,
-                ReceiptsRoot = block.Header.ReceiptsRoot,
-                Timestamp = block.Header.Timestamp,
-                Proposer = block.Header.Proposer,
-                ChainId = block.Header.ChainId,
-                GasUsed = block.Header.GasUsed,
-                GasLimit = block.Header.GasLimit,
-                BaseFee = block.Header.BaseFee,
-                ProtocolVersion = block.Header.ProtocolVersion,
-                ExtraData = block.Header.ExtraData,
-                TransactionHashes = block.Transactions.Select(t => t.Hash).ToArray(),
-            };
-            _blockStore.PutFullBlock(blockData, serializedBlockData, commitBitmap);
-            _blockStore.SetLatestBlockNumber(block.Number);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist block #{Number}", block.Number);
-        }
-    }
-
-    private void PersistReceipts(List<TransactionReceipt>? receipts)
-    {
-        if (_receiptStore == null || receipts == null || receipts.Count == 0)
-            return;
-
-        try
-        {
-            var receiptDataList = receipts.Select(r => new ReceiptData
-            {
-                TransactionHash = r.TransactionHash,
-                BlockHash = r.BlockHash,
-                BlockNumber = r.BlockNumber,
-                TransactionIndex = r.TransactionIndex,
-                From = r.From,
-                To = r.To,
-                GasUsed = r.GasUsed,
-                Success = r.Success,
-                ErrorCode = (int)r.ErrorCode,
-                PostStateRoot = r.PostStateRoot,
-                EffectiveGasPrice = r.EffectiveGasPrice,
-                Logs = (r.Logs ?? []).Select(l => new LogData
-                {
-                    Contract = l.Contract,
-                    EventSignature = l.EventSignature,
-                    Topics = l.Topics ?? [],
-                    Data = l.Data ?? [],
-                }).ToArray(),
-            });
-            _receiptStore.PutReceipts(receiptDataList);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist {Count} receipts", receipts.Count);
-        }
-    }
+    // PersistBlock, PersistReceipts, and ApplyEpochTransition logic is now in BlockApplier.
+    // Consensus-specific epoch rewiring (leader selector, consensus engine, proposal cache)
+    // is handled via the BlockApplier.OnEpochTransition event, wired in SetupBlockProduction().
 
     public async ValueTask DisposeAsync()
     {

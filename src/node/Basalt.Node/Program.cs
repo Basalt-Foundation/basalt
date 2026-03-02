@@ -306,7 +306,9 @@ try
     var contractRuntime = new ManagedContractRuntime();
     var solverInfoAdapter = new Basalt.Node.Solver.SolverInfoAdapter();
     solverInfoAdapter.SetMempool(mempool);
-    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams, solverProvider: solverInfoAdapter);
+    // TxForwarderRef is set later in the RPC branch (mutable wrapper avoids re-registration)
+    var txForwarderRef = new TxForwarderRef();
+    RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDbRef, contractRuntime, receiptStore, chainParams: chainParams, solverProvider: solverInfoAdapter, blockStore: blockStore, txForwarder: txForwarderRef);
 
     // Map faucet endpoint
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
@@ -322,6 +324,9 @@ try
 
     // Map Prometheus metrics endpoint
     MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
+
+    // Sync status (set by RPC mode — null for other modes)
+    ISyncStatus? syncStatus = null;
 
     // N-19: Health endpoint with meaningful status info (AOT-safe string formatting)
     ulong lastHealthCheckBlock = 0;
@@ -344,13 +349,31 @@ try
         lastHealthCheckTime = now;
 
         var healthy = makingProgress || (blockAge >= 0 && blockAge < 60);
+
+        // RPC nodes are unhealthy if too far behind the sync source
+        var currentSyncLag = syncStatus?.SyncLag ?? 0;
+        var modeName = config.ResolvedMode switch
+        {
+            NodeMode.Validator => "validator",
+            NodeMode.Rpc => "rpc",
+            _ => "standalone",
+        };
+
+        if (config.ResolvedMode == NodeMode.Rpc && currentSyncLag > 50)
+            healthy = false;
+
         ctx.Response.StatusCode = healthy ? 200 : 503;
         ctx.Response.ContentType = "application/json";
+        var syncLagField = config.ResolvedMode == NodeMode.Rpc
+            ? ",\"syncLag\":" + currentSyncLag
+            : "";
         return ctx.Response.WriteAsync(
             "{\"status\":\"" + (healthy ? "healthy" : "degraded") +
+            "\",\"mode\":\"" + modeName +
             "\",\"lastBlockNumber\":" + currentBlockNumber +
             ",\"lastBlockAgeSeconds\":" + blockAge.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) +
             ",\"makingProgress\":" + (makingProgress ? "true" : "false") +
+            syncLagField +
             ",\"chainId\":" + chainParams.ChainId + "}");
     });
 
@@ -369,124 +392,203 @@ try
         return Microsoft.AspNetCore.Http.Results.Ok(response);
     });
 
-    if (config.IsConsensusMode)
+    switch (config.ResolvedMode)
     {
-        // === CONSENSUS MODE ===
-        // Multi-node operation with P2P networking and BFT consensus
-        var slashingEngine = new SlashingEngine(
-            stakingState,
-            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
-
-        // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
-        var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
-        var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
+        case NodeMode.Validator:
         {
-            // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
-            var storageKey = "scr_vk:" + schemaId.ToHexString();
-            var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
-            var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
-            if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
-                return null;
-            var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
-            if (string.IsNullOrEmpty(hexVk))
-                return null;
-            try { return Convert.FromHexString(hexVk); }
-            catch { return null; }
-        });
-        // H9: No MockKycProvider in consensus mode — only governance-approved
-        // providers can issue attestations on mainnet/testnet.
-        var complianceEngine = new Basalt.Compliance.ComplianceEngine(
-            new Basalt.Compliance.IdentityRegistry(),
-            new Basalt.Compliance.SanctionsList(),
-            zkVerifier);
+            // === VALIDATOR MODE ===
+            // Multi-node operation with P2P networking and BFT consensus
+            var slashingEngine = new SlashingEngine(
+                stakingState,
+                app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
 
-        var coordinator = new NodeCoordinator(
-            config, chainParams, chainManager, mempool, stateDbRef, validator, wsHandler,
-            app.Services.GetRequiredService<ILoggerFactory>(),
-            blockStore, receiptStore,
-            stakingState, slashingEngine,
-            complianceEngine,
-            stakingPersistence);
-
-        // E4: Wire solver manager into REST API adapter after NodeCoordinator is initialized
-        if (coordinator.SolverManager != null)
-            solverInfoAdapter.SetSolverManager(coordinator.SolverManager);
-
-        Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty($"http://localhost:{config.HttpPort}")));
-        Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);
-        Log.Information("Validator: index={Index}, address={Address}, P2P port={P2PPort}",
-            config.ValidatorIndex, config.ValidatorAddress, config.P2PPort);
-        Log.Information("Peers: {Peers}", string.Join(", ", config.Peers));
-
-        app.Lifetime.ApplicationStarted.Register(() =>
-        {
-            _ = Task.Run(async () =>
+            // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
+            var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
+            var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
             {
-                try
+                // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
+                var storageKey = "scr_vk:" + schemaId.ToHexString();
+                var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
+                var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
+                if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
+                    return null;
+                var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
+                if (string.IsNullOrEmpty(hexVk))
+                    return null;
+                try { return Convert.FromHexString(hexVk); }
+                catch { return null; }
+            });
+            // H9: No MockKycProvider in consensus mode — only governance-approved
+            // providers can issue attestations on mainnet/testnet.
+            var complianceEngine = new Basalt.Compliance.ComplianceEngine(
+                new Basalt.Compliance.IdentityRegistry(),
+                new Basalt.Compliance.SanctionsList(),
+                zkVerifier);
+
+            var coordinator = new NodeCoordinator(
+                config, chainParams, chainManager, mempool, stateDbRef, validator, wsHandler,
+                app.Services.GetRequiredService<ILoggerFactory>(),
+                blockStore, receiptStore,
+                stakingState, slashingEngine,
+                complianceEngine,
+                stakingPersistence);
+
+            // E4: Wire solver manager into REST API adapter after NodeCoordinator is initialized
+            if (coordinator.SolverManager != null)
+                solverInfoAdapter.SetSolverManager(coordinator.SolverManager);
+
+            Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty($"http://localhost:{config.HttpPort}")));
+            Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);
+            Log.Information("Validator: index={Index}, address={Address}, P2P port={P2PPort}",
+                config.ValidatorIndex, config.ValidatorAddress, config.P2PPort);
+            Log.Information("Peers: {Peers}", string.Join(", ", config.Peers));
+
+            app.Lifetime.ApplicationStarted.Register(() =>
+            {
+                _ = Task.Run(async () =>
                 {
-                    await coordinator.StartAsync(app.Lifetime.ApplicationStopping);
-                }
-                catch (Exception ex)
+                    try
+                    {
+                        await coordinator.StartAsync(app.Lifetime.ApplicationStopping);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Fatal(ex, "Consensus coordinator failed to start");
+                    }
+                });
+            });
+
+            app.Lifetime.ApplicationStopping.Register(() =>
+            {
+                // L20: Add random jitter to stagger validator restarts and avoid thundering herd
+                var jitterMs = Random.Shared.Next(0, 3000);
+                Thread.Sleep(jitterMs);
+
+                Log.Information("Shutting down consensus coordinator...");
+                // N-18: Timeout to prevent shutdown deadlock
+                if (!coordinator.StopAsync().Wait(TimeSpan.FromSeconds(10)))
                 {
-                    Log.Fatal(ex, "Consensus coordinator failed to start");
+                    Log.Warning("Node coordinator did not stop within 10 seconds; forcing exit");
                 }
             });
-        });
+            break;
+        }
 
-        app.Lifetime.ApplicationStopping.Register(() =>
+        case NodeMode.Rpc:
         {
-            // L20: Add random jitter to stagger validator restarts and avoid thundering herd
-            var jitterMs = Random.Shared.Next(0, 3000);
-            Thread.Sleep(jitterMs);
+            // === RPC MODE ===
+            // Syncs finalized blocks from a trusted source via HTTP. Serves the full API
+            // without participating in consensus or P2P networking.
 
-            Log.Information("Shutting down consensus coordinator...");
-            // N-18: Timeout to prevent shutdown deadlock
-            if (!coordinator.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+            if (blockStore == null)
             {
-                Log.Warning("Node coordinator did not stop within 10 seconds; forcing exit");
+                Log.Fatal("RPC mode requires BASALT_DATA_DIR for block persistence");
+                return 1;
             }
-        });
-    }
-    else
-    {
-        // === STANDALONE MODE ===
-        // Single-node block production on a timer (existing behavior)
 
-        // LOW-06: Warn if DataDir is set but blocks are not persisted in standalone mode
-        if (config.DataDir != null)
-            Log.Warning("DataDir is set but standalone mode does not persist blocks. State will be lost on restart.");
+            var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
 
-        var proposer = Address.FromHexString("0x0000000000000000000000000000000000000001");
-        var blockProduction = new BlockProductionLoop(
-            chainParams, chainManager, mempool, stateDbRef, proposer,
-            app.Services.GetRequiredService<ILogger<BlockProductionLoop>>());
+            // Create execution components for block replay
+            IContractRuntime rpcContractRuntime = config.UseSandbox
+                ? new Basalt.Execution.VM.Sandbox.SandboxedContractRuntime(new Basalt.Execution.VM.Sandbox.SandboxConfiguration())
+                : new ManagedContractRuntime();
+            var rpcTxExecutor = new TransactionExecutor(chainParams, rpcContractRuntime, stakingState);
+            var rpcBlockBuilder = new BlockBuilder(chainParams, rpcTxExecutor, loggerFactory.CreateLogger<BlockBuilder>());
 
-        // Wire metrics and WebSocket to block production
-        blockProduction.OnBlockProduced += block =>
-        {
-            MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
-            _ = wsHandler.BroadcastNewBlock(block);
-        };
+            var rpcBlockApplier = new BlockApplier(
+                chainParams, chainManager, mempool, rpcTxExecutor, rpcBlockBuilder,
+                blockStore, receiptStore,
+                epochManager: null, // No epoch transitions in RPC mode (no consensus)
+                stakingState: stakingState,
+                stakingPersistence: stakingPersistence,
+                wsHandler,
+                loggerFactory.CreateLogger<BlockApplier>());
 
-        blockProduction.Start();
+            var rpcSyncService = new BlockSyncService(
+                config.SyncSource!,
+                rpcBlockApplier,
+                chainManager,
+                stateDbRef,
+                chainParams,
+                loggerFactory.CreateLogger<BlockSyncService>());
 
-        Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty("http://localhost:5000")));
-        Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);
-        Log.Information("Block time: {BlockTime}ms", chainParams.BlockTimeMs);
+            syncStatus = rpcSyncService;
 
-        app.Lifetime.ApplicationStopping.Register(() =>
-        {
-            // L20: Add random jitter to stagger restarts
-            var jitterMs = Random.Shared.Next(0, 3000);
-            Thread.Sleep(jitterMs);
+            var txForwarder = new HttpTxForwarder(
+                config.SyncSource!,
+                loggerFactory.CreateLogger<HttpTxForwarder>());
+            txForwarderRef.Set(txForwarder);
 
-            Log.Information("Shutting down block production...");
-            // N-18: Timeout to prevent shutdown deadlock
-            if (!blockProduction.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+            Log.Information("Basalt RPC Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty($"http://localhost:{config.HttpPort}")));
+            Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);
+            Log.Information("Sync source: {Source}", config.SyncSource);
+
+            app.Lifetime.ApplicationStarted.Register(() =>
             {
-                Log.Warning("Block production did not stop within 10 seconds; forcing exit");
-            }
-        });
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await rpcSyncService.RunAsync(app.Lifetime.ApplicationStopping);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Fatal(ex, "Block sync service failed");
+                    }
+                });
+            });
+
+            app.Lifetime.ApplicationStopping.Register(() =>
+            {
+                Log.Information("Shutting down RPC sync service...");
+                txForwarder.Dispose();
+                rpcSyncService.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
+            });
+            break;
+        }
+
+        default:
+        {
+            // === STANDALONE MODE ===
+            // Single-node block production on a timer (existing behavior)
+
+            // LOW-06: Warn if DataDir is set but blocks are not persisted in standalone mode
+            if (config.DataDir != null)
+                Log.Warning("DataDir is set but standalone mode does not persist blocks. State will be lost on restart.");
+
+            var proposer = Address.FromHexString("0x0000000000000000000000000000000000000001");
+            var blockProduction = new BlockProductionLoop(
+                chainParams, chainManager, mempool, stateDbRef, proposer,
+                app.Services.GetRequiredService<ILogger<BlockProductionLoop>>());
+
+            // Wire metrics and WebSocket to block production
+            blockProduction.OnBlockProduced += block =>
+            {
+                MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
+                _ = wsHandler.BroadcastNewBlock(block);
+            };
+
+            blockProduction.Start();
+
+            Log.Information("Basalt Node listening on {Urls}", string.Join(", ", app.Urls.DefaultIfEmpty("http://localhost:5000")));
+            Log.Information("Chain: {Network} (ChainId={ChainId})", chainParams.NetworkName, chainParams.ChainId);
+            Log.Information("Block time: {BlockTime}ms", chainParams.BlockTimeMs);
+
+            app.Lifetime.ApplicationStopping.Register(() =>
+            {
+                // L20: Add random jitter to stagger restarts
+                var jitterMs = Random.Shared.Next(0, 3000);
+                Thread.Sleep(jitterMs);
+
+                Log.Information("Shutting down block production...");
+                // N-18: Timeout to prevent shutdown deadlock
+                if (!blockProduction.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+                {
+                    Log.Warning("Block production did not stop within 10 seconds; forcing exit");
+                }
+            });
+            break;
+        }
     }
 
     await app.RunAsync();

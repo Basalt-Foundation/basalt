@@ -33,7 +33,9 @@ public static class RestApiEndpoints
         Storage.RocksDb.ReceiptStore? receiptStore = null,
         Microsoft.Extensions.Logging.ILogger? logger = null,
         ChainParameters? chainParams = null,
-        ISolverInfoProvider? solverProvider = null)
+        ISolverInfoProvider? solverProvider = null,
+        Storage.RocksDb.BlockStore? blockStore = null,
+        ITxForwarder? txForwarder = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -150,6 +152,10 @@ public static class RestApiEndpoints
                         Message = "Transaction already in mempool or mempool is full.",
                     });
                 }
+
+                // RPC mode: forward transaction to sync source (fire-and-forget)
+                if (txForwarder != null)
+                    _ = txForwarder.ForwardAsync(tx, CancellationToken.None);
 
                 return Microsoft.AspNetCore.Http.Results.Ok(new TransactionResponse
                 {
@@ -1090,6 +1096,53 @@ public static class RestApiEndpoints
                 });
             });
         }
+
+        // ── Sync endpoints (used by RPC nodes to fetch blocks from validators) ──
+
+        app.MapGet("/v1/sync/status", () =>
+        {
+            var latest = chainManager.LatestBlock;
+            return Microsoft.AspNetCore.Http.Results.Ok(new SyncStatusResponse
+            {
+                LatestBlock = latest?.Number ?? 0,
+                LatestHash = latest?.Hash.ToHexString() ?? Hash256.Zero.ToHexString(),
+                ChainId = chainParams?.ChainId ?? 0,
+            });
+        });
+
+        app.MapGet("/v1/sync/blocks", (ulong from, int? count) =>
+        {
+            if (blockStore == null)
+                return Microsoft.AspNetCore.Http.Results.StatusCode(501);
+
+            var requestedCount = Math.Min(count ?? 100, 100);
+            var blocks = new List<SyncBlockEntry>();
+
+            for (ulong n = from; n < from + (ulong)requestedCount; n++)
+            {
+                var raw = blockStore.GetRawBlockByNumber(n);
+                if (raw == null)
+                    break;
+
+                var meta = blockStore.GetByNumber(n);
+                blocks.Add(new SyncBlockEntry
+                {
+                    Number = n,
+                    Hash = meta?.Hash.ToHexString() ?? "",
+                    RawHex = Convert.ToHexString(raw),
+                    CommitBitmap = blockStore.GetCommitBitmap(n),
+                });
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new SyncBlocksResponse
+            {
+                Blocks = blocks.ToArray(),
+            });
+        });
+
+        // ── Transaction forwarding hook ──
+        // When txForwarder is set (RPC mode), fire-and-forget forward after mempool add.
+        // The forwarding is wired inside the POST /v1/transactions handler via the txForwarder parameter.
     }
 }
 
@@ -1511,6 +1564,57 @@ public sealed class DexPriceHistoryResponse
     [JsonPropertyName("blockTimeMs")] public uint BlockTimeMs { get; set; }
 }
 
+// ── Sync DTOs ──
+
+public sealed class SyncStatusResponse
+{
+    [JsonPropertyName("latestBlock")] public ulong LatestBlock { get; set; }
+    [JsonPropertyName("latestHash")] public string LatestHash { get; set; } = "";
+    [JsonPropertyName("chainId")] public uint ChainId { get; set; }
+}
+
+public sealed class SyncBlockEntry
+{
+    [JsonPropertyName("number")] public ulong Number { get; set; }
+    [JsonPropertyName("hash")] public string Hash { get; set; } = "";
+    [JsonPropertyName("rawHex")] public string RawHex { get; set; } = "";
+    [JsonPropertyName("commitBitmap")] public ulong? CommitBitmap { get; set; }
+}
+
+public sealed class SyncBlocksResponse
+{
+    [JsonPropertyName("blocks")] public SyncBlockEntry[] Blocks { get; set; } = [];
+}
+
+// ── Transaction forwarding interface (RPC mode) ──
+
+/// <summary>
+/// Forwards transactions from RPC nodes to validators.
+/// </summary>
+public interface ITxForwarder
+{
+    Task ForwardAsync(Transaction tx, CancellationToken ct);
+}
+
+/// <summary>
+/// Mutable reference to an <see cref="ITxForwarder"/>. Allows the RPC mode branch in
+/// Program.cs to set the forwarder after endpoint registration, since
+/// <see cref="RestApiEndpoints.MapBasaltEndpoints"/> is called before mode detection.
+/// </summary>
+public sealed class TxForwarderRef : ITxForwarder
+{
+    private volatile ITxForwarder? _inner;
+
+    public void Set(ITxForwarder forwarder) => _inner = forwarder;
+
+    public Task ForwardAsync(Transaction tx, CancellationToken ct)
+        => _inner?.ForwardAsync(tx, ct) ?? Task.CompletedTask;
+}
+
+[JsonSerializable(typeof(SyncStatusResponse))]
+[JsonSerializable(typeof(SyncBlockEntry))]
+[JsonSerializable(typeof(SyncBlockEntry[]))]
+[JsonSerializable(typeof(SyncBlocksResponse))]
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]

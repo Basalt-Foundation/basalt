@@ -115,11 +115,45 @@ services:
     cap_drop:
       - ALL
 
+  rpc-0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: basalt-rpc-0
+    ports:
+      - "5200:5000"
+    environment:
+      - BASALT_MODE=rpc
+      - BASALT_SYNC_SOURCE=http://validator-0:5000
+      - BASALT_NETWORK=basalt-devnet
+      - BASALT_CHAIN_ID=31337
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - rpc-0-data:/data/basalt
+    networks:
+      - basalt-devnet
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    depends_on:
+      validator-0:
+        condition: service_healthy
+
 volumes:
   validator-0-data:
   validator-1-data:
   validator-2-data:
   validator-3-data:
+  rpc-0-data:
 
 networks:
   basalt-devnet:
