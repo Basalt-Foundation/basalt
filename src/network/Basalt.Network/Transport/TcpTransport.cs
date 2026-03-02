@@ -20,8 +20,8 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>NET-H01: Maximum connections per IP address.</summary>
     private const int MaxConnectionsPerIp = 3;
 
-    /// <summary>NET-I02: Default connect timeout.</summary>
-    private static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>NET-I02: Connect timeout. M11: Configurable via constructor.</summary>
+    private readonly TimeSpan _connectTimeout;
 
     private readonly ILogger<TcpTransport> _logger;
     private readonly ConcurrentDictionary<PeerId, PeerConnection> _connections = new();
@@ -39,9 +39,10 @@ public sealed class TcpTransport : IAsyncDisposable
     private CancellationTokenSource? _listenerCts;
     private Task? _acceptLoopTask;
 
-    public TcpTransport(ILogger<TcpTransport> logger)
+    public TcpTransport(ILogger<TcpTransport> logger, TimeSpan? connectTimeout = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(10);
     }
 
     /// <summary>
@@ -106,7 +107,7 @@ public sealed class TcpTransport : IAsyncDisposable
         try
         {
             // NET-I02: Apply connect timeout to avoid blocking for OS TCP timeout (75s-2min)
-            using var cts = new CancellationTokenSource(timeout ?? DefaultConnectTimeout);
+            using var cts = new CancellationTokenSource(timeout ?? _connectTimeout);
             await client.ConnectAsync(host, port, cts.Token).ConfigureAwait(false);
         }
         catch

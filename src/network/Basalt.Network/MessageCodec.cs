@@ -181,6 +181,30 @@ public static class MessageCodec
                 WriteFindNodeResponse(ref writer, findNodeResp);
                 break;
 
+            case DkgDealMessage deal:
+                WriteDkgDeal(ref writer, deal);
+                break;
+
+            case DkgComplaintMessage complaint:
+                WriteDkgComplaint(ref writer, complaint);
+                break;
+
+            case DkgJustificationMessage justification:
+                WriteDkgJustification(ref writer, justification);
+                break;
+
+            case DkgFinalizeMessage finalize:
+                WriteDkgFinalize(ref writer, finalize);
+                break;
+
+            case SolverRegistrationMessage solverReg:
+                WriteSolverRegistration(ref writer, solverReg);
+                break;
+
+            case SolverSolutionMessage solverSol:
+                WriteSolverSolution(ref writer, solverSol);
+                break;
+
             default:
                 throw new ArgumentException($"Unknown message type: {message.GetType().Name}");
         }
@@ -266,6 +290,12 @@ public static class MessageCodec
                 Target = new PeerId(reader.ReadHash256()),
             },
             MessageType.FindNodeResponse => ReadFindNodeResponse(ref reader, senderId, timestamp),
+            MessageType.DkgDeal => ReadDkgDeal(ref reader, senderId, timestamp),
+            MessageType.DkgComplaint => ReadDkgComplaint(ref reader, senderId, timestamp),
+            MessageType.DkgJustification => ReadDkgJustification(ref reader, senderId, timestamp),
+            MessageType.DkgFinalize => ReadDkgFinalize(ref reader, senderId, timestamp),
+            MessageType.SolverRegistration => ReadSolverRegistration(ref reader, senderId, timestamp),
+            MessageType.SolverSolution => ReadSolverSolution(ref reader, senderId, timestamp),
             _ => throw new InvalidOperationException($"Unknown message type: 0x{(byte)type:X2}"),
         };
     }
@@ -717,10 +747,108 @@ public static class MessageCodec
             PruneMessage => 0,
             FindNodeMessage => Hash256.Size,
             FindNodeResponseMessage m => 10 + (m.ClosestPeers.Length * (32 + 256 + 4 + 32)),
+            DkgDealMessage m => 8 + 4 + 10 + (m.Commitments.Length * BlsPublicKey.Size) + EstimateByteArraysSize(m.EncryptedShares),
+            DkgComplaintMessage => 8 + 4 + 4 + 42,
+            DkgJustificationMessage => 8 + 4 + 4 + 42,
+            DkgFinalizeMessage => 8 + BlsPublicKey.Size,
+            SolverRegistrationMessage => PublicKey.Size + 256 + Signature.Size,
+            SolverSolutionMessage m => 8 + 8 + 42 + EstimateByteArraysSize(m.SerializedFills) + 74 + Signature.Size,
             _ => 1024,
         };
 
         return headerSize + payloadEstimate;
+    }
+
+    // ────────── DKG Message Serialization (Phase E3) ──────────
+
+    private static void WriteDkgDeal(ref BasaltWriter writer, DkgDealMessage msg)
+    {
+        writer.WriteUInt64(msg.EpochNumber);
+        writer.WriteUInt32((uint)msg.DealerIndex);
+        writer.WriteVarInt((ulong)msg.Commitments.Length);
+        foreach (var c in msg.Commitments)
+            writer.WriteBlsPublicKey(c);
+        writer.WriteVarInt((ulong)msg.EncryptedShares.Length);
+        foreach (var s in msg.EncryptedShares)
+            writer.WriteBytes(s);
+    }
+
+    private static DkgDealMessage ReadDkgDeal(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        var epoch = reader.ReadUInt64();
+        var dealerIndex = (int)reader.ReadUInt32();
+        var commitCount = (int)reader.ReadVarInt();
+        if (commitCount > MaxArrayCount) throw new InvalidOperationException("Too many DKG commitments");
+        var commitments = new BlsPublicKey[commitCount];
+        for (int i = 0; i < commitCount; i++)
+            commitments[i] = reader.ReadBlsPublicKey();
+        var shareCount = (int)reader.ReadVarInt();
+        if (shareCount > MaxArrayCount) throw new InvalidOperationException("Too many DKG shares");
+        var shares = new byte[shareCount][];
+        for (int i = 0; i < shareCount; i++)
+            shares[i] = reader.ReadBytes().ToArray();
+        return new DkgDealMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            EpochNumber = epoch, DealerIndex = dealerIndex,
+            Commitments = commitments, EncryptedShares = shares,
+        };
+    }
+
+    private static void WriteDkgComplaint(ref BasaltWriter writer, DkgComplaintMessage msg)
+    {
+        writer.WriteUInt64(msg.EpochNumber);
+        writer.WriteUInt32((uint)msg.AccusedDealerIndex);
+        writer.WriteUInt32((uint)msg.ComplainerIndex);
+        writer.WriteBytes(msg.RevealedShare);
+    }
+
+    private static DkgComplaintMessage ReadDkgComplaint(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new DkgComplaintMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            EpochNumber = reader.ReadUInt64(),
+            AccusedDealerIndex = (int)reader.ReadUInt32(),
+            ComplainerIndex = (int)reader.ReadUInt32(),
+            RevealedShare = reader.ReadBytes().ToArray(),
+        };
+    }
+
+    private static void WriteDkgJustification(ref BasaltWriter writer, DkgJustificationMessage msg)
+    {
+        writer.WriteUInt64(msg.EpochNumber);
+        writer.WriteUInt32((uint)msg.DealerIndex);
+        writer.WriteUInt32((uint)msg.ComplainerIndex);
+        writer.WriteBytes(msg.Share);
+    }
+
+    private static DkgJustificationMessage ReadDkgJustification(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new DkgJustificationMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            EpochNumber = reader.ReadUInt64(),
+            DealerIndex = (int)reader.ReadUInt32(),
+            ComplainerIndex = (int)reader.ReadUInt32(),
+            Share = reader.ReadBytes().ToArray(),
+        };
+    }
+
+    private static void WriteDkgFinalize(ref BasaltWriter writer, DkgFinalizeMessage msg)
+    {
+        writer.WriteUInt64(msg.EpochNumber);
+        writer.WriteBlsPublicKey(msg.GroupPublicKey);
+    }
+
+    private static DkgFinalizeMessage ReadDkgFinalize(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new DkgFinalizeMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            EpochNumber = reader.ReadUInt64(),
+            GroupPublicKey = reader.ReadBlsPublicKey(),
+        };
     }
 
     private static int EstimateByteArraysSize(byte[][] arrays)
@@ -732,5 +860,49 @@ public static class MessageCodec
         }
 
         return total;
+    }
+
+    // ────────── Solver Network Message Serialization (Phase E4) ──────────
+
+    private static void WriteSolverRegistration(ref BasaltWriter writer, SolverRegistrationMessage msg)
+    {
+        writer.WritePublicKey(msg.SolverPublicKey);
+        writer.WriteString(msg.Endpoint);
+        writer.WriteSignature(msg.RegistrationSignature);
+    }
+
+    private static SolverRegistrationMessage ReadSolverRegistration(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new SolverRegistrationMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            SolverPublicKey = reader.ReadPublicKey(),
+            Endpoint = reader.ReadString(),
+            RegistrationSignature = reader.ReadSignature(),
+        };
+    }
+
+    private static void WriteSolverSolution(ref BasaltWriter writer, SolverSolutionMessage msg)
+    {
+        writer.WriteUInt64(msg.BlockNumber);
+        writer.WriteUInt64(msg.PoolId);
+        writer.WriteBytes(msg.ClearingPriceBytes);
+        WriteByteArrays(ref writer, msg.SerializedFills);
+        writer.WriteBytes(msg.UpdatedReservesBytes);
+        writer.WriteSignature(msg.SolverSignature);
+    }
+
+    private static SolverSolutionMessage ReadSolverSolution(ref BasaltReader reader, PeerId senderId, long timestamp)
+    {
+        return new SolverSolutionMessage
+        {
+            SenderId = senderId, Timestamp = timestamp,
+            BlockNumber = reader.ReadUInt64(),
+            PoolId = reader.ReadUInt64(),
+            ClearingPriceBytes = reader.ReadBytes().ToArray(),
+            SerializedFills = ReadByteArrays(ref reader),
+            UpdatedReservesBytes = reader.ReadBytes().ToArray(),
+            SolverSignature = reader.ReadSignature(),
+        };
     }
 }

@@ -26,7 +26,8 @@ public partial class BST4626Vault : BST20Token, IBST4626
         _assetAddress = assetAddress;
         _totalAssets = new StorageValue<UInt256>("vault_assets");
         _admin = new StorageMap<string, string>("vault_admin");
-        _admin.Set("admin", Convert.ToHexString(Context.Caller));
+        if (Context.IsDeploying)
+            _admin.Set("admin", Convert.ToHexString(Context.Caller));
     }
 
     // --- Views ---

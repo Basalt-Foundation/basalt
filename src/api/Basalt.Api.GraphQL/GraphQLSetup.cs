@@ -14,6 +14,12 @@ public static class GraphQLSetup
             .AddMutationType<Mutation>()
             .AddMaxExecutionDepthRule(10)
             // M-4: Limit query complexity to prevent expensive nested queries
+            .ModifyCostOptions(opt =>
+            {
+                opt.MaxFieldCost = 500;
+                opt.MaxTypeCost = 500;
+                opt.EnforceCostLimits = true;
+            })
             .ModifyPagingOptions(opt => opt.MaxPageSize = 100)
             .ModifyRequestOptions(opt =>
             {

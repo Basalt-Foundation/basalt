@@ -38,9 +38,19 @@ public enum MessageType : byte
     Graft = 0x52,
     Prune = 0x53,
 
+    // DKG (Distributed Key Generation)
+    DkgDeal = 0x34,
+    DkgComplaint = 0x35,
+    DkgJustification = 0x36,
+    DkgFinalize = 0x37,
+
     // DHT
     FindNode = 0x60,
     FindNodeResponse = 0x61,
+
+    // E4: Solver Network
+    SolverRegistration = 0x74,
+    SolverSolution = 0x75,
 }
 
 /// <summary>
@@ -323,4 +333,138 @@ public sealed class PeerNodeInfo
     public required string Host { get; init; }
     public required int Port { get; init; }
     public required PublicKey PublicKey { get; init; }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DKG (Distributed Key Generation) Messages — Phase E3
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// DKG Deal: a dealer broadcasts Feldman VSS commitment vector and encrypted shares.
+/// Each validator creates one of these at the start of a DKG round.
+/// </summary>
+public sealed class DkgDealMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.DkgDeal;
+
+    /// <summary>Epoch this DKG round is for.</summary>
+    public ulong EpochNumber { get; init; }
+
+    /// <summary>Dealer's validator index in the current validator set.</summary>
+    public int DealerIndex { get; init; }
+
+    /// <summary>
+    /// Feldman commitment vector: C_j = a_j * G1 for j = 0..t.
+    /// Each element is a 48-byte compressed BLS G1 point.
+    /// C_0 is the dealer's public key share.
+    /// </summary>
+    public BlsPublicKey[] Commitments { get; init; } = [];
+
+    /// <summary>
+    /// Encrypted shares for each validator: EncryptedShares[i] = Encrypt(f(i+1), shared_secret_i).
+    /// Each share is encrypted with BLAKE3(dealer_bls_pubkey || recipient_bls_pubkey) as the key.
+    /// </summary>
+    public byte[][] EncryptedShares { get; init; } = [];
+}
+
+/// <summary>
+/// DKG Complaint: a validator accuses a dealer of providing an invalid share.
+/// </summary>
+public sealed class DkgComplaintMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.DkgComplaint;
+
+    /// <summary>Epoch this DKG round is for.</summary>
+    public ulong EpochNumber { get; init; }
+
+    /// <summary>Index of the accused dealer.</summary>
+    public int AccusedDealerIndex { get; init; }
+
+    /// <summary>Index of the complaining validator.</summary>
+    public int ComplainerIndex { get; init; }
+
+    /// <summary>The decrypted share (revealed to prove invalidity).</summary>
+    public byte[] RevealedShare { get; init; } = [];
+}
+
+/// <summary>
+/// DKG Justification: a dealer responds to a complaint by revealing the correct share.
+/// </summary>
+public sealed class DkgJustificationMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.DkgJustification;
+
+    /// <summary>Epoch this DKG round is for.</summary>
+    public ulong EpochNumber { get; init; }
+
+    /// <summary>Index of the justifying dealer.</summary>
+    public int DealerIndex { get; init; }
+
+    /// <summary>Index of the complainer this justification addresses.</summary>
+    public int ComplainerIndex { get; init; }
+
+    /// <summary>The correct share for the complainer (plaintext, for public verification).</summary>
+    public byte[] Share { get; init; } = [];
+}
+
+/// <summary>
+/// DKG Finalize: announces the computed group public key for the epoch.
+/// </summary>
+public sealed class DkgFinalizeMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.DkgFinalize;
+
+    /// <summary>Epoch this DKG round is for.</summary>
+    public ulong EpochNumber { get; init; }
+
+    /// <summary>The group threshold public key (48 bytes BLS G1).</summary>
+    public BlsPublicKey GroupPublicKey { get; init; }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Solver Network Messages — Phase E4
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Solver registration: announces a solver's availability to the network.
+/// </summary>
+public sealed class SolverRegistrationMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.SolverRegistration;
+
+    /// <summary>Ed25519 public key of the solver.</summary>
+    public PublicKey SolverPublicKey { get; init; }
+
+    /// <summary>P2P or HTTP endpoint for direct solver communication.</summary>
+    public string Endpoint { get; init; } = "";
+
+    /// <summary>Ed25519 signature of BLAKE3("basalt-solver-reg-v1" || SolverPublicKey || Endpoint).</summary>
+    public Signature RegistrationSignature { get; init; }
+}
+
+/// <summary>
+/// Solver solution: proposes a batch settlement for a set of intents.
+/// Submitted to the block proposer during the solution window.
+/// </summary>
+public sealed class SolverSolutionMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.SolverSolution;
+
+    /// <summary>Target block number.</summary>
+    public ulong BlockNumber { get; init; }
+
+    /// <summary>Pool ID the settlement applies to.</summary>
+    public ulong PoolId { get; init; }
+
+    /// <summary>Proposed clearing price (token1-per-token0 scaled by 2^64).</summary>
+    public byte[] ClearingPriceBytes { get; init; } = [];
+
+    /// <summary>Serialized fill records.</summary>
+    public byte[][] SerializedFills { get; init; } = [];
+
+    /// <summary>Updated pool reserves (64 bytes: 32B reserve0 + 32B reserve1).</summary>
+    public byte[] UpdatedReservesBytes { get; init; } = [];
+
+    /// <summary>Ed25519 signature of BLAKE3(blockNumber || poolId || clearingPrice).</summary>
+    public Signature SolverSignature { get; init; }
 }

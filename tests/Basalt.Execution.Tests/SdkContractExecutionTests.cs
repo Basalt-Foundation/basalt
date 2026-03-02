@@ -225,7 +225,7 @@ public class SdkContractExecutionTests
     // ---- Execute: unknown selector fails ----
 
     [Fact]
-    public void Execute_UnknownSelector_Throws()
+    public void Execute_UnknownSelector_ReturnsFailed()
     {
         var ctx1 = CreateContext();
         var manifest = BuildBst20Manifest("TestToken", "TST", 18);
@@ -237,11 +237,11 @@ public class SdkContractExecutionTests
         var ctx2 = CreateContext();
         var unknownSelector = new byte[] { 0xFF, 0xFE, 0xFD, 0xFC };
 
-        // The generated Dispatch method throws InvalidOperationException
-        // for unknown selectors, which propagates out of the runtime
-        var act = () => runtime.Execute(storedCode, unknownSelector, ctx2);
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*Unknown selector*");
+        // Unknown selectors return a failed result instead of throwing,
+        // so they don't crash the consensus loop
+        var result = runtime.Execute(storedCode, unknownSelector, ctx2);
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("Unknown selector");
     }
 
     // ---- Deploy different contract types ----

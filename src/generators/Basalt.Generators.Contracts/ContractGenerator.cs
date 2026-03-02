@@ -301,7 +301,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
             }
         }
 
-        // C-01: Check for selector collisions among dispatchable methods
+        // C-01: Check for selector collisions among dispatchable methods (including camelCase aliases)
         var dispatchable = info.Methods.Where(IsMethodDispatchable).ToList();
         var selectorMap = new Dictionary<uint, string>();
         foreach (var method in dispatchable)
@@ -317,6 +317,24 @@ public sealed class ContractGenerator : IIncrementalGenerator
             else
             {
                 selectorMap[sel] = method.Name;
+            }
+
+            // Also check camelCase alias for collisions
+            var camelCase = ToCamelCase(method.Name);
+            if (camelCase != method.Name)
+            {
+                var camelSel = ComputeSelector(camelCase);
+                if (camelSel != sel && selectorMap.TryGetValue(camelSel, out var camelExisting))
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(
+                        SelectorCollision,
+                        Location.None,
+                        camelCase + " (camelCase alias of " + method.Name + ")", camelExisting, camelSel));
+                }
+                else if (camelSel != sel)
+                {
+                    selectorMap[camelSel] = camelCase + " (alias)";
+                }
             }
         }
 
@@ -444,10 +462,26 @@ public sealed class ContractGenerator : IIncrementalGenerator
             sb.AppendLine("        switch (sel)");
             sb.AppendLine("        {");
 
+            // Collect all case labels to avoid duplicate selectors in the switch
+            var emittedSelectors = new HashSet<uint>();
+
             foreach (var method in dispatchable)
             {
                 var selector = ComputeSelector(method.Name);
+                emittedSelectors.Add(selector);
                 sb.AppendLine($"            case 0x{selector:X8}u: // {method.Name}");
+
+                // Emit camelCase alias so callers using e.g. "transfer" instead of "Transfer" are handled
+                var camelCase = ToCamelCase(method.Name);
+                if (camelCase != method.Name)
+                {
+                    var camelSelector = ComputeSelector(camelCase);
+                    if (camelSelector != selector && emittedSelectors.Add(camelSelector))
+                    {
+                        sb.AppendLine($"            case 0x{camelSelector:X8}u: // {camelCase} (camelCase alias)");
+                    }
+                }
+
                 sb.AppendLine("            {");
 
                 if (method.Parameters.Count > 0)
@@ -575,6 +609,16 @@ public sealed class ContractGenerator : IIncrementalGenerator
             hash *= 16777619;
         }
         return hash;
+    }
+
+    /// <summary>
+    /// Convert PascalCase to camelCase (lowercase first character).
+    /// </summary>
+    private static string ToCamelCase(string name)
+    {
+        if (string.IsNullOrEmpty(name) || char.IsLower(name[0]))
+            return name;
+        return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 
     // ---- Data models ----

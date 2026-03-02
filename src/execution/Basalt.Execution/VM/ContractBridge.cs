@@ -29,10 +29,12 @@ public static class ContractBridge
     public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
     {
         // C-5: Serialize SDK contract execution (static Context is not thread-safe)
-        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(30)))
+        // B5: Reduced timeout from 30s to 10s (5× block time) — sufficient for genesis;
+        // longer waits indicate a deadlock or excessively long contract execution.
+        if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(10)))
             throw new InvalidOperationException(
-                "Timed out waiting for SDK contract execution lock. " +
-                "Contract execution must be single-threaded due to static Context/ContractStorage.");
+                "Contract execution lock timeout (10s). " +
+                "Likely deadlock or excessively long contract execution.");
 
         var scope = new BridgeScope();
 
@@ -45,6 +47,7 @@ public static class ContractBridge
         scope.PreviousChainId = Context.ChainId;
         scope.PreviousGasRemaining = Context.GasRemaining;
         scope.PreviousCallDepth = Context.CallDepth;
+        scope.PreviousIsDeploying = Context.IsDeploying;
         scope.PreviousEventEmitted = Context.EventEmitted;
         scope.PreviousNativeTransferHandler = Context.NativeTransferHandler;
         scope.PreviousProvider = ContractStorage.Provider;
@@ -61,6 +64,7 @@ public static class ContractBridge
         // Making it a live delegate would require changing the SDK API (Context.GasRemaining is ulong).
         Context.GasRemaining = ctx.GasMeter.GasRemaining;
         Context.CallDepth = ctx.CallDepth;
+        Context.IsDeploying = false; // Default to false; Deploy() sets true after Setup()
 
         // Wire event handler
         Context.EventEmitted = (eventName, eventData) =>
@@ -124,6 +128,7 @@ public static class ContractBridge
         public uint PreviousChainId;
         public ulong PreviousGasRemaining;
         public int PreviousCallDepth;
+        public bool PreviousIsDeploying;
         public Action<string, object>? PreviousEventEmitted;
         public Action<byte[], UInt256>? PreviousNativeTransferHandler;
         public IStorageProvider PreviousProvider = null!;
@@ -138,6 +143,7 @@ public static class ContractBridge
             Context.ChainId = PreviousChainId;
             Context.GasRemaining = PreviousGasRemaining;
             Context.CallDepth = PreviousCallDepth;
+            Context.IsDeploying = PreviousIsDeploying;
             Context.EventEmitted = PreviousEventEmitted;
             Context.NativeTransferHandler = PreviousNativeTransferHandler;
             ContractStorage.SetProvider(PreviousProvider);

@@ -27,7 +27,8 @@ public partial class BST721Token : IBST721
         _operatorApprovals = new StorageMap<string, bool>("nft_ops");
         _nextTokenId = new StorageValue<ulong>("nft_next_id");
         _contractAdmin = new StorageMap<string, string>("nft_admin");
-        _contractAdmin.Set("owner", AddressKey(Context.Caller));
+        if (Context.IsDeploying)
+            _contractAdmin.Set("owner", AddressKey(Context.Caller));
     }
 
     [BasaltView]

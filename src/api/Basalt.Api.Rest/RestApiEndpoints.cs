@@ -4,6 +4,8 @@ using System.Text.Json.Serialization;
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Execution;
+using Basalt.Execution.Dex;
+using Basalt.Execution.Dex.Math;
 using Basalt.Execution.VM;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -30,7 +32,8 @@ public static class RestApiEndpoints
         IContractRuntime? contractRuntime = null,
         Storage.RocksDb.ReceiptStore? receiptStore = null,
         Microsoft.Extensions.Logging.ILogger? logger = null,
-        ChainParameters? chainParams = null)
+        ChainParameters? chainParams = null,
+        ISolverInfoProvider? solverProvider = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -439,6 +442,11 @@ public static class RestApiEndpoints
                         : Math.Min(1_000_000UL, maxGas);
                     var gasMeter = new GasMeter(effectiveGasLimit);
 
+                    // Charge TxBase + DataGas to match TransactionExecutor.ExecuteContractCall,
+                    // so the returned gasUsed reflects the actual cost of submitting the transaction.
+                    gasMeter.Consume(GasTable.TxBase);
+                    gasMeter.Consume(GasTable.ComputeDataGas(callData));
+
                     // Fork state to prevent read-only calls from mutating canonical state
                     var forkedDb = stateDb.Fork();
 
@@ -466,6 +474,15 @@ public static class RestApiEndpoints
                             : null,
                         GasUsed = gasMeter.GasUsed,
                         Error = result.ErrorMessage,
+                    });
+                }
+                catch (OutOfGasException ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.Ok(new CallResponse
+                    {
+                        Success = false,
+                        GasUsed = ex.GasUsed,
+                        Error = "Out of gas",
                     });
                 }
                 catch (Exception ex)
@@ -748,6 +765,8 @@ public static class RestApiEndpoints
 
         // GET /v1/debug/mempool — diagnostic: show mempool txs with validation results
         // HIGH-2: Only available when BASALT_DEBUG is set
+        // H8/B4: BASALT_DEBUG=1 is blocked on mainnet/testnet by Program.cs guard.
+        // This endpoint exposes internal mempool state for development diagnostics only.
         if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1")
         app.MapGet("/v1/debug/mempool", () =>
         {
@@ -779,7 +798,324 @@ public static class RestApiEndpoints
 
             return Microsoft.AspNetCore.Http.Results.Ok(new { count = pending.Count, transactions = results });
         });
+
+        // ═══ DEX Endpoints ═══
+
+        app.MapGet("/v1/dex/pools", () =>
+        {
+            var dexState = new DexState(stateDb);
+            var poolCount = dexState.GetPoolCount();
+            var pools = new List<DexPoolResponse>();
+
+            for (ulong i = 0; i < poolCount && i < 100; i++)
+            {
+                var meta = dexState.GetPoolMetadata(i);
+                var reserves = dexState.GetPoolReserves(i);
+                if (meta == null) continue;
+
+                pools.Add(DexPoolResponse.From(i, meta.Value, reserves));
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(pools.ToArray());
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}", (ulong poolId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var reserves = dexState.GetPoolReserves(poolId);
+            return Microsoft.AspNetCore.Http.Results.Ok(DexPoolResponse.From(poolId, meta.Value, reserves));
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}/lp/{address}", (ulong poolId, string address) =>
+        {
+            if (!Address.TryFromHexString(address, out var addr))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
+                {
+                    Code = 400,
+                    Message = "Invalid address format.",
+                });
+
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var balance = dexState.GetLpBalance(poolId, addr);
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexLpBalanceResponse
+            {
+                PoolId = poolId,
+                Address = addr.ToHexString(),
+                Balance = balance.ToString(),
+            });
+        });
+
+        // CR-8: Walk per-pool linked list instead of O(totalOrders) global scan
+        app.MapGet("/v1/dex/pools/{poolId}/orders", (ulong poolId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var currentBlock = chainManager.LatestBlockNumber;
+            var orders = new List<DexOrderResponse>();
+            var current = dexState.GetPoolOrderHead(poolId);
+
+            while (current != ulong.MaxValue && orders.Count < 100)
+            {
+                var order = dexState.GetOrder(current);
+                if (order != null)
+                {
+                    bool isExpired = order.Value.ExpiryBlock > 0 && currentBlock > order.Value.ExpiryBlock;
+                    if (!isExpired && !order.Value.Amount.IsZero)
+                        orders.Add(DexOrderResponse.From(current, order.Value));
+                }
+                current = dexState.GetOrderNext(current);
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(orders.ToArray());
+        });
+
+        app.MapGet("/v1/dex/orders/{orderId}", (ulong orderId) =>
+        {
+            var dexState = new DexState(stateDb);
+            var order = dexState.GetOrder(orderId);
+            if (order == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            return Microsoft.AspNetCore.Http.Results.Ok(DexOrderResponse.From(orderId, order.Value));
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}/twap", (ulong poolId, ulong? window) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var currentBlock = chainManager.LatestBlockNumber;
+            var windowBlocks = window ?? 100;
+            var twap = TwapOracle.ComputeTwap(dexState, poolId, currentBlock, windowBlocks);
+            var volatility = TwapOracle.ComputeVolatilityBps(dexState, poolId, currentBlock, windowBlocks);
+
+            var reserves = dexState.GetPoolReserves(poolId);
+            var spotPrice = reserves != null && !reserves.Value.Reserve0.IsZero
+                ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
+                : UInt256.Zero;
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexTwapResponse
+            {
+                PoolId = poolId,
+                Twap = twap.ToString(),
+                SpotPrice = spotPrice.ToString(),
+                VolatilityBps = volatility,
+                WindowBlocks = windowBlocks,
+                CurrentBlock = currentBlock,
+            });
+        });
+
+        app.MapGet("/v1/dex/pools/{poolId}/price-history", (ulong poolId, ulong? startBlock, ulong? endBlock, ulong? interval) =>
+        {
+            var dexState = new DexState(stateDb);
+            var meta = dexState.GetPoolMetadata(poolId);
+            if (meta == null)
+                return Microsoft.AspNetCore.Http.Results.NotFound();
+
+            var currentBlock = chainManager.LatestBlockNumber;
+            var end = endBlock ?? currentBlock;
+            var start = startBlock ?? (end > 200 ? end - 200 : 0);
+            var step = interval ?? 1;
+            if (step == 0) step = 1;
+
+            // Cap at 500 data points — auto-adjust interval upward
+            var totalBlocks = end > start ? end - start : 0;
+            if (totalBlocks / step > 500)
+                step = totalBlocks / 500;
+            if (step == 0) step = 1;
+
+            var blockTimeMs = chainParams?.BlockTimeMs ?? 2000u;
+
+            // Compute current spot price for fallback
+            var reserves = dexState.GetPoolReserves(poolId);
+            var spotPrice = reserves != null && !reserves.Value.Reserve0.IsZero
+                ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
+                : UInt256.Zero;
+
+            // Precompute latest block timestamp for estimation fallback
+            var latestBlock = chainManager.GetBlockByNumber(currentBlock);
+            var latestTs = latestBlock?.Header.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            var points = new List<DexPricePointResponse>();
+            for (ulong b = start; b <= end; b += step)
+            {
+                // Find the snapshot at block b (or scan backwards up to 64 blocks)
+                UInt256? snapshotEnd = null;
+                ulong actualEnd = b;
+                ulong scanFloor = b > 64 ? b - 64 : 0;
+                for (ulong scan = b; scan >= scanFloor; scan--)
+                {
+                    snapshotEnd = dexState.GetTwapSnapshot(poolId, scan);
+                    if (snapshotEnd != null) { actualEnd = scan; break; }
+                    if (scan == 0) break;
+                }
+                if (snapshotEnd == null) continue;
+
+                // Find a prior snapshot to compute average price over the span
+                UInt256? snapshotPrev = null;
+                ulong actualPrev = 0;
+                if (actualEnd > 0)
+                {
+                    ulong prevFloor = actualEnd > 65 ? actualEnd - 65 : 0;
+                    for (ulong scan = actualEnd - 1; scan >= prevFloor; scan--)
+                    {
+                        snapshotPrev = dexState.GetTwapSnapshot(poolId, scan);
+                        if (snapshotPrev != null) { actualPrev = scan; break; }
+                        if (scan == 0) break;
+                    }
+                }
+
+                UInt256 price;
+                if (snapshotPrev != null && actualEnd > actualPrev && snapshotEnd.Value >= snapshotPrev.Value)
+                {
+                    var span = new UInt256(actualEnd - actualPrev);
+                    price = FullMath.MulDiv(snapshotEnd.Value - snapshotPrev.Value, UInt256.One, span);
+                }
+                else
+                {
+                    // No prior snapshot — use spot price as best estimate
+                    price = spotPrice;
+                }
+
+                // Determine timestamp from block header, with estimation fallback
+                long timestamp;
+                var block = chainManager.GetBlockByNumber(b);
+                if (block != null)
+                {
+                    timestamp = block.Header.Timestamp;
+                }
+                else
+                {
+                    timestamp = latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
+                }
+
+                points.Add(new DexPricePointResponse
+                {
+                    Block = b,
+                    Timestamp = timestamp,
+                    Price = price.ToString(),
+                });
+            }
+
+            // If no snapshot data at all, generate spot-price points so the chart is not empty
+            if (points.Count == 0 && !spotPrice.IsZero)
+            {
+                for (ulong b = start; b <= end; b += step)
+                {
+                    var block = chainManager.GetBlockByNumber(b);
+                    var timestamp = block != null
+                        ? block.Header.Timestamp
+                        : latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
+
+                    points.Add(new DexPricePointResponse
+                    {
+                        Block = b,
+                        Timestamp = timestamp,
+                        Price = spotPrice.ToString(),
+                    });
+                }
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexPriceHistoryResponse
+            {
+                PoolId = poolId,
+                Points = points.ToArray(),
+                CurrentBlock = currentBlock,
+                BlockTimeMs = blockTimeMs,
+            });
+        });
+
+        // ═══ Solver Network Endpoints (Phase E4) ═══
+
+        if (solverProvider != null)
+        {
+            app.MapGet("/v1/solvers", () =>
+            {
+                var solvers = solverProvider.GetRegisteredSolvers();
+                return Microsoft.AspNetCore.Http.Results.Ok(solvers);
+            });
+
+            app.MapPost("/v1/solvers/register", (SolverRegistrationRequest request) =>
+            {
+                if (string.IsNullOrEmpty(request.PublicKey) || string.IsNullOrEmpty(request.Endpoint))
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "publicKey and endpoint are required" });
+
+                try
+                {
+                    var pubKeyHex = StripHexPrefix(request.PublicKey);
+                    var pubKeyBytes = Convert.FromHexString(pubKeyHex);
+                    if (pubKeyBytes.Length != 32)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "publicKey must be 32 bytes" });
+
+                    var pubKey = new PublicKey(pubKeyBytes);
+                    var address = Ed25519Signer.DeriveAddress(pubKey);
+                    var registered = solverProvider.RegisterSolver(address, pubKey, request.Endpoint);
+
+                    if (!registered)
+                        return Microsoft.AspNetCore.Http.Results.Conflict(new { error = "Registration failed (max solvers reached)" });
+
+                    return Microsoft.AspNetCore.Http.Results.Ok(new
+                    {
+                        address = address.ToHexString(),
+                        endpoint = request.Endpoint,
+                        status = "registered",
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = ex.Message });
+                }
+            });
+
+            app.MapGet("/v1/dex/intents/pending", () =>
+            {
+                var intents = solverProvider.GetPendingIntentHashes();
+                return Microsoft.AspNetCore.Http.Results.Ok(new
+                {
+                    count = intents.Length,
+                    intentHashes = intents.Select(h => h.ToHexString()).ToArray(),
+                });
+            });
+        }
     }
+}
+
+/// <summary>
+/// Interface for the REST API to query solver network state without depending on Basalt.Node.
+/// </summary>
+public interface ISolverInfoProvider
+{
+    SolverInfoResponse[] GetRegisteredSolvers();
+    bool RegisterSolver(Address address, PublicKey publicKey, string endpoint);
+    Hash256[] GetPendingIntentHashes();
+}
+
+public sealed class SolverInfoResponse
+{
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("endpoint")] public string Endpoint { get; set; } = "";
+    [JsonPropertyName("registeredAt")] public long RegisteredAt { get; set; }
+    [JsonPropertyName("solutionsAccepted")] public int SolutionsAccepted { get; set; }
+    [JsonPropertyName("solutionsRejected")] public int SolutionsRejected { get; set; }
+}
+
+public sealed class SolverRegistrationRequest
+{
+    [JsonPropertyName("publicKey")] public string PublicKey { get; set; } = "";
+    [JsonPropertyName("endpoint")] public string Endpoint { get; set; } = "";
 }
 
 // DTO classes
@@ -1093,6 +1429,88 @@ public sealed class ComplianceProofDto
     }
 }
 
+public sealed class DexPoolResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("token0")] public string Token0 { get; set; } = "";
+    [JsonPropertyName("token1")] public string Token1 { get; set; } = "";
+    [JsonPropertyName("feeBps")] public uint FeeBps { get; set; }
+    [JsonPropertyName("reserve0")] public string Reserve0 { get; set; } = "0";
+    [JsonPropertyName("reserve1")] public string Reserve1 { get; set; } = "0";
+    [JsonPropertyName("totalSupply")] public string TotalSupply { get; set; } = "0";
+
+    public static DexPoolResponse From(ulong poolId, PoolMetadata meta, PoolReserves? reserves)
+    {
+        return new DexPoolResponse
+        {
+            PoolId = poolId,
+            Token0 = meta.Token0.ToHexString(),
+            Token1 = meta.Token1.ToHexString(),
+            FeeBps = meta.FeeBps,
+            Reserve0 = reserves?.Reserve0.ToString() ?? "0",
+            Reserve1 = reserves?.Reserve1.ToString() ?? "0",
+            TotalSupply = reserves?.TotalSupply.ToString() ?? "0",
+        };
+    }
+}
+
+public sealed class DexOrderResponse
+{
+    [JsonPropertyName("orderId")] public ulong OrderId { get; set; }
+    [JsonPropertyName("owner")] public string Owner { get; set; } = "";
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("price")] public string Price { get; set; } = "0";
+    [JsonPropertyName("amount")] public string Amount { get; set; } = "0";
+    [JsonPropertyName("isBuy")] public bool IsBuy { get; set; }
+    [JsonPropertyName("expiryBlock")] public ulong ExpiryBlock { get; set; }
+
+    public static DexOrderResponse From(ulong orderId, LimitOrder order)
+    {
+        return new DexOrderResponse
+        {
+            OrderId = orderId,
+            Owner = order.Owner.ToHexString(),
+            PoolId = order.PoolId,
+            Price = order.Price.ToString(),
+            Amount = order.Amount.ToString(),
+            IsBuy = order.IsBuy,
+            ExpiryBlock = order.ExpiryBlock,
+        };
+    }
+}
+
+public sealed class DexLpBalanceResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("address")] public string Address { get; set; } = "";
+    [JsonPropertyName("balance")] public string Balance { get; set; } = "0";
+}
+
+public sealed class DexTwapResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("twap")] public string Twap { get; set; } = "0";
+    [JsonPropertyName("spotPrice")] public string SpotPrice { get; set; } = "0";
+    [JsonPropertyName("volatilityBps")] public uint VolatilityBps { get; set; }
+    [JsonPropertyName("windowBlocks")] public ulong WindowBlocks { get; set; }
+    [JsonPropertyName("currentBlock")] public ulong CurrentBlock { get; set; }
+}
+
+public sealed class DexPricePointResponse
+{
+    [JsonPropertyName("block")] public ulong Block { get; set; }
+    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
+    [JsonPropertyName("price")] public string Price { get; set; } = "0";
+}
+
+public sealed class DexPriceHistoryResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("points")] public DexPricePointResponse[] Points { get; set; } = [];
+    [JsonPropertyName("currentBlock")] public ulong CurrentBlock { get; set; }
+    [JsonPropertyName("blockTimeMs")] public uint BlockTimeMs { get; set; }
+}
+
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]
@@ -1118,4 +1536,13 @@ public sealed class ComplianceProofDto
 [JsonSerializable(typeof(LogResponse[]))]
 [JsonSerializable(typeof(ComplianceProofDto))]
 [JsonSerializable(typeof(ComplianceProofDto[]))]
+[JsonSerializable(typeof(DexLpBalanceResponse))]
+[JsonSerializable(typeof(DexPoolResponse))]
+[JsonSerializable(typeof(DexPoolResponse[]))]
+[JsonSerializable(typeof(DexOrderResponse))]
+[JsonSerializable(typeof(DexOrderResponse[]))]
+[JsonSerializable(typeof(DexTwapResponse))]
+[JsonSerializable(typeof(DexPricePointResponse))]
+[JsonSerializable(typeof(DexPricePointResponse[]))]
+[JsonSerializable(typeof(DexPriceHistoryResponse))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

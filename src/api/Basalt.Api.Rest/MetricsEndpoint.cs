@@ -11,6 +11,7 @@ namespace Basalt.Api.Rest;
 /// <summary>
 /// Prometheus-compatible /metrics endpoint for monitoring.
 /// Exposes block height, TPS, mempool size, peer count, and timing metrics.
+/// M13: Expanded with peer count, base fee, consensus view, finalization latency, DEX intent count.
 /// </summary>
 public static class MetricsEndpoint
 {
@@ -19,6 +20,13 @@ public static class MetricsEndpoint
     private static long _lastBlockTxCount;
     private static long _currentTpsTicks; // Store as ticks (long) for Interlocked
     private static readonly Stopwatch Uptime = Stopwatch.StartNew();
+
+    // M13: Additional metrics
+    private static long _peerCount;
+    private static long _baseFee;
+    private static long _consensusView;
+    private static long _lastFinalizationLatencyMs;
+    private static long _dexIntentCount;
 
     /// <summary>
     /// Record a produced block for TPS calculation.
@@ -43,6 +51,21 @@ public static class MetricsEndpoint
         Interlocked.Exchange(ref _lastBlockTxCount, txCount);
     }
 
+    /// <summary>M13: Record connected peer count.</summary>
+    public static void RecordPeerCount(int count) => Interlocked.Exchange(ref _peerCount, count);
+
+    /// <summary>M13: Record current base fee (Lo limb for Prometheus u64).</summary>
+    public static void RecordBaseFee(long baseFee) => Interlocked.Exchange(ref _baseFee, baseFee);
+
+    /// <summary>M13: Record current consensus view/block number.</summary>
+    public static void RecordConsensusView(long view) => Interlocked.Exchange(ref _consensusView, view);
+
+    /// <summary>M13: Record block finalization latency in milliseconds.</summary>
+    public static void RecordFinalizationLatency(long latencyMs) => Interlocked.Exchange(ref _lastFinalizationLatencyMs, latencyMs);
+
+    /// <summary>M13: Record DEX intent count in mempool.</summary>
+    public static void RecordDexIntentCount(int count) => Interlocked.Exchange(ref _dexIntentCount, count);
+
     /// <summary>
     /// Map the /metrics endpoint.
     /// </summary>
@@ -53,7 +76,7 @@ public static class MetricsEndpoint
     {
         IResult Handler()
         {
-            var sb = new StringBuilder(2048);
+            var sb = new StringBuilder(4096);
             var latest = chainManager.LatestBlock;
             var blockHeight = latest?.Number ?? 0;
             var mempoolSize = mempool.Count;
@@ -99,6 +122,27 @@ public static class MetricsEndpoint
             sb.AppendLine("# HELP basalt_uptime_seconds Node uptime in seconds.");
             sb.AppendLine("# TYPE basalt_uptime_seconds gauge");
             sb.Append("basalt_uptime_seconds ").AppendLine(Uptime.Elapsed.TotalSeconds.ToString("F0", CultureInfo.InvariantCulture));
+
+            // M13: Additional metrics
+            sb.AppendLine("# HELP basalt_peer_count Number of connected peers.");
+            sb.AppendLine("# TYPE basalt_peer_count gauge");
+            sb.Append("basalt_peer_count ").AppendLine(Interlocked.Read(ref _peerCount).ToString());
+
+            sb.AppendLine("# HELP basalt_base_fee Current base fee.");
+            sb.AppendLine("# TYPE basalt_base_fee gauge");
+            sb.Append("basalt_base_fee ").AppendLine(Interlocked.Read(ref _baseFee).ToString());
+
+            sb.AppendLine("# HELP basalt_consensus_view Current consensus view/block.");
+            sb.AppendLine("# TYPE basalt_consensus_view gauge");
+            sb.Append("basalt_consensus_view ").AppendLine(Interlocked.Read(ref _consensusView).ToString());
+
+            sb.AppendLine("# HELP basalt_finalization_latency_ms Last block finalization latency in milliseconds.");
+            sb.AppendLine("# TYPE basalt_finalization_latency_ms gauge");
+            sb.Append("basalt_finalization_latency_ms ").AppendLine(Interlocked.Read(ref _lastFinalizationLatencyMs).ToString());
+
+            sb.AppendLine("# HELP basalt_dex_intent_count Number of DEX intents in mempool.");
+            sb.AppendLine("# TYPE basalt_dex_intent_count gauge");
+            sb.Append("basalt_dex_intent_count ").AppendLine(Interlocked.Read(ref _dexIntentCount).ToString());
 
             return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
         }

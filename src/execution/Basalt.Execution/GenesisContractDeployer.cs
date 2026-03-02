@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Execution.Dex;
 using Basalt.Execution.VM;
 using Basalt.Storage;
 using Microsoft.Extensions.Logging;
@@ -24,6 +25,7 @@ public static class GenesisContractDeployer
         public static readonly Address SchemaRegistry = MakeSystemAddress(0x1006);
         public static readonly Address IssuerRegistry = MakeSystemAddress(0x1007);
         public static readonly Address BridgeETH = MakeSystemAddress(0x1008);
+        public static readonly Address Dex = DexState.DexAddress;
 
         private static Address MakeSystemAddress(ushort id)
         {
@@ -65,7 +67,31 @@ public static class GenesisContractDeployer
         // BridgeETH (0x0107) — EVM bridge (Ethereum/Polygon)
         DeploySystemContract(stateDb, registry, Addresses.BridgeETH, 0x0107, [], chainId, logger);
 
-        logger?.LogInformation("Deployed {Count} system contracts at genesis", 8);
+        // DEX system account (0x1009) — protocol-native exchange state
+        InitializeDexState(stateDb, logger);
+
+        logger?.LogInformation("Deployed {Count} system contracts and DEX state at genesis", 8);
+    }
+
+    /// <summary>
+    /// Initialize the DEX system account at genesis.
+    /// This creates the account at the well-known DEX address (0x...1009) with
+    /// AccountType.SystemContract so it can hold storage for pool and order data.
+    /// No contract code is deployed — DEX logic is protocol-native.
+    /// </summary>
+    private static void InitializeDexState(IStateDatabase stateDb, ILogger? logger)
+    {
+        stateDb.SetAccount(DexState.DexAddress, new AccountState
+        {
+            Nonce = 0,
+            Balance = UInt256.Zero,
+            StorageRoot = Hash256.Zero,
+            CodeHash = Hash256.Zero,
+            AccountType = AccountType.SystemContract,
+            ComplianceHash = Hash256.Zero,
+        });
+
+        logger?.LogInformation("Initialized DEX state at {Address}", DexState.DexAddress);
     }
 
     private static void DeploySystemContract(

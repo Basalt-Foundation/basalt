@@ -16,6 +16,46 @@ public enum TransactionType : byte
     StakeWithdraw = 4,
     ValidatorRegister = 5,
     ValidatorExit = 6,
+
+    // ── Caldera Fusion DEX ──
+
+    /// <summary>Create a new liquidity pool. Data: [20B token0][20B token1][4B feeBps]</summary>
+    DexCreatePool = 7,
+    /// <summary>Add liquidity to a pool. Data: [8B poolId][32B amt0Desired][32B amt1Desired][32B amt0Min][32B amt1Min]</summary>
+    DexAddLiquidity = 8,
+    /// <summary>Remove liquidity from a pool. Data: [8B poolId][32B shares][32B amt0Min][32B amt1Min]</summary>
+    DexRemoveLiquidity = 9,
+    /// <summary>Batch-auctionable swap intent. Data: [1B version][20B tokenIn][20B tokenOut][32B amountIn][32B minAmountOut][8B deadline][1B flags]</summary>
+    DexSwapIntent = 10,
+    /// <summary>Place a persistent limit order. Data: [8B poolId][32B price][32B amount][1B isBuy][8B expiryBlock]</summary>
+    DexLimitOrder = 11,
+    /// <summary>Cancel a limit order. Data: [8B orderId]</summary>
+    DexCancelOrder = 12,
+    /// <summary>Transfer LP tokens to another address. Data: [8B poolId][20B recipient][32B amount]</summary>
+    DexTransferLp = 13,
+    /// <summary>Approve a spender for LP tokens. Data: [8B poolId][20B spender][32B amount]</summary>
+    DexApproveLp = 14,
+
+    // ── Concentrated Liquidity ──
+
+    /// <summary>Mint a concentrated liquidity position. Data: [8B poolId][4B tickLower][4B tickUpper][32B amount0Desired][32B amount1Desired]</summary>
+    DexMintPosition = 15,
+    /// <summary>Burn (partially or fully) a concentrated liquidity position. Data: [8B positionId][32B liquidityAmount]</summary>
+    DexBurnPosition = 16,
+    /// <summary>Collect accumulated fees from a concentrated position. Data: [8B positionId]</summary>
+    DexCollectFees = 17,
+
+    // ── Encrypted Intents ──
+
+    /// <summary>Encrypted swap intent for threshold-decrypted batch settlement. Data: [8B epoch][32B nonce][encrypted_payload]</summary>
+    DexEncryptedSwapIntent = 18,
+
+    // ── DEX Admin ──
+
+    /// <summary>Admin pause/unpause the DEX. Data: [1B pause (0=unpause, 1=pause)]</summary>
+    DexAdminPause = 19,
+    /// <summary>Admin set a governance parameter. Data: [1B paramId][8B value (BE)]</summary>
+    DexSetParameter = 20,
 }
 
 /// <summary>

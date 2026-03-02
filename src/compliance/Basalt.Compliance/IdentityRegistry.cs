@@ -128,8 +128,10 @@ public sealed class IdentityRegistry
             if (!_attestations.TryGetValue(subjectHex, out var att))
                 return false;
 
-            // Only the original issuer can revoke (or governance — not implemented here)
-            if (ToHex(att.Issuer) != ToHex(issuer))
+            // Only the original issuer or governance can revoke
+            var issuerHex = ToHex(issuer);
+            if (ToHex(att.Issuer) != issuerHex &&
+                (_governanceAddress == null || issuerHex != _governanceAddress))
                 return false;
 
             att.Revoked = true;

@@ -72,10 +72,13 @@ public partial class Governance
         _votingPeriod = new StorageValue<ulong>("gov_vperiod");
         _totalStakeSnapshot = new StorageMap<string, UInt256>("gov_snap");
 
-        _quorumBps.Set(quorumBps);
-        _proposalThreshold.Set(proposalThreshold);
-        _votingPeriod.Set(votingPeriodBlocks);
-        _timelockDelay.Set(timelockDelayBlocks);
+        if (Context.IsDeploying)
+        {
+            _quorumBps.Set(quorumBps);
+            _proposalThreshold.Set(proposalThreshold);
+            _votingPeriod.Set(votingPeriodBlocks);
+            _timelockDelay.Set(timelockDelayBlocks);
+        }
 
         _stakingPoolAddress = new byte[20];
         _stakingPoolAddress[18] = 0x10;

@@ -47,6 +47,19 @@ public static class GasTable
     public const ulong G1Add = 500;
     public const ulong Pairing = 75_000;
 
+    // DEX operations
+    public const ulong DexCreatePool = 100_000;
+    public const ulong DexLiquidity = 80_000;
+    public const ulong DexSwap = 80_000;
+    public const ulong DexLimitOrder = 60_000;
+    public const ulong DexCancelOrder = 40_000;
+    public const ulong DexTransferLp = 40_000;
+    public const ulong DexApproveLp = 30_000;
+    public const ulong DexMintPosition = 120_000;
+    public const ulong DexBurnPosition = 100_000;
+    public const ulong DexCollectFees = 60_000;
+    public const ulong DexEncryptedSwapIntent = 100_000;
+
     // System
     public const ulong Balance = 400;
     public const ulong BlockHash = 20;

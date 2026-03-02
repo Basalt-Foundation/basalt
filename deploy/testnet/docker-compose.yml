@@ -166,4 +166,4 @@ volumes:
 
 networks:
   basalt-testnet:
-    driver: bridge
+    external: true

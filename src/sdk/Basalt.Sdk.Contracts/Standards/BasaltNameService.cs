@@ -21,7 +21,8 @@ public partial class BasaltNameService
         _addresses = new StorageMap<string, string>("bns_addrs");
         _reverse = new StorageMap<string, string>("bns_rev");
         _registrationFee = new StorageValue<UInt256>("bns_fee");
-        _registrationFee.Set(registrationFee);
+        if (Context.IsDeploying)
+            _registrationFee.Set(registrationFee);
     }
 
     /// <summary>

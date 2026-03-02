@@ -20,8 +20,29 @@ namespace Basalt.Compliance;
 public sealed class ZkComplianceVerifier : IComplianceVerifier
 {
     private readonly Func<Hash256, byte[]?> _getVerificationKey;
-    private readonly HashSet<Hash256> _usedNullifiers = new();
+    private readonly Dictionary<Hash256, ulong> _usedNullifiers = new();
     private readonly object _lock = new();
+    private ulong _nullifierWindowBlocks = 256;
+    private ulong _currentBlockNumber;
+
+    /// <summary>
+    /// Number of blocks to retain nullifiers. Nullifiers older than this window are pruned.
+    /// Set to 0 to disable windowed tracking (clears all nullifiers each block).
+    /// </summary>
+    public ulong NullifierWindowBlocks { get => _nullifierWindowBlocks; set => _nullifierWindowBlocks = value; }
+
+    /// <summary>
+    /// Number of nullifiers currently tracked. Useful for testing and metrics.
+    /// </summary>
+    public int NullifierCount { get { lock (_lock) return _usedNullifiers.Count; } }
+
+    /// <summary>
+    /// Add a nullifier directly for a specific block number (testing only).
+    /// </summary>
+    public void TrackNullifier(Hash256 nullifier, ulong blockNumber)
+    {
+        lock (_lock) { _usedNullifiers[nullifier] = blockNumber; }
+    }
 
     /// <summary>
     /// Create a verifier with a VK lookup function.
@@ -126,13 +147,14 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
 
         // 2. HIGH-01: Tentatively consume nullifier before verification to prevent TOCTOU race.
         // Two concurrent threads with the same nullifier could both pass a check-then-consume pattern.
-        // By consuming first, the second thread's Add() returns false immediately.
+        // By consuming first, the second thread sees the key immediately.
         lock (_lock)
         {
-            if (!_usedNullifiers.Add(proof.Nullifier))
+            if (_usedNullifiers.ContainsKey(proof.Nullifier))
                 return ComplianceCheckOutcome.Fail(
-                    BasaltErrorCode.ComplianceProofInvalid,
-                    "Duplicate nullifier: proof has already been used");
+                    BasaltErrorCode.NullifierReplay,
+                    "Duplicate nullifier: proof already used in a recent block");
+            _usedNullifiers[proof.Nullifier] = _currentBlockNumber;
         }
 
         // 3. Lookup verification key for this schema
@@ -188,14 +210,32 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     }
 
     /// <summary>
-    /// Clear used nullifiers (called at the start of each block to allow
-    /// proofs to be reused across blocks — only same-block replay is prevented).
+    /// Clear all used nullifiers (backward-compatible full reset).
     /// </summary>
     public void ResetNullifiers()
     {
         lock (_lock)
         {
             _usedNullifiers.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Windowed nullifier cleanup. Prunes only nullifiers outside the retention window,
+    /// keeping recent nullifiers to prevent cross-block replay.
+    /// </summary>
+    public void ResetNullifiers(ulong currentBlockNumber)
+    {
+        lock (_lock)
+        {
+            _currentBlockNumber = currentBlockNumber;
+            if (_nullifierWindowBlocks == 0) { _usedNullifiers.Clear(); return; }
+            var cutoff = currentBlockNumber > _nullifierWindowBlocks
+                ? currentBlockNumber - _nullifierWindowBlocks : 0;
+            var toRemove = new List<Hash256>();
+            foreach (var (nullifier, blockUsed) in _usedNullifiers)
+                if (blockUsed < cutoff) toRemove.Add(nullifier);
+            foreach (var key in toRemove) _usedNullifiers.Remove(key);
         }
     }
 }

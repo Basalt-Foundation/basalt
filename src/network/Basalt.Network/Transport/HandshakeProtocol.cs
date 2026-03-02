@@ -32,7 +32,8 @@ public sealed class HandshakeProtocol
     /// <summary>NET-C01: Domain separation prefix for HelloAck challenge-response signatures.</summary>
     private static readonly byte[] AckDomain = "basalt-ack-v1"u8.ToArray();
 
-    private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(5);
+    // M11: Configurable handshake timeout (instance field instead of static)
+    private readonly TimeSpan _handshakeTimeout;
 
     /// <summary>NET-C02: Ephemeral X25519 private key for this handshake instance.</summary>
     private byte[]? _ephemeralPrivateKey;
@@ -51,7 +52,8 @@ public sealed class HandshakeProtocol
         Func<Hash256> getBestBlockHash,
         Func<Hash256> getGenesisHash,
         ILogger logger,
-        string? listenAddress = null)
+        string? listenAddress = null,
+        TimeSpan? handshakeTimeout = null)
     {
         _chainId = chainId;
         _localPrivateKey = localPrivateKey;
@@ -64,6 +66,7 @@ public sealed class HandshakeProtocol
         _getBestBlockHash = getBestBlockHash;
         _getGenesisHash = getGenesisHash;
         _logger = logger;
+        _handshakeTimeout = handshakeTimeout ?? TimeSpan.FromSeconds(5);
     }
 
     /// <summary>
@@ -78,7 +81,7 @@ public sealed class HandshakeProtocol
         CancellationToken ct = default)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(HandshakeTimeout);
+        timeoutCts.CancelAfter(_handshakeTimeout);
 
         try
         {
@@ -195,7 +198,7 @@ public sealed class HandshakeProtocol
         CancellationToken ct = default)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(HandshakeTimeout);
+        timeoutCts.CancelAfter(_handshakeTimeout);
 
         try
         {

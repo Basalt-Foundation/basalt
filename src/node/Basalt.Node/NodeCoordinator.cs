@@ -45,6 +45,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     // Compliance
     private readonly IComplianceVerifier? _complianceVerifier;
+
+    // B1: Staking persistence
+    private readonly Basalt.Consensus.Staking.IStakingPersistence? _stakingPersistence;
     private WeightedLeaderSelector? _leaderSelector;
 
     // Network components
@@ -56,6 +59,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Creates a fresh HandshakeProtocol per connection to avoid sharing ephemeral key state.
     /// Each handshake generates its own X25519 key pair, so concurrent connections must not
     /// share the same instance.
+    /// M11: Passes configurable handshake timeout from ChainParameters.
     /// </summary>
     private HandshakeProtocol CreateHandshake() => new(
         _config.ChainId,
@@ -68,7 +72,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         () => _chainManager.LatestBlock?.Hash ?? Hash256.Zero,
         () => _chainManager.GetBlockByNumber(0)?.Hash ?? Hash256.Zero,
         _loggerFactory.CreateLogger<HandshakeProtocol>(),
-        $"validator-{_config.ValidatorIndex}");
+        $"validator-{_config.ValidatorIndex}",
+        TimeSpan.FromMilliseconds(_chainParams.P2PHandshakeTimeoutMs));
 
     // Consensus
     private BasaltBft? _consensus;
@@ -81,6 +86,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private BlockBuilder? _blockBuilder;
     private TransactionExecutor? _txExecutor;
     private Address _proposerAddress;
+
+    // Solver network (Phase E4)
+    private Solver.SolverManager? _solverManager;
+
+    /// <summary>
+    /// Exposes the solver manager for wiring into the REST API adapter.
+    /// </summary>
+    public Solver.SolverManager? SolverManager => _solverManager;
 
     // Runtime
     private CancellationTokenSource? _cts;
@@ -105,6 +118,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     /// <summary>LOW-N01: Timestamp of last sync rate-limit eviction run.</summary>
     private long _lastSyncEvictionTime;
+
+    // Circuit breaker: halt proposals after consecutive finalization failures
+    private int _consecutiveFinalizationFailures;
+    private const int CircuitBreakerThreshold = 5;
+    private volatile bool _circuitBreakerTripped;
 
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
@@ -132,7 +150,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         ReceiptStore? receiptStore = null,
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
-        IComplianceVerifier? complianceVerifier = null)
+        IComplianceVerifier? complianceVerifier = null,
+        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null)
     {
         // MEDIUM-01: Validate chain parameters at startup to catch misconfigurations early.
         chainParams.Validate();
@@ -151,6 +170,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _stakingState = stakingState;
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
+        _stakingPersistence = stakingPersistence;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -332,7 +352,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _peerManager = new PeerManager(_loggerFactory.CreateLogger<PeerManager>());
         _gossip = new GossipService(_peerManager, _loggerFactory.CreateLogger<GossipService>());
         _episub = new EpisubService(_peerManager, _loggerFactory.CreateLogger<EpisubService>());
-        _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>());
+        // M11: Pass configurable connect timeout from ChainParameters
+        _transport = new TcpTransport(_loggerFactory.CreateLogger<TcpTransport>(),
+            TimeSpan.FromMilliseconds(_chainParams.P2PConnectTimeoutMs));
 
         // Send our validator identity as "validator-N" so peers can map us in their ValidatorSet.
         // HandshakeProtocol is now created per-connection via CreateHandshake()
@@ -434,6 +456,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void SetupPipelinedConsensus()
     {
         var lastFinalized = _chainManager.LatestBlockNumber;
+        // M10: Pass configurable consensus timeout from ChainParameters
         _pipelinedConsensus = new PipelinedConsensus(
             _validatorSet!,
             _localPeerId,
@@ -441,7 +464,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _blsSigner,
             _loggerFactory.CreateLogger<PipelinedConsensus>(),
             lastFinalized,
-            _chainParams.ChainId);
+            _chainParams.ChainId,
+            TimeSpan.FromMilliseconds(_chainParams.ConsensusTimeoutMs));
 
         // When a block is finalized by pipelined consensus, apply it
         _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;
@@ -468,11 +492,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
-            // COMPL-07: Reset nullifiers at block boundary to bound memory and prevent same-block replay.
+            // COMPL-07: Windowed nullifier reset — prunes nullifiers outside the retention window
+            // while keeping recent ones to prevent cross-block replay attacks.
             // LOW-03 R3: This runs before executing the finalized block's transactions. Safe because
             // HandleBlockFinalized and block building run on the same thread (consensus callback path),
             // so no concurrent block proposal can observe cleared nullifiers mid-finalization.
-            _complianceVerifier?.ResetNullifiers();
+            _complianceVerifier?.ResetNullifiers(block.Number);
+
+            // M16: Block timestamp validation — reject blocks with invalid timestamps
+            var parentBlock = _chainManager.LatestBlock;
+            if (parentBlock != null)
+            {
+                if (block.Header.Timestamp < parentBlock.Header.Timestamp)
+                {
+                    _logger.LogError("Block #{Num} rejected: timestamp {BlockTs} before parent {ParentTs}",
+                        block.Number, block.Header.Timestamp, parentBlock.Header.Timestamp);
+                    return; // Skip finalization
+                }
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var maxDrift = (long)_chainParams.BlockTimeMs * 15; // 15 blocks of drift allowed (~30s at 2s blocks)
+                if (block.Header.Timestamp > now + maxDrift)
+                {
+                    _logger.LogError("Block #{Num} rejected: timestamp {Ahead}ms ahead of local time (max drift: {MaxDrift}ms)",
+                        block.Number, block.Header.Timestamp - now, maxDrift);
+                    return; // Skip finalization
+                }
+            }
 
             // All validators execute finalized transactions against canonical state.
             // Proposals use a forked state, so the leader's live state is never speculatively mutated.
@@ -487,20 +532,53 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 block.Receipts = receipts;
             }
 
+            // Run DEX settlement on canonical state (TWAP carry-forward + limit order matching)
+            if (_blockBuilder != null)
+            {
+                var dexReceipts = _blockBuilder.ApplyDexSettlement(_stateDb, block.Header);
+                if (dexReceipts.Count > 0)
+                {
+                    block.Receipts ??= new List<TransactionReceipt>();
+                    block.Receipts.AddRange(dexReceipts);
+                }
+            }
+
             var result = _chainManager.AddBlock(block);
             if (result.IsSuccess)
             {
                 _mempool.RemoveConfirmed(block.Transactions);
 
-                // Prune stale/underpriced transactions that can no longer be included
+                // Prune stale, underpriced, or unaffordable transactions
                 var pruned = _mempool.PruneStale(_stateDb, block.Header.BaseFee);
                 if (pruned > 0)
-                    _logger.LogInformation("Pruned {Count} stale/underpriced transactions from mempool", pruned);
+                    _logger.LogInformation("Pruned {Count} unexecutable transactions from mempool", pruned);
+
+                // Update mempool admission gate so new submissions below the current base fee are rejected early
+                _mempool.UpdateBaseFee(block.Header.BaseFee);
+
+                // Circuit breaker: reset on success
+                Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
+                if (_circuitBreakerTripped)
+                {
+                    _circuitBreakerTripped = false;
+                    _logger.LogWarning("Circuit breaker reset after successful block finalization");
+                }
 
                 MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
+
+                // M13: Record additional Prometheus metrics
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var prevFinalizedMs = Volatile.Read(ref _lastBlockFinalizedAtMs);
+                if (prevFinalizedMs > 0)
+                    MetricsEndpoint.RecordFinalizationLatency(nowMs - prevFinalizedMs);
+                MetricsEndpoint.RecordBaseFee(block.Header.BaseFee.IsZero ? 0 : (long)(ulong)block.Header.BaseFee);
+                MetricsEndpoint.RecordConsensusView((long)block.Number);
+                MetricsEndpoint.RecordPeerCount(_peerManager?.ConnectedCount ?? 0);
+                MetricsEndpoint.RecordDexIntentCount(_mempool.DexIntentCount);
+
                 _ = _wsHandler.BroadcastNewBlock(block);
 
-                Volatile.Write(ref _lastBlockFinalizedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                Volatile.Write(ref _lastBlockFinalizedAtMs, nowMs);
 
                 // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
                 // This preserves recent evidence for double-sign detection while preventing unbounded growth.
@@ -545,6 +623,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 _logger.LogError("Failed to add consensus-finalized block #{Number}: {Error}",
                     block.Number, result.Message);
 
+                // Circuit breaker: increment failure count
+                var failures = Interlocked.Increment(ref _consecutiveFinalizationFailures);
+                if (failures >= CircuitBreakerThreshold && !_circuitBreakerTripped)
+                {
+                    _circuitBreakerTripped = true;
+                    _logger.LogCritical(
+                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals.", failures);
+                }
+
                 // If we're behind (block number > our tip + 1), trigger a sync
                 // to catch up on missed blocks before the next round.
                 if (block.Number > _chainManager.LatestBlockNumber + 1)
@@ -578,6 +665,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // the leader's block building uses the same staking/compliance-aware executor.
         _blockBuilder = new BlockBuilder(_chainParams, _txExecutor, _loggerFactory.CreateLogger<BlockBuilder>());
 
+        // E4: Initialize solver manager and wire it to the block builder
+        _solverManager = new Solver.SolverManager(
+            _chainParams, _loggerFactory.CreateLogger<Solver.SolverManager>())
+        {
+            SolutionWindowMs = _chainParams.SolverWindowMs,
+            MaxSolvers = _chainParams.MaxSolvers,
+        };
+        _blockBuilder.ExternalSolverProvider = (poolId, buys, sells, reserves, feeBps,
+            intentMinAmounts, stateDb, dexState, intentTxMap) =>
+            _solverManager.GetBestSettlement(
+                poolId, buys, sells, reserves, feeBps,
+                intentMinAmounts, stateDb, dexState, intentTxMap);
+
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
 
@@ -603,6 +703,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void TryProposeBlockSequential()
     {
+        if (_circuitBreakerTripped) return;
+
         if (!_consensus!.IsLeader || _consensus.State != ConsensusState.Proposing)
             return;
 
@@ -616,8 +718,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
+        var dexStateP = new Basalt.Execution.Dex.DexState(_stateDb);
+        var effectiveMaxIntents = dexStateP.GetEffectiveMaxIntentsPerBatch(_chainParams);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _consensus.ProposeBlock(blockData, block.Hash);
@@ -625,13 +730,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (proposal != null)
         {
             _gossip!.BroadcastConsensusMessage(proposal);
-            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, BlockTxs: {BlockTxs}",
-                block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, block.Transactions.Count);
+            _logger.LogInformation("Proposed block #{Number} for consensus. Hash: {Hash}, Mempool: {MempoolCount}, DexIntents: {IntentCount}, BlockTxs: {BlockTxs}",
+                block.Number, block.Hash.ToHexString()[..18] + "...", pendingTxs.Count, pendingDexIntents.Count, block.Transactions.Count);
         }
     }
 
     private void TryProposeBlockPipelined()
     {
+        if (_circuitBreakerTripped) return;
+
         // Block time pacing
         var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
         if (elapsedMs < _chainParams.BlockTimeMs)
@@ -652,8 +759,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return;
 
         var pendingTxs = _mempool.GetPending((int)_chainParams.MaxTransactionsPerBlock, _stateDb);
+        var dexStateP2 = new Basalt.Execution.Dex.DexState(_stateDb);
+        var effectiveMaxIntents2 = dexStateP2.GetEffectiveMaxIntentsPerBatch(_chainParams);
+        var pendingDexIntents = _mempool.GetPendingDexIntents((int)effectiveMaxIntents2, _stateDb);
         var proposalState = _stateDb.Fork();
-        var block = _blockBuilder!.BuildBlock(pendingTxs, proposalState, parentBlock.Header, _proposerAddress);
+        var block = _blockBuilder!.BuildBlockWithDex(pendingTxs, pendingDexIntents, proposalState, parentBlock.Header, _proposerAddress);
 
         var blockData = BlockCodec.SerializeBlock(block);
         var proposal = _pipelinedConsensus.StartRound(nextBlock, blockData, block.Hash);
@@ -661,8 +771,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (proposal != null)
         {
             _gossip!.BroadcastConsensusMessage(proposal);
-            _logger.LogInformation("Proposed pipelined block #{Number}. Active rounds: {Active}",
-                nextBlock, _pipelinedConsensus.ActiveRoundCount);
+            _logger.LogInformation("Proposed pipelined block #{Number}. DexIntents: {IntentCount}, Active rounds: {Active}",
+                nextBlock, pendingDexIntents.Count, _pipelinedConsensus.ActiveRoundCount);
         }
     }
 
@@ -749,6 +859,103 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// <summary>
     /// Extract validator index from Docker-style hostname (e.g., "validator-2" → 2).
     /// </summary>
+    // ────────── Solver Network Handlers (Phase E4) ──────────
+
+    private void HandleSolverRegistration(PeerId sender, SolverRegistrationMessage msg)
+    {
+        if (_solverManager == null) return;
+
+        var solverAddress = Ed25519Signer.DeriveAddress(msg.SolverPublicKey);
+        var registered = _solverManager.RegisterSolver(solverAddress, msg.SolverPublicKey, msg.Endpoint);
+
+        if (registered)
+            _logger.LogInformation("Solver {Address} registered from peer {Sender}", solverAddress, sender);
+        else
+            _logger.LogDebug("Solver registration rejected from peer {Sender}", sender);
+    }
+
+    private void HandleSolverSolution(PeerId sender, SolverSolutionMessage msg)
+    {
+        if (_solverManager == null) return;
+
+        // Deserialize the solution into a SolverSolution
+        var clearingPrice = new UInt256(msg.ClearingPriceBytes);
+        var fills = DeserializeFills(msg.SerializedFills);
+        var updatedReserves = DeserializeReserves(msg.UpdatedReservesBytes);
+
+        // Derive solver address from the signature verification context
+        // (We look up all registered solvers and try to match)
+        var signData = Solver.SolverManager.ComputeSolutionSignData(msg.BlockNumber, msg.PoolId, clearingPrice);
+        Address? solverAddress = null;
+        foreach (var solver in _solverManager.GetRegisteredSolvers())
+        {
+            if (Ed25519Signer.Verify(solver.PublicKey, signData, msg.SolverSignature))
+            {
+                solverAddress = solver.Address;
+                break;
+            }
+        }
+
+        if (solverAddress == null)
+        {
+            _logger.LogDebug("Solver solution from {Sender}: signature doesn't match any registered solver", sender);
+            return;
+        }
+
+        var solution = new Solver.SolverSolution
+        {
+            BlockNumber = msg.BlockNumber,
+            PoolId = msg.PoolId,
+            ClearingPrice = clearingPrice,
+            Result = new Execution.Dex.BatchResult
+            {
+                PoolId = msg.PoolId,
+                ClearingPrice = clearingPrice,
+                Fills = fills,
+                UpdatedReserves = updatedReserves,
+            },
+            SolverAddress = solverAddress.Value,
+            SolverSignature = msg.SolverSignature,
+        };
+
+        _solverManager.SubmitSolution(solution);
+    }
+
+    private static List<Execution.Dex.FillRecord> DeserializeFills(byte[][] serialized)
+    {
+        var fills = new List<Execution.Dex.FillRecord>();
+        foreach (var data in serialized)
+        {
+            if (data.Length < 20 + 32 + 32 + 1 + 32) continue; // min: addr + in + out + isLimit + txHash
+            var participant = new Address(data.AsSpan(0, 20));
+            var amountIn = new UInt256(data.AsSpan(20, 32));
+            var amountOut = new UInt256(data.AsSpan(52, 32));
+            var isLimit = data[84] != 0;
+            var txHash = new Hash256(data.AsSpan(85, 32));
+            fills.Add(new Execution.Dex.FillRecord
+            {
+                Participant = participant,
+                AmountIn = amountIn,
+                AmountOut = amountOut,
+                IsLimitOrder = isLimit,
+                TxHash = txHash,
+            });
+        }
+        return fills;
+    }
+
+    private static Execution.Dex.PoolReserves DeserializeReserves(byte[] data)
+    {
+        if (data.Length < 64)
+            return new Execution.Dex.PoolReserves();
+
+        return new Execution.Dex.PoolReserves
+        {
+            Reserve0 = new UInt256(data.AsSpan(0, 32)),
+            Reserve1 = new UInt256(data.AsSpan(32, 32)),
+        };
+    }
+
     private static bool TryParseValidatorIndex(string hostname, out int index)
     {
         index = -1;
@@ -853,6 +1060,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
             case PingMessage:
                 var pong = new PongMessage { SenderId = _localPeerId, Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
                 _ = _transport!.SendAsync(sender, MessageCodec.Serialize(pong));
+                break;
+
+            case SolverRegistrationMessage solverReg:
+                HandleSolverRegistration(sender, solverReg);
+                break;
+
+            case SolverSolutionMessage solverSol:
+                HandleSolverSolution(sender, solverSol);
                 break;
 
             default:
@@ -1134,6 +1349,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     block.Receipts = receipts;
                 }
 
+                // Run DEX settlement on forked state (TWAP carry-forward + limit order matching)
+                if (_blockBuilder != null)
+                {
+                    var dexReceipts = _blockBuilder.ApplyDexSettlement(forkedState, block.Header);
+                    if (dexReceipts.Count > 0)
+                    {
+                        block.Receipts ??= new List<TransactionReceipt>();
+                        block.Receipts.AddRange(dexReceipts);
+                    }
+                }
+
                 blocksToApply.Add((block, blockBytes, idx));
             }
             catch (Exception ex)
@@ -1380,8 +1606,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private async Task ReconnectLoop(CancellationToken ct)
     {
-        // Wait for initial connections to settle
+        // M14: Exponential backoff with jitter for reconnection
         await Task.Delay(3000, ct);
+        const int baseDelayMs = 5000;
+        const int maxDelayMs = 60_000;
+        var currentDelayMs = baseDelayMs;
 
         while (!ct.IsCancellationRequested)
         {
@@ -1390,14 +1619,29 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var expectedPeerCount = _config.Peers.Length;
                 var connectedCount = _peerManager!.ConnectedCount;
 
+                // M13: Update peer count metric
+                MetricsEndpoint.RecordPeerCount(connectedCount);
+
                 if (connectedCount < expectedPeerCount)
                 {
                     _logger.LogInformation("Only {Connected}/{Expected} peers connected, reconnecting...",
                         connectedCount, expectedPeerCount);
                     await ConnectToStaticPeers();
+
+                    // If still not fully connected, increase backoff
+                    if (_peerManager.ConnectedCount < expectedPeerCount)
+                        currentDelayMs = Math.Min(currentDelayMs * 2, maxDelayMs);
+                    else
+                        currentDelayMs = baseDelayMs; // Reset on full connectivity
+                }
+                else
+                {
+                    currentDelayMs = baseDelayMs; // Reset when healthy
                 }
 
-                await Task.Delay(5000, ct);
+                // Add jitter (±20%)
+                var jitter = Random.Shared.Next(-currentDelayMs / 5, currentDelayMs / 5);
+                await Task.Delay(currentDelayMs + jitter, ct);
             }
             catch (OperationCanceledException)
             {
@@ -1674,6 +1918,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
             var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
             foreach (var key in oldKeys)
                 _proposalsByView.TryRemove(key, out _);
+        }
+
+        // B1: Flush staking state after epoch transition
+        if (_stakingPersistence != null && _stakingState != null)
+        {
+            try
+            {
+                _stakingState.FlushToPersistence(_stakingPersistence);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to flush staking state after epoch transition");
+            }
         }
 
         _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",

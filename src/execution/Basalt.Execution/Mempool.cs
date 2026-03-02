@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Basalt.Core;
+using Basalt.Execution.Dex;
 using Basalt.Storage;
 
 namespace Basalt.Execution;
@@ -20,10 +21,21 @@ public sealed class Mempool
     private const int MaxTransactionsPerSender = 64;
 
     /// <summary>
+    /// Separate queue for DexSwapIntent transactions.
+    /// Swap intents are batch-settled by the BlockBuilder rather than executed individually,
+    /// so they need separate tracking for efficient retrieval during block building.
+    /// </summary>
+    private readonly Dictionary<Hash256, Transaction> _dexIntentTransactions = new();
+    private readonly SortedSet<MempoolEntry> _dexIntentEntries = new(MempoolEntryComparer.Instance);
+
+    /// <summary>
     /// Optional transaction validator for pre-admission validation (M-2).
     /// </summary>
     private readonly TransactionValidator? _validator;
     private readonly IStateDatabase? _validationStateDb;
+
+    private UInt256 _currentBaseFee = UInt256.Zero;
+    private readonly uint _maxTransactionDataBytes;
 
     /// <summary>
     /// Fired when a transaction is successfully added to the mempool.
@@ -46,9 +58,18 @@ public sealed class Mempool
         _validationStateDb = stateDb;
     }
 
+    /// <summary>
+    /// Create a mempool with pre-admission validation and data size limits.
+    /// </summary>
+    public Mempool(int maxSize, TransactionValidator validator, IStateDatabase stateDb, uint maxTransactionDataBytes)
+        : this(maxSize, validator, stateDb)
+    {
+        _maxTransactionDataBytes = maxTransactionDataBytes;
+    }
+
     public int Count
     {
-        get { lock (_lock) return _transactions.Count; }
+        get { lock (_lock) return _transactions.Count + _dexIntentTransactions.Count; }
     }
 
     /// <summary>
@@ -59,6 +80,14 @@ public sealed class Mempool
     /// the caller handles gossip separately (e.g., peer-received transactions).</param>
     public bool Add(Transaction tx, bool raiseEvent = true)
     {
+        // CR-4: Read base fee under lock to prevent torn reads on multi-word UInt256
+        UInt256 baseFee;
+        lock (_lock) { baseFee = _currentBaseFee; }
+        if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+            return false;
+        if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
+            return false;
+
         // M-2: Pre-admission validation (signature, nonce, balance, gas)
         // MED-01: Fork the state DB to isolate validation reads from concurrent block execution writes.
         if (_validator != null && _validationStateDb != null)
@@ -68,6 +97,14 @@ public sealed class Mempool
             if (!validation.IsSuccess)
                 return false;
         }
+
+        // Pre-validate plaintext intents: reject unparseable intents early
+        if (tx.Type == TransactionType.DexSwapIntent && ParsedIntent.Parse(tx) == null)
+            return false;
+
+        // Route DexSwapIntent and DexEncryptedSwapIntent transactions to the separate intent pool
+        if (tx.Type == TransactionType.DexSwapIntent || tx.Type == TransactionType.DexEncryptedSwapIntent)
+            return AddToDexIntentPool(tx, raiseEvent);
 
         bool added;
         lock (_lock)
@@ -237,18 +274,103 @@ public sealed class Mempool
                     _orderedEntries.Remove(new MempoolEntry(existing));
                     DecrementSenderCount(existing.Sender);
                 }
+                else if (_dexIntentTransactions.Remove(tx.Hash, out var intentTx))
+                {
+                    _dexIntentEntries.Remove(new MempoolEntry(intentTx));
+                    DecrementSenderCount(intentTx.Sender);
+                }
             }
         }
     }
 
     /// <summary>
-    /// Remove transactions that are no longer executable: stale nonces (already confirmed)
-    /// or gas price below the current base fee.
+    /// Get pending DEX swap intents for batch auction settlement.
+    /// Returns intents ordered by fee priority. Within the batch auction, order doesn't affect
+    /// the clearing price (uniform pricing), but fee priority determines block inclusion.
+    /// </summary>
+    /// <param name="maxCount">Maximum number of intents to return.</param>
+    /// <param name="stateDb">Optional state database for nonce validation.</param>
+    /// <returns>List of swap intent transactions.</returns>
+    public List<Transaction> GetPendingDexIntents(int maxCount, IStateDatabase? stateDb = null)
+    {
+        lock (_lock)
+        {
+            var result = new List<Transaction>();
+            foreach (var entry in _dexIntentEntries)
+            {
+                if (result.Count >= maxCount) break;
+
+                // Optional nonce check
+                if (stateDb != null)
+                {
+                    var account = stateDb.GetAccount(entry.Transaction.Sender);
+                    var expectedNonce = account?.Nonce ?? 0;
+                    if (entry.Transaction.Nonce != expectedNonce)
+                        continue;
+                }
+
+                result.Add(entry.Transaction);
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Get the number of pending DEX swap intents.
+    /// </summary>
+    public int DexIntentCount
+    {
+        get { lock (_lock) return _dexIntentTransactions.Count; }
+    }
+
+    private bool AddToDexIntentPool(Transaction tx, bool raiseEvent)
+    {
+        // CR-4: Read base fee under lock to prevent torn reads on multi-word UInt256
+        UInt256 baseFee;
+        lock (_lock) { baseFee = _currentBaseFee; }
+        if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+            return false;
+        if (_maxTransactionDataBytes > 0 && tx.Data.Length > _maxTransactionDataBytes)
+            return false;
+
+        bool added;
+        lock (_lock)
+        {
+            if (_dexIntentTransactions.ContainsKey(tx.Hash))
+                return false;
+            if (_transactions.ContainsKey(tx.Hash))
+                return false;
+
+            // M-08: DEX intent pool size limit
+            if (_dexIntentTransactions.Count >= _maxSize)
+                return false;
+
+            // M-1: Per-sender limit applies across both pools
+            _perSenderCount.TryGetValue(tx.Sender, out var senderCount);
+            if (senderCount >= MaxTransactionsPerSender)
+                return false;
+
+            _dexIntentTransactions[tx.Hash] = tx;
+            _dexIntentEntries.Add(new MempoolEntry(tx));
+            _perSenderCount[tx.Sender] = senderCount + 1;
+            added = true;
+        }
+
+        if (added && raiseEvent)
+            OnTransactionAdded?.Invoke(tx);
+
+        return added;
+    }
+
+    /// <summary>
+    /// Remove transactions that are no longer executable: stale nonces (already confirmed),
+    /// gas price below the current base fee, or insufficient balance for value + gas.
     /// Returns the number of evicted transactions.
     /// </summary>
     public int PruneStale(IStateDatabase stateDb, UInt256 baseFee)
     {
         var toRemove = new List<Hash256>();
+        var toRemoveIntents = new List<Hash256>();
         lock (_lock)
         {
             foreach (var tx in _transactions.Values)
@@ -267,6 +389,53 @@ public sealed class Mempool
                 if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
                 {
                     toRemove.Add(tx.Hash);
+                    continue;
+                }
+
+                // Unaffordable: sender cannot cover value + gas at current balance
+                var balance = account?.Balance ?? UInt256.Zero;
+                var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+                if (UInt256.TryAdd(tx.Value, gasCost, out var totalCost))
+                {
+                    if (balance < totalCost)
+                        toRemove.Add(tx.Hash);
+                }
+                else
+                {
+                    // Overflow means cost is impossibly large — evict
+                    toRemove.Add(tx.Hash);
+                }
+            }
+
+            // M-09: Parallel pruning of DEX intent transactions
+            foreach (var tx in _dexIntentTransactions.Values)
+            {
+                var account = stateDb.GetAccount(tx.Sender);
+                var onChainNonce = account?.Nonce ?? 0;
+
+                if (tx.Nonce < onChainNonce)
+                {
+                    toRemoveIntents.Add(tx.Hash);
+                    continue;
+                }
+
+                if (!baseFee.IsZero && tx.EffectiveMaxFee < baseFee)
+                {
+                    toRemoveIntents.Add(tx.Hash);
+                    continue;
+                }
+
+                // Unaffordable: sender cannot cover value + gas at current balance
+                var balance = account?.Balance ?? UInt256.Zero;
+                var gasCost = tx.EffectiveMaxFee * new UInt256(tx.GasLimit);
+                if (UInt256.TryAdd(tx.Value, gasCost, out var totalCost))
+                {
+                    if (balance < totalCost)
+                        toRemoveIntents.Add(tx.Hash);
+                }
+                else
+                {
+                    toRemoveIntents.Add(tx.Hash);
                 }
             }
 
@@ -278,8 +447,28 @@ public sealed class Mempool
                     DecrementSenderCount(existing.Sender);
                 }
             }
+
+            foreach (var hash in toRemoveIntents)
+            {
+                if (_dexIntentTransactions.Remove(hash, out var existing))
+                {
+                    _dexIntentEntries.Remove(new MempoolEntry(existing));
+                    DecrementSenderCount(existing.Sender);
+                }
+            }
         }
-        return toRemove.Count;
+        return toRemove.Count + toRemoveIntents.Count;
+    }
+
+    /// <summary>
+    /// Update the current base fee used for admission gating.
+    /// Called after each block finalization so newly submitted transactions
+    /// that can't cover the current base fee are rejected early.
+    /// </summary>
+    // CR-4: Use lock to prevent torn reads on multi-word UInt256 struct
+    public void UpdateBaseFee(UInt256 baseFee)
+    {
+        lock (_lock) { _currentBaseFee = baseFee; }
     }
 
     private void DecrementSenderCount(Address sender)
@@ -296,13 +485,19 @@ public sealed class Mempool
     public bool Contains(Hash256 txHash)
     {
         lock (_lock)
-            return _transactions.ContainsKey(txHash);
+            return _transactions.ContainsKey(txHash) || _dexIntentTransactions.ContainsKey(txHash);
     }
 
     public Transaction? Get(Hash256 txHash)
     {
         lock (_lock)
-            return _transactions.TryGetValue(txHash, out var tx) ? tx : null;
+        {
+            if (_transactions.TryGetValue(txHash, out var tx))
+                return tx;
+            if (_dexIntentTransactions.TryGetValue(txHash, out var intentTx))
+                return intentTx;
+            return null;
+        }
     }
 }
 

@@ -20,6 +20,12 @@ http://basalt.foundation {
 	import security_headers
 }
 
+# ─── Caldera DEX (caldera.basalt.foundation) ─────────────────────
+http://caldera.basalt.foundation {
+	reverse_proxy caldera:3000
+	import security_headers
+}
+
 # ─── Testnet (testnet.basalt.foundation or any other host) ─────────
 :80 {
 	# REST API

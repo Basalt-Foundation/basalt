@@ -76,12 +76,67 @@ public enum BasaltErrorCode
     AttestationExpired = 7007,
     ComplianceProofInvalid = 7008,
     ComplianceProofMissing = 7009,
+    NullifierReplay = 7010,
 
     // Staking errors (8xxx)
     StakeBelowMinimum = 8001,
     ValidatorAlreadyRegistered = 8002,
     ValidatorNotRegistered = 8003,
     StakingNotAvailable = 8004,
+
+    // DEX errors (10xxx)
+    /// <summary>Pool does not exist for the given ID.</summary>
+    DexPoolNotFound = 10001,
+    /// <summary>Pool already exists for this token pair and fee tier.</summary>
+    DexPoolAlreadyExists = 10002,
+    /// <summary>Token pair is invalid (e.g. identical addresses).</summary>
+    DexInvalidPair = 10003,
+    /// <summary>Fee tier not in allowed set.</summary>
+    DexInvalidFeeTier = 10004,
+    /// <summary>Pool has insufficient liquidity for the operation.</summary>
+    DexInsufficientLiquidity = 10005,
+    /// <summary>Output amount is below the specified minimum (slippage protection).</summary>
+    DexSlippageExceeded = 10006,
+    /// <summary>Amount or price is invalid (e.g. zero).</summary>
+    DexInvalidAmount = 10007,
+    /// <summary>Limit order does not exist.</summary>
+    DexOrderNotFound = 10008,
+    /// <summary>Caller is not authorized for this operation.</summary>
+    DexUnauthorized = 10009,
+    /// <summary>Swap intent deadline has passed.</summary>
+    DexDeadlineExpired = 10010,
+    /// <summary>Transaction data is malformed for the specified DEX operation.</summary>
+    DexInvalidData = 10011,
+    /// <summary>Limit order has expired.</summary>
+    DexOrderExpired = 10012,
+    /// <summary>Insufficient LP token balance for transfer.</summary>
+    DexInsufficientLpBalance = 10013,
+    /// <summary>LP allowance is insufficient for transferFrom operation.</summary>
+    DexInsufficientLpAllowance = 10014,
+    /// <summary>Tick is out of the valid range.</summary>
+    DexInvalidTick = 10015,
+    /// <summary>Tick range is invalid (lower >= upper or not aligned to tick spacing).</summary>
+    DexInvalidTickRange = 10016,
+    /// <summary>Position does not exist.</summary>
+    DexPositionNotFound = 10017,
+    /// <summary>Not the owner of the position.</summary>
+    DexPositionNotOwner = 10018,
+    /// <summary>Encrypted intent decryption failed (malformed ciphertext or wrong epoch key).</summary>
+    DexDecryptionFailed = 10019,
+    /// <summary>Encrypted intent references an unknown or expired DKG epoch.</summary>
+    DexInvalidEpoch = 10020,
+    /// <summary>BST-20 token transfer failed during DEX operation.</summary>
+    DexTransferFailed = 10021,
+    /// <summary>Insufficient native token balance for DEX debit.</summary>
+    DexInsufficientBalance = 10022,
+    /// <summary>DEX is paused by admin — all DEX operations are rejected.</summary>
+    DexPaused = 10023,
+    /// <summary>Maximum pool creations per block reached.</summary>
+    DexPoolCreationLimitReached = 10024,
+    /// <summary>Sender is not the DEX admin.</summary>
+    DexAdminUnauthorized = 10025,
+    /// <summary>Invalid governance parameter ID.</summary>
+    DexInvalidParameter = 10026,
 
     // Internal errors (9xxx)
     InternalError = 9001,
