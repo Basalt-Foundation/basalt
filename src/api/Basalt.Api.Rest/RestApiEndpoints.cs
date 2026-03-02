@@ -951,9 +951,12 @@ public static class RestApiEndpoints
                 ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
                 : UInt256.Zero;
 
-            // Precompute latest block timestamp for estimation fallback
+            // Precompute latest block timestamp (seconds) for estimation fallback.
+            // BlockHeader.Timestamp is in milliseconds — convert to seconds for the API.
             var latestBlock = chainManager.GetBlockByNumber(currentBlock);
-            var latestTs = latestBlock?.Header.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var latestTs = latestBlock != null
+                ? latestBlock.Header.Timestamp / 1000
+                : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             var points = new List<DexPricePointResponse>();
             for (ulong b = start; b <= end; b += step)
@@ -996,12 +999,12 @@ public static class RestApiEndpoints
                     price = spotPrice;
                 }
 
-                // Determine timestamp from block header, with estimation fallback
+                // Determine timestamp from block header (ms → s), with estimation fallback
                 long timestamp;
                 var block = chainManager.GetBlockByNumber(b);
                 if (block != null)
                 {
-                    timestamp = block.Header.Timestamp;
+                    timestamp = block.Header.Timestamp / 1000;
                 }
                 else
                 {
@@ -1023,7 +1026,7 @@ public static class RestApiEndpoints
                 {
                     var block = chainManager.GetBlockByNumber(b);
                     var timestamp = block != null
-                        ? block.Header.Timestamp
+                        ? block.Header.Timestamp / 1000
                         : latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
 
                     points.Add(new DexPricePointResponse
