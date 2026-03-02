@@ -257,6 +257,8 @@ try
     // R3-NEW-1: Use GlobalLimiter instead of named policy. Named policies require
     // explicit .RequireRateLimiting("per-ip") on each endpoint group; a global limiter
     // applies to all requests automatically without per-endpoint opt-in.
+    // RPC nodes get much higher limits since they are the public-facing API layer.
+    var isRpcMode = config.ResolvedMode == NodeMode.Rpc;
     builder.Services.AddRateLimiter(options =>
     {
         options.RejectionStatusCode = 429;
@@ -265,19 +267,20 @@ try
                 partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 factory: _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 100,
+                    PermitLimit = isRpcMode ? 1000 : 100,
                     Window = TimeSpan.FromMinutes(1),
                 }));
     });
 
     // R3-NEW-2: Restrict CORS to known origins. AllowAnyOrigin enables localhost CSRF where
     // a malicious website uses a visitor's browser as a proxy to a locally-running node.
-    // Allow any origin only when BASALT_DEBUG=1 is set (development mode).
+    // Allow any origin when BASALT_DEBUG=1 is set (development mode) or in RPC mode
+    // (public-facing API serving Explorer, Caldera, and third-party consumers).
     builder.Services.AddCors(options =>
     {
         options.AddDefaultPolicy(policy =>
         {
-            if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1")
+            if (Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1" || isRpcMode)
             {
                 policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
             }
