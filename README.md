@@ -18,6 +18,7 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **Block Explorer** -- Blazor WASM explorer with responsive design, dark/light theme, live WebSocket updates, Faucet, and Network Stats
 - **Built-in Compliance** -- KYC/AML identity registry, sanctions screening, per-token transfer policies
 - **ZK Privacy Compliance** -- Groth16 zero-knowledge proofs for privacy-preserving regulatory compliance (schema/issuer registries, sparse Merkle tree revocation)
+- **Caldera Fusion DEX** -- Protocol-native hybrid AMM + order book exchange with batch auction settlement, concentrated liquidity, encrypted intents (threshold EC-ElGamal), dynamic fees, TWAP oracle, solver network, and MEV elimination
 - **EVM Bridge** -- Lock/unlock bridge with M-of-N Ed25519 multisig relayer verification, pause/unpause, and deposit lifecycle management
 - **Confidentiality** -- Pedersen commitments, Groth16 proofs, private channels, selective disclosure
 - **P2P Networking** -- TCP transport with length-prefixed framing, Kademlia DHT, Episub gossip, peer reputation scoring
@@ -59,7 +60,7 @@ dotnet build
 dotnet test
 ```
 
-2,327 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution, API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
+2,781 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -111,7 +112,7 @@ dotnet run --project tools/Basalt.Cli -- init MyToken
 ## Project Structure
 
 ```
-Basalt.sln                              (41 C# projects)
+Basalt.sln                              (42 C# projects)
 +-- src/
 |   +-- core/
 |   |   +-- Basalt.Core/               # Hash256, Address, UInt256, chain parameters
@@ -124,7 +125,7 @@ Basalt.sln                              (41 C# projects)
 |   +-- consensus/
 |   |   +-- Basalt.Consensus/          # BasaltBFT, pipelined consensus, staking, slashing, epoch manager
 |   +-- execution/
-|   |   +-- Basalt.Execution/          # Transaction executor, BasaltVM, gas metering, sandbox
+|   |   +-- Basalt.Execution/          # Transaction executor, BasaltVM, gas metering, sandbox, Caldera Fusion DEX
 |   +-- api/
 |   |   +-- Basalt.Api.Rest/           # REST endpoints, faucet, WebSocket, Prometheus metrics
 |   |   +-- Basalt.Api.Grpc/           # gRPC services (BasaltNodeService)
@@ -148,7 +149,7 @@ Basalt.sln                              (41 C# projects)
 |   |   +-- Basalt.Explorer/           # Blazor WASM block explorer (responsive, dark/light theme, WebSocket live updates)
 |   +-- node/
 |       +-- Basalt.Node/               # Composition root, single binary
-+-- tests/                             # 16 test projects, 2,327 tests
++-- tests/                             # 16 test projects, 2,781 tests
 |   +-- Basalt.Core.Tests/
 |   +-- Basalt.Crypto.Tests/
 |   +-- Basalt.Codec.Tests/
@@ -170,6 +171,7 @@ Basalt.sln                              (41 C# projects)
 +-- tools/
 |   +-- Basalt.Cli/                    # CLI tool (account, tx, block, faucet, contract init/compile/test)
 |   +-- Basalt.DevNet/                 # Docker devnet genesis config + validator setup script
+|   +-- TestVectorGen/                 # Codec test vector generator
 +-- contracts/                         # Solidity bridge contracts (BasaltBridge, WBST)
 +-- docs/                              # Design plan, technical specification
 ```
@@ -196,7 +198,18 @@ Basalt.sln                              (41 C# projects)
 | `GET` | `/v1/contracts/{address}/storage?key=` | Read contract storage |
 | `GET` | `/v1/faucet/status` | Faucet status |
 | `GET` | `/v1/pools` | Staking pools list |
+| `GET` | `/v1/health` | Node health check |
 | `GET` | `/v1/debug/mempool` | Mempool diagnostic dump |
+| `GET` | `/v1/dex/pools` | List all DEX liquidity pools |
+| `GET` | `/v1/dex/pools/{poolId}` | Get pool details (metadata + reserves) |
+| `GET` | `/v1/dex/pools/{poolId}/lp/{address}` | Get LP token balance |
+| `GET` | `/v1/dex/pools/{poolId}/orders` | List active orders for a pool |
+| `GET` | `/v1/dex/orders/{orderId}` | Get order details |
+| `GET` | `/v1/dex/pools/{poolId}/twap` | TWAP, spot price, and volatility data |
+| `GET` | `/v1/dex/pools/{poolId}/price-history` | Historical price data |
+| `GET` | `/v1/solvers` | List registered solvers |
+| `POST` | `/v1/solvers/register` | Register an external solver |
+| `GET` | `/v1/dex/intents/pending` | Pending swap intent hashes (for solvers) |
 | `GET` | `/metrics` | Prometheus metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 

@@ -32,7 +32,7 @@ PublicKey senderPubKey = tx.SenderPublicKey;  // Set automatically by Transactio
 
 EIP-1559 transactions set `MaxFeePerGas` and `MaxPriorityFeePerGas` instead of (or in addition to) `GasPrice`. When `MaxFeePerGas` is non-zero, the transaction uses EIP-1559 pricing: `EffectiveGasPrice = min(MaxFeePerGas, BaseFee + MaxPriorityFeePerGas)`. The base fee portion is burned, and the tip (effectiveGasPrice - baseFee) goes to the block proposer.
 
-Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5), `ValidatorExit` (6).
+Transaction types: `Transfer` (0), `ContractDeploy` (1), `ContractCall` (2), `StakeDeposit` (3), `StakeWithdraw` (4), `ValidatorRegister` (5), `ValidatorExit` (6), plus DEX types 7–20 (see [`Dex/README.md`](Dex/README.md)).
 
 #### ComplianceProofs
 
@@ -151,6 +151,8 @@ Block block = builder.BuildBlock(pendingTxs, stateDb, parentHeader, proposerAddr
 Internally creates a `TransactionValidator` and `TransactionExecutor`. Skips transactions that fail validation or would exceed the block gas limit. Computes Merkle roots for transactions and receipts using a binary BLAKE3 Merkle tree (odd leaves are promoted unpaired).
 
 Static helpers: `BlockBuilder.ComputeTransactionsRoot(txList)` and `BlockBuilder.ComputeReceiptsRoot(receiptList)`.
+
+For blocks containing DEX swap intents, use `BuildBlockWithDex()` which implements three-phase block production: Phase A executes non-DEX transactions (transfers, staking, liquidity, orders, admin), Phase B runs batch auction settlement (decrypt intents, compute clearing prices), and Phase C applies settlements (balance updates, reserve changes, TWAP, solver rewards). See [`Dex/README.md`](Dex/README.md) for full details.
 
 ### BaseFeeCalculator
 
@@ -383,6 +385,21 @@ ulong effective = meter.EffectiveGasUsed();  // GasUsed - min(GasRefund, GasUsed
 - `SandboxTimeoutException` (BasaltErrorCode.CpuTimeLimitExceeded) -- wall-clock timeout
 - `SandboxMemoryLimitException` (BasaltErrorCode.MemoryLimitExceeded) -- memory budget exceeded
 - `SandboxIsolationException` (BasaltErrorCode.ContractCallFailed) -- disallowed assembly or API access
+
+## DEX Subsystem
+
+The `Dex/` directory contains the protocol-native Caldera Fusion DEX. See [`Dex/README.md`](Dex/README.md) for full documentation. Key components:
+
+- **DexState** -- State reader/writer for pools, orders, LP balances, TWAP accumulators
+- **DexEngine** -- Pool creation, liquidity management, single swaps, limit orders
+- **BatchAuctionSolver** -- Uniform clearing price computation (MEV elimination)
+- **BatchSettlementExecutor** -- Applies auction results to state
+- **ConcentratedPool** -- Uniswap v3-style tick-based concentrated liquidity
+- **TwapOracle** -- On-chain time-weighted average price oracle
+- **DynamicFeeCalculator** -- Volatility-adjusted swap fees
+- **EncryptedIntent** -- EC-ElGamal threshold encryption for private swap intents
+
+Transaction types 7–20 handle all DEX operations. Types 10 and 18 (swap intents) use batch auction settlement; all others execute immediately.
 
 ## Dependencies
 

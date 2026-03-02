@@ -25,6 +25,16 @@ RESTful HTTP API for the Basalt blockchain node. Provides endpoints for submitti
 | `GET` | `/v1/pools` | Staking pools list |
 | `GET` | `/v1/validators` | Validator list with stakes |
 | `GET` | `/v1/debug/mempool` | Diagnostic mempool dump |
+| `GET` | `/v1/dex/pools` | List all DEX liquidity pools (max 100) |
+| `GET` | `/v1/dex/pools/{poolId}` | Get pool details (metadata + reserves) |
+| `GET` | `/v1/dex/pools/{poolId}/lp/{address}` | Get LP token balance for an address |
+| `GET` | `/v1/dex/pools/{poolId}/orders` | List active orders for a pool (max 100) |
+| `GET` | `/v1/dex/orders/{orderId}` | Get order details |
+| `GET` | `/v1/dex/pools/{poolId}/twap` | TWAP, spot price, and volatility data |
+| `GET` | `/v1/dex/pools/{poolId}/price-history` | Historical price data with configurable interval |
+| `GET` | `/v1/solvers` | List registered solvers |
+| `POST` | `/v1/solvers/register` | Register an external solver |
+| `GET` | `/v1/dex/intents/pending` | Pending swap intent hashes (for solvers) |
 | `GET` | `/metrics` | Prometheus-format metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 
@@ -36,7 +46,8 @@ RESTful HTTP API for the Basalt blockchain node. Provides endpoints for submitti
 var app = WebApplication.Create();
 
 var contractRuntime = new ManagedContractRuntime();
-RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb, contractRuntime);
+RestApiEndpoints.MapBasaltEndpoints(app, chainManager, mempool, validator, stateDb,
+    contractRuntime, receiptStore, logger, chainParams, solverInfoProvider);
 MetricsEndpoint.MapMetricsEndpoint(app, chainManager, mempool);
 FaucetEndpoint.MapFaucetEndpoint(app, stateDb);
 app.MapWebSocketEndpoint(webSocketHandler);
@@ -184,7 +195,7 @@ TPS is calculated per-block via `MetricsEndpoint.RecordBlock(txCount, timestampM
 
 Two AOT-compatible source-generated `JsonSerializerContext` classes are defined:
 
-- `BasaltApiJsonContext` -- covers ~20 types including `TransactionRequest`, `TransactionResponse`, `BlockResponse`, `AccountResponse`, `StatusResponse`, `ErrorResponse`, `FaucetRequest`, `FaucetResponse`, `TransactionDetailResponse`, `PaginatedBlocksResponse`, `ValidatorInfoResponse`, `CallRequest`, `CallResponse`, `ContractInfoResponse`, `StorageReadResponse`, `ReceiptResponse`, `PoolInfoResponse`.
+- `BasaltApiJsonContext` -- covers ~30 types including `TransactionRequest`, `TransactionResponse`, `BlockResponse`, `AccountResponse`, `StatusResponse`, `ErrorResponse`, `FaucetRequest`, `FaucetResponse`, `TransactionDetailResponse`, `PaginatedBlocksResponse`, `ValidatorInfoResponse`, `CallRequest`, `CallResponse`, `ContractInfoResponse`, `StorageReadResponse`, `ReceiptResponse`, `PoolInfoResponse`, `DexPoolResponse`, `DexOrderResponse`, `DexTwapResponse`, `DexLpBalanceResponse`, `DexPriceHistoryResponse`, `DexPricePointResponse`, `SolverRegistrationRequest`.
 - `WsJsonContext` -- covers `WebSocketBlockMessage`, `WebSocketBlockData`.
 
 ## Dependencies

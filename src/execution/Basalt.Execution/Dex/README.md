@@ -241,9 +241,11 @@ Full support for trading BST-20 tokens via `ManagedContractRuntime`. Token trans
 |--------|------|-------------|
 | GET | `/v1/dex/pools` | List all liquidity pools |
 | GET | `/v1/dex/pools/{poolId}` | Get pool details |
+| GET | `/v1/dex/pools/{poolId}/lp/{address}` | Get LP token balance for an address |
 | GET | `/v1/dex/pools/{poolId}/orders` | List orders for a pool |
 | GET | `/v1/dex/orders/{orderId}` | Get order details |
 | GET | `/v1/dex/pools/{poolId}/twap?window=100` | TWAP and volatility data |
+| GET | `/v1/dex/pools/{poolId}/price-history` | Historical price data with configurable interval |
 | GET | `/v1/solvers` | List registered solvers |
 | POST | `/v1/solvers/register` | Register an external solver |
 | GET | `/v1/dex/intents/pending` | Pending intent hashes (for solvers) |

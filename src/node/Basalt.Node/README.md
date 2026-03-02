@@ -40,7 +40,7 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 3. Recovers chain state from persistent storage if available (deserializes genesis and latest block, rebuilds state from `TrieStateDb`)
 4. Registers genesis validators with `StakingState` (4 validators, 200,000 BSLT each)
 5. Creates `SlashingEngine` for double-sign and inactivity penalties
-6. Starts the REST API (including receipt queries), gRPC (`BasaltNodeService`), faucet, WebSocket, and Prometheus metrics
+6. Starts the REST API (including receipt queries and DEX endpoints), gRPC (`BasaltNodeService`), faucet, WebSocket, Prometheus metrics, and health check (`/v1/health`)
 7. Launches `NodeCoordinator`, which wires:
    - `TcpTransport` for P2P connections (length-prefixed framing, 4-byte big-endian length header)
    - `HandshakeProtocol` with chain ID validation and 5s timeout
@@ -49,6 +49,8 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
    - `GossipService` for transaction and consensus message broadcasting
    - `BasaltBft` (sequential) or `PipelinedConsensus` depending on configuration
    - `WeightedLeaderSelector` for stake-weighted leader rotation
+   - `SolverManager` for external solver registration, solution submission, and reward computation
+   - `SolverInfoAdapter` to expose solver network state to the REST API
    - `EpochManager` for dynamic validator set transitions at epoch boundaries
 8. Connects to static peers and performs state sync from peers if behind
 9. Runs BFT consensus loop with 200ms tick interval, block-time pacing, and view-change timeouts
@@ -69,6 +71,8 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 - **Consensus**: Sequential (`BasaltBft`) or pipelined (`PipelinedConsensus`) mode
 - **Block Production**: On-demand by the leader, finalized through BFT (no `BlockProductionLoop` in consensus mode)
 - **Epoch Transitions**: `EpochManager` detects epoch boundaries and rebuilds `ValidatorSet` from `StakingState`. `ApplyEpochTransition` atomically swaps the set, rewires leader selection, and resets tracking state
+- **DEX Block Production**: Three-phase block building via `BuildBlockWithDex()` -- separates non-DEX transactions (Phase A), batch auction settlement (Phase B), and settlement execution (Phase C). Swap intents are extracted from the mempool and settled in batch with uniform clearing prices
+- **Solver Network**: `SolverManager` handles external solver registration (max 32), solution scoring, and reward distribution. `SolverInfoAdapter` bridges the solver state to the REST API
 - **Staking Transactions**: `TransactionExecutor` receives `StakingState` (via `IStakingState`) to handle `ValidatorRegister`, `ValidatorExit`, `StakeDeposit`, and `StakeWithdraw` transactions
 - **State Sync**: Batch-based sync via `SyncRequestMessage`/`SyncResponseMessage` (batch size: 50 blocks). Re-entrancy guard prevents concurrent sync tasks. After sync completes, the consensus round is restarted at the correct block number. Synced blocks that cross epoch boundaries trigger `EpochManager` transitions to keep the `ValidatorSet` consistent
 - **Slashing**: Double-sign detection via `_proposalsByView` dictionary, inactivity tracking via `_lastActiveBlock` per validator
@@ -141,6 +145,7 @@ References the following Basalt modules:
 - `Basalt.Execution`, `Basalt.Compliance`
 - `Basalt.Bridge`, `Basalt.Confidentiality`
 - `Basalt.Api.Rest`, `Basalt.Api.Grpc`
+- `Basalt.Sdk.Contracts` (transitive via Execution) -- BST-20 token dispatch for DEX integration
 
 External packages:
 
