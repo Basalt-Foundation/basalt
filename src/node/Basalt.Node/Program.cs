@@ -318,8 +318,8 @@ try
     var faucetLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Basalt.Faucet");
     FaucetEndpoint.MapFaucetEndpoint(app, stateDbRef, mempool, chainParams, faucetPrivateKey, faucetLogger, chainManager, txForwarder: txForwarderRef);
 
-    // Map WebSocket endpoint
-    app.UseWebSockets();
+    // Map WebSocket endpoint (keep-alive prevents Cloudflare Tunnel idle disconnects)
+    app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
     var wsHandler = new WebSocketHandler(chainManager);
     app.MapWebSocketEndpoint(wsHandler);
 
