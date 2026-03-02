@@ -19,7 +19,12 @@ docker run -p 5000:5000 -p 30303:30303 basalt-node
 
 ## Runtime Modes
 
-The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX` environment variable (along with `BASALT_PEERS`). If both are set (index >= 0 and at least one peer), the node runs in **consensus mode**; otherwise it falls back to **standalone mode**.
+The node operates in one of three modes, controlled by the `BASALT_MODE` environment variable (default: `auto`):
+
+- **`auto`** (default): If `BASALT_VALIDATOR_INDEX >= 0` and `BASALT_PEERS` is set, the node runs in **validator mode**; otherwise it falls back to **standalone mode**.
+- **`validator`**: Forces validator/consensus mode.
+- **`rpc`**: Runs as a read-only RPC node that syncs blocks from a trusted source (`BASALT_SYNC_SOURCE`) and serves the full API without participating in consensus.
+- **`standalone`**: Forces standalone mode with timer-based block production.
 
 ### Standalone Mode
 
@@ -33,7 +38,20 @@ The node operates in one of two modes, determined by the `BASALT_VALIDATOR_INDEX
 8. Wires metrics and WebSocket notifications to the block production loop
 9. Handles graceful shutdown on SIGINT/SIGTERM
 
-### Consensus Mode
+### RPC Mode
+
+Set `BASALT_MODE=rpc` and `BASALT_SYNC_SOURCE=http://validator-0:5000`. The RPC node:
+
+1. Syncs finalized blocks from the sync source via HTTP polling (`BlockSyncService`)
+2. Applies blocks locally via `BlockApplier` (executes transactions, runs DEX settlement, updates state)
+3. Serves the full REST API, gRPC, faucet, WebSocket, and Prometheus metrics
+4. Forwards submitted transactions to the sync source validator via `HttpTxForwarder`
+5. Reports sync lag in the `/v1/health` endpoint (returns 503 if more than 50 blocks behind)
+6. Uses relaxed rate limits (1000 req/min/IP vs 100) and open CORS for public-facing traffic
+
+No P2P, no consensus, no block production. Same binary, same Dockerfile.
+
+### Validator Mode
 
 1. Initializes Serilog structured logging
 2. Initializes RocksDB persistent storage (when `BASALT_DATA_DIR` is set) with `BlockStore` and `ReceiptStore`, or in-memory state
@@ -101,6 +119,8 @@ Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BASALT_MODE` | `auto` | Node mode: `auto`, `validator`, `rpc`, or `standalone` |
+| `BASALT_SYNC_SOURCE` | -- | HTTP URL of sync source (required for `rpc` mode, e.g. `http://validator-0:5000`) |
 | `BASALT_CHAIN_ID` | `31337` | Chain identifier |
 | `BASALT_NETWORK` | `basalt-devnet` | Network name |
 | `BASALT_VALIDATOR_INDEX` | `-1` | Validator index (enables consensus mode when >= 0 and `BASALT_PEERS` is set) |

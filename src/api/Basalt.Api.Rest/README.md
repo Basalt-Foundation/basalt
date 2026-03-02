@@ -35,6 +35,8 @@ RESTful HTTP API for the Basalt blockchain node. Provides endpoints for submitti
 | `GET` | `/v1/solvers` | List registered solvers |
 | `POST` | `/v1/solvers/register` | Register an external solver |
 | `GET` | `/v1/dex/intents/pending` | Pending swap intent hashes (for solvers) |
+| `GET` | `/v1/sync/status` | Sync source status (latest block, hash, chain ID) |
+| `GET` | `/v1/sync/blocks?from=&count=` | Bulk block fetch for sync (max 100, hex-encoded raw blocks) |
 | `GET` | `/metrics` | Prometheus-format metrics |
 | `WS` | `/ws/blocks` | Real-time block notifications |
 
@@ -95,13 +97,13 @@ curl -X POST http://localhost:5000/v1/faucet \
   -d '{"address":"0x..."}'
 ```
 
-The faucet directly debits a configurable faucet address and credits the recipient in the state database. Configurable via static properties on `FaucetEndpoint`:
+The faucet creates and signs a real transfer transaction submitted through the mempool. In RPC mode, faucet transactions are forwarded to the sync source validator via `HttpTxForwarder`. Configurable via static properties on `FaucetEndpoint`:
 
 - `DripAmount` -- amount in base units (default: 100 BSLT).
 - `CooldownSeconds` -- per-address cooldown (default: 60 seconds).
-- `FaucetAddress` -- source address (default: `Address.Zero`).
+- `FaucetAddress` -- derived from the well-known faucet private key.
 
-Returns `{"success":true,"message":"Sent 100 BSLT to 0x...","txHash":"0x0000..."}` on success. The `txHash` field is a placeholder (`Hash256.Zero`) since the faucet modifies state directly rather than creating a transaction.
+Returns `{"success":true,"message":"Sent 100 BSLT to 0x...","txHash":"0x..."}` on success.
 
 ### Read-Only Contract Call
 
