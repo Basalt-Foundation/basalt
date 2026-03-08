@@ -47,7 +47,9 @@ public sealed class PipelinedConsensus
     private ulong _minNextView;
 
     // Callbacks
-    public event Action<Hash256, byte[], ulong>? OnBlockFinalized;
+    // Result-based: returns true if the block was successfully applied to the chain.
+    // _lastFinalizedBlock only advances when the callback confirms success.
+    public Func<Hash256, byte[], ulong, bool>? OnBlockFinalized;
     public event Action<ulong>? OnViewChange;
 
     /// <summary>
@@ -564,14 +566,32 @@ public sealed class PipelinedConsensus
         // If this is the next expected block, finalize immediately
         if (blockNumber == _lastFinalizedBlock + 1)
         {
+            // Only advance _lastFinalizedBlock if the callback confirms success.
+            // This prevents a gap where consensus thinks a block is finalized but
+            // the chain never applied it (e.g., timestamp rejection or ApplyBlock failure).
+            var success = OnBlockFinalized?.Invoke(hash, data, commitBitmap) ?? true;
+            if (!success)
+            {
+                _logger.LogWarning("Block {Block} finalization callback failed — not advancing _lastFinalizedBlock",
+                    blockNumber);
+                return;
+            }
+
             _lastFinalizedBlock = blockNumber;
-            OnBlockFinalized?.Invoke(hash, data, commitBitmap);
 
             // Drain any buffered blocks that are now sequential
             while (_pendingFinalizations.TryRemove(_lastFinalizedBlock + 1, out var pending))
             {
+                var drainSuccess = OnBlockFinalized?.Invoke(pending.Hash, pending.Data, pending.Bitmap) ?? true;
+                if (!drainSuccess)
+                {
+                    _logger.LogWarning("Buffered block {Block} finalization callback failed — stopping drain",
+                        _lastFinalizedBlock + 1);
+                    // Re-buffer so it can be retried
+                    _pendingFinalizations.TryAdd(_lastFinalizedBlock + 1, pending);
+                    break;
+                }
                 _lastFinalizedBlock = _lastFinalizedBlock + 1;
-                OnBlockFinalized?.Invoke(pending.Hash, pending.Data, pending.Bitmap);
                 _logger.LogInformation("Drained buffered finalization for block {Block}", _lastFinalizedBlock);
             }
         }

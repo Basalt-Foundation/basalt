@@ -129,6 +129,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private int _consecutiveFinalizationFailures;
     private const int CircuitBreakerThreshold = 5;
     private volatile bool _circuitBreakerTripped;
+    private long _circuitBreakerTrippedAtMs;
+    private const long CircuitBreakerCooldownMs = 30_000; // Auto-reset after 30s
 
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
@@ -434,7 +436,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             chainId: _chainParams.ChainId);
 
         // When a block is finalized by consensus, apply it
-        _consensus.OnBlockFinalized += HandleBlockFinalized;
+        // Non-pipelined mode doesn't need the bool return (no _lastFinalizedBlock gap issue)
+        _consensus.OnBlockFinalized += (hash, data, bitmap) => HandleBlockFinalized(hash, data, bitmap);
 
         // When the leader builds an aggregate QC, broadcast to all peers
         _consensus.OnAggregateVote += aggregate =>
@@ -473,8 +476,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _chainParams.ChainId,
             TimeSpan.FromMilliseconds(_chainParams.ConsensusTimeoutMs));
 
-        // When a block is finalized by pipelined consensus, apply it
-        _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;
+        // When a block is finalized by pipelined consensus, apply it.
+        // Returns bool so _lastFinalizedBlock only advances on success.
+        _pipelinedConsensus.OnBlockFinalized = HandleBlockFinalized;
 
         _pipelinedConsensus.OnViewChange += (view) =>
         {
@@ -492,7 +496,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
     }
 
-    private void HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
+    private bool HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
     {
         try
         {
@@ -513,7 +517,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _logger.LogError("Block #{Num} rejected: timestamp {BlockTs} before parent {ParentTs}",
                         block.Number, block.Header.Timestamp, parentBlock.Header.Timestamp);
-                    return; // Skip finalization
+                    return false;
                 }
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var maxDrift = (long)_chainParams.BlockTimeMs * 15; // 15 blocks of drift allowed (~30s at 2s blocks)
@@ -521,7 +525,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _logger.LogError("Block #{Num} rejected: timestamp {Ahead}ms ahead of local time (max drift: {MaxDrift}ms)",
                         block.Number, block.Header.Timestamp - now, maxDrift);
-                    return; // Skip finalization
+                    return false;
                 }
             }
 
@@ -570,6 +574,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // In pipelined mode, cleanup finalized rounds
                 _pipelinedConsensus?.CleanupFinalizedRounds();
+
+                return true;
             }
             else
             {
@@ -581,8 +587,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (failures >= CircuitBreakerThreshold && !_circuitBreakerTripped)
                 {
                     _circuitBreakerTripped = true;
+                    Volatile.Write(ref _circuitBreakerTrippedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     _logger.LogCritical(
-                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals.", failures);
+                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals for {Cooldown}s.",
+                        failures, CircuitBreakerCooldownMs / 1000);
                 }
 
                 // If we're behind (block number > our tip + 1), trigger a sync
@@ -593,11 +601,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         _chainManager.LatestBlockNumber, block.Number);
                     _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
                 }
+
+                return false;
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error applying finalized block");
+            return false;
         }
     }
 
@@ -1548,8 +1559,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // Wait for peers to connect
         await Task.Delay(2000, ct);
 
-        // Check if we need to sync before joining consensus
-        await TrySyncFromPeers(ct);
+        // Retry initial sync until caught up or no peers are ahead.
+        // A single sync attempt can fail mid-way due to peer disconnects.
+        // Without retry, the node would enter consensus far behind and rely
+        // solely on OnBehindDetected (which requires receiving proposals).
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            var heightBefore = _chainManager.LatestBlockNumber;
+            await TrySyncFromPeers(ct);
+            var heightAfter = _chainManager.LatestBlockNumber;
+
+            // If we didn't make progress, we're either caught up or peers are unreachable
+            if (heightAfter <= heightBefore)
+                break;
+
+            // Check if there's still a gap to close
+            var bestPeer = GetBestPeer();
+            if (bestPeer == null || bestPeer.BestBlockNumber <= heightAfter)
+                break;
+
+            _logger.LogInformation(
+                "Initial sync interrupted at #{Height} (peer at #{Peer}), retrying... (attempt {Attempt})",
+                heightAfter, bestPeer.BestBlockNumber, attempt + 2);
+
+            // Brief pause to allow reconnection if peer dropped
+            await Task.Delay(1000, ct);
+        }
 
         if (_config.UsePipelining)
         {
@@ -1613,6 +1648,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (Volatile.Read(ref _isSyncing) != 0)
                     continue;
 
+                // Circuit breaker auto-reset: after cooldown, reset and attempt
+                // sync to recover from transient failures (state divergence, etc.)
+                if (_circuitBreakerTripped)
+                {
+                    var trippedAt = Volatile.Read(ref _circuitBreakerTrippedAtMs);
+                    var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - trippedAt;
+                    if (elapsed >= CircuitBreakerCooldownMs)
+                    {
+                        _logger.LogWarning(
+                            "Circuit breaker cooldown expired ({Elapsed}ms). Resetting and attempting sync recovery.",
+                            elapsed);
+                        _circuitBreakerTripped = false;
+                        Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
+
+                        // Re-sync consensus state to match the actual chain
+                        _pipelinedConsensus!.UpdateLastFinalizedBlock(_chainManager.LatestBlockNumber);
+
+                        // Attempt to sync from peers in case we fell behind
+                        _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    }
+                    else
+                    {
+                        continue; // Still in cooldown, skip this iteration
+                    }
+                }
+
                 // In pipelined mode, try to propose next block if pipeline has capacity
                 TryProposeBlock();
 
@@ -1628,6 +1689,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Cleanup finalized rounds periodically
                 _pipelinedConsensus.CleanupFinalizedRounds();
+
+                // Periodic behind-detection: check if any connected peer is significantly
+                // ahead. This catches the case where a node fell behind and no proposals
+                // arrive (e.g., because other validators' circuit breakers are also tripped).
+                // Without this, OnBehindDetected only fires from received proposals.
+                var bestPeerCheck = GetBestPeer();
+                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber + 10)
+                {
+                    _logger.LogInformation(
+                        "Peer {Peer} is at #{PeerHeight} vs local #{LocalHeight} — triggering catch-up sync",
+                        bestPeerCheck.Id, bestPeerCheck.BestBlockNumber, _chainManager.LatestBlockNumber);
+                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                }
 
                 _episub!.RebalanceTiers();
             }
