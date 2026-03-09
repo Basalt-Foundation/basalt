@@ -138,10 +138,8 @@
         _timer = new Timer(async _ =>
         {
             if (!WsService.IsConnected)
-            {
                 await LoadData();
-                await InvokeAsync(StateHasChanged);
-            }
+            await InvokeAsync(StateHasChanged);
         }, null, 10000, 10000);
     }
 
