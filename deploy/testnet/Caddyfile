@@ -38,9 +38,11 @@ http://caldera.basalt.foundation {
 		reverse_proxy rpc-0:5000
 	}
 
-	# WebSocket
+	# WebSocket — disable response buffering for persistent connections
 	handle /ws/* {
-		reverse_proxy rpc-0:5000
+		reverse_proxy rpc-0:5000 {
+			flush_interval -1
+		}
 	}
 
 	# Health check
