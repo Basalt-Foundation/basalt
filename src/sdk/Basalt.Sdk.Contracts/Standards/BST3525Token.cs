@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Sdk.Contracts.Policies;
 
 namespace Basalt.Sdk.Contracts.Standards;
 
@@ -24,6 +25,7 @@ public partial class BST3525Token : IBST3525
     private readonly StorageMap<string, string> _slotUris;
     private readonly StorageMap<string, string> _tokenUris;
     private readonly StorageMap<string, string> _contractAdmin;
+    private readonly PolicyEnforcer _policyEnforcer;
 
     public BST3525Token(string name, string symbol, byte valueDecimals = 0)
     {
@@ -40,6 +42,7 @@ public partial class BST3525Token : IBST3525
         _slotUris = new StorageMap<string, string>("sft_suri");
         _tokenUris = new StorageMap<string, string>("sft_turi");
         _contractAdmin = new StorageMap<string, string>("sft_admin");
+        _policyEnforcer = new PolicyEnforcer("sft_pol");
         if (Context.IsDeploying)
             _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
@@ -121,6 +124,11 @@ public partial class BST3525Token : IBST3525
 
         RequireValueAuthorized(fromId, value);
 
+        // Policy enforcement: check value transfer between token owners
+        var fromOwner = Convert.FromHexString(_tokenOwners.Get(TokenKey(fromId)));
+        var toOwner = Convert.FromHexString(_tokenOwners.Get(TokenKey(toId)));
+        _policyEnforcer.EnforceTransfer(fromOwner, toOwner, value);
+
         var fromVal = _tokenValues.Get(TokenKey(fromId));
         Context.Require(fromVal >= value, "SFT: insufficient value");
         _tokenValues.Set(TokenKey(fromId), fromVal - value);
@@ -144,6 +152,10 @@ public partial class BST3525Token : IBST3525
         Context.Require(to.Length > 0, "SFT: transfer to zero address");
         RequireTokenExists(fromId);
         RequireValueAuthorized(fromId, value);
+
+        // Policy enforcement
+        var fromOwner = Convert.FromHexString(_tokenOwners.Get(TokenKey(fromId)));
+        _policyEnforcer.EnforceTransfer(fromOwner, to, value);
 
         var fromVal = _tokenValues.Get(TokenKey(fromId));
         Context.Require(fromVal >= value, "SFT: insufficient value");
@@ -194,6 +206,9 @@ public partial class BST3525Token : IBST3525
         var toHex = AddrKey(to);
         var from = Convert.FromHexString(ownerHex);
 
+        // Policy enforcement before state mutation
+        _policyEnforcer.EnforceNftTransfer(from, to, tokenId);
+
         // Update ownership
         _tokenOwners.Set(TokenKey(tokenId), toHex);
 
@@ -241,6 +256,28 @@ public partial class BST3525Token : IBST3525
         RequireTokenOwner(tokenId);
         _tokenUris.Set(TokenKey(tokenId), uri);
     }
+
+    // --- Policy Management ---
+
+    [BasaltEntrypoint]
+    public void AddPolicy(byte[] policyAddress)
+    {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "SFT: not owner");
+        _policyEnforcer.AddPolicy(policyAddress);
+    }
+
+    [BasaltEntrypoint]
+    public void RemovePolicy(byte[] policyAddress)
+    {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "SFT: not owner");
+        _policyEnforcer.RemovePolicy(policyAddress);
+    }
+
+    [BasaltView]
+    public ulong PolicyCount() => _policyEnforcer.Count;
+
+    [BasaltView]
+    public byte[] GetPolicyAt(ulong index) => _policyEnforcer.GetPolicy(index);
 
     // --- Internal helpers ---
 

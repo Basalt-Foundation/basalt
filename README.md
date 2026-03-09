@@ -13,6 +13,7 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **Merkle Patricia Trie** -- Cryptographically verifiable state with RocksDB persistence
 - **Smart Contracts** -- C# contracts with gas metering, sandboxed execution, and Roslyn analyzers
 - **Token Standards** -- BST-20 (ERC-20), BST-721 (ERC-721), BST-1155 (ERC-1155), BST-3525 (ERC-3525 SFT), BST-4626 (ERC-4626 Vault), BST-VC (W3C Verifiable Credentials), BST-DID
+- **Policy Hooks** -- Modular transfer policy enforcement on all token standards: sanctions, holding limits, lockup periods, jurisdiction whitelist/blacklist. Deploy policies as independent contracts, register on any token.
 - **EIP-1559 Gas Pricing** -- Dynamic base fee with elastic block gas, tip/burn fee split, MaxFeePerGas/MaxPriorityFeePerGas
 - **On-Chain Governance** -- Stake-weighted quadratic voting, single-hop delegation, timelock, executable proposals
 - **Block Explorer** -- Blazor WASM explorer with responsive design, dark/light theme, live WebSocket updates, Faucet, and Network Stats
@@ -60,7 +61,7 @@ dotnet build
 dotnet test
 ```
 
-2,789 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
+2,868 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
 
 ### Run a Local Node
 

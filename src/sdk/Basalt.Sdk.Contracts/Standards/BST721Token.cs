@@ -1,3 +1,5 @@
+using Basalt.Sdk.Contracts.Policies;
+
 namespace Basalt.Sdk.Contracts.Standards;
 
 /// <summary>
@@ -13,6 +15,7 @@ public partial class BST721Token : IBST721
     private readonly StorageMap<string, bool> _operatorApprovals; // "owner:operator" -> approved
     private readonly StorageValue<ulong> _nextTokenId;
     private readonly StorageMap<string, string> _contractAdmin;
+    private readonly PolicyEnforcer _policyEnforcer;
     private readonly string _name;
     private readonly string _symbol;
 
@@ -27,6 +30,7 @@ public partial class BST721Token : IBST721
         _operatorApprovals = new StorageMap<string, bool>("nft_ops");
         _nextTokenId = new StorageValue<ulong>("nft_next_id");
         _contractAdmin = new StorageMap<string, string>("nft_admin");
+        _policyEnforcer = new PolicyEnforcer("nft_pol");
         if (Context.IsDeploying)
             _contractAdmin.Set("owner", AddressKey(Context.Caller));
     }
@@ -146,8 +150,35 @@ public partial class BST721Token : IBST721
         return tokenId;
     }
 
+    // --- Policy Management ---
+
+    [BasaltEntrypoint]
+    public void AddPolicy(byte[] policyAddress)
+    {
+        Context.Require(AddressKey(Context.Caller) == _contractAdmin.Get("owner"), "BST721: not owner");
+        _policyEnforcer.AddPolicy(policyAddress);
+    }
+
+    [BasaltEntrypoint]
+    public void RemovePolicy(byte[] policyAddress)
+    {
+        Context.Require(AddressKey(Context.Caller) == _contractAdmin.Get("owner"), "BST721: not owner");
+        _policyEnforcer.RemovePolicy(policyAddress);
+    }
+
+    [BasaltView]
+    public ulong PolicyCount() => _policyEnforcer.Count;
+
+    [BasaltView]
+    public byte[] GetPolicyAt(ulong index) => _policyEnforcer.GetPolicy(index);
+
+    // --- Internal ---
+
     private void TransferInternal(byte[] from, byte[] to, ulong tokenId)
     {
+        // Policy enforcement before any state mutation
+        _policyEnforcer.EnforceNftTransfer(from, to, tokenId);
+
         // Clear approval
         _approvals.Delete(TokenKey(tokenId));
 

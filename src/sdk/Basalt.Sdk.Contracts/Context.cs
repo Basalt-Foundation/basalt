@@ -149,9 +149,10 @@ public static class Context
 
         try
         {
-            // H-2: Guard the calling contract's own address against re-entry
-            var selfKey = Convert.ToHexString(Self);
-            ReentrancyGuard.Add(selfKey);
+            // Guard only the target contract against self-reentrancy (B→B).
+            // The caller is NOT guarded, allowing A→B→A callback chains (e.g. policy
+            // contracts querying token.BalanceOf during transfer enforcement).
+            // The BST004 analyzer catches unsafe state-writes-after-external-call patterns.
             ReentrancyGuard.Add(targetKey);
             CallDepth++;
             Caller = Self; // The calling contract becomes the caller
@@ -165,8 +166,6 @@ public static class Context
         {
             // H-3: Restore full caller context
             ReentrancyGuard.Remove(targetKey);
-            var selfKey = Convert.ToHexString(previousSelf);
-            ReentrancyGuard.Remove(selfKey);
             CallDepth = previousDepth;
             Caller = previousCaller;
             Self = previousSelf;

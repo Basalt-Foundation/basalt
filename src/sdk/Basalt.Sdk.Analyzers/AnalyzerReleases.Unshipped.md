@@ -10,3 +10,7 @@ BST005 | Basalt.Safety | Warning | OverflowAnalyzer
 BST006 | Basalt.Safety | Warning | StorageAccessAnalyzer
 BST007 | Basalt.Performance | Info | GasEstimationAnalyzer
 BST008 | Basalt.Compatibility | Error | AotCompatibilityAnalyzer
+BST009 | Basalt.Safety | Warning | CrossContractReturnAnalyzer
+BST010 | Basalt.Safety | Warning | PolicyOrderingAnalyzer
+BST011 | Basalt.Determinism | Warning | CollectionOrderingAnalyzer
+BST012 | Basalt.Safety | Warning | PolicyEnforcementAnalyzer

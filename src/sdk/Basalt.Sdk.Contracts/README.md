@@ -402,6 +402,70 @@ bool supports = issuerRegistry.SupportsSchema(issuerAddr, schemaIdBytes);
 
 **Events**: `IssuerRegisteredEvent`, `CollateralStakedEvent`, `RevocationRootUpdatedEvent`, `IssuerSlashedEvent`, `IssuerDeactivatedEvent`, `IssuerReactivatedEvent`, `AdminTransferredEvent`.
 
+## Policy Hooks (`Policies/`)
+
+The SDK provides a standardized policy enforcement layer for all token standards. Deploy modular compliance policies as independent contracts, then register them on any BST token. All transfers are automatically checked against registered policies before execution -- zero policies means zero overhead.
+
+### Architecture
+
+```
+BST-20/721/1155/3525/4626 Token
+  |
+  +-- PolicyEnforcer (storage-backed list of policy addresses)
+        |
+        +-- Policy A (ITransferPolicy) -- cross-contract call: CheckTransfer()
+        +-- Policy B (ITransferPolicy) -- cross-contract call: CheckTransfer()
+        +-- Policy C (INftTransferPolicy) -- cross-contract call: CheckNftTransfer()
+```
+
+### Interfaces
+
+- **`ITransferPolicy`** -- `CheckTransfer(byte[] token, byte[] from, byte[] to, UInt256 amount)` returns `bool`
+- **`INftTransferPolicy`** -- `CheckNftTransfer(byte[] token, byte[] from, byte[] to, ulong tokenId)` returns `bool`
+
+### Reference Policies
+
+| Contract | Type ID | Description |
+|----------|---------|-------------|
+| `HoldingLimitPolicy` | `0x0008` | Max balance per address per token. Queries `BalanceOf()` via cross-contract call. |
+| `LockupPolicy` | `0x0009` | Time-based transfer lockup. Checks `Context.BlockTimestamp` against per-address unlock time. |
+| `JurisdictionPolicy` | `0x000A` | Country whitelist/blacklist. Maps addresses to ISO 3166 country codes. |
+| `SanctionsPolicy` | `0x000B` | Admin-managed sanctions list. Denies transfers involving sanctioned addresses. |
+
+### Policy Management on Tokens
+
+Every BST token (BST-20, BST-721, BST-1155, BST-3525, BST-4626) exposes four policy entrypoints:
+
+```csharp
+token.AddPolicy(byte[] policyAddress);     // Admin only -- register a policy
+token.RemovePolicy(byte[] policyAddress);   // Admin only -- unregister a policy
+token.PolicyCount();                        // View -- number of registered policies
+token.GetPolicyAt(ulong index);             // View -- policy address at index
+```
+
+### Usage Example
+
+```csharp
+// Deploy token and policy
+var token = new BST20Token("RegulatedToken", "RSEC", 18, new UInt256(1_000_000));
+var sanctions = new SanctionsPolicy();
+
+// Configure and register
+sanctions.AddSanction(badActor);
+token.AddPolicy(sanctionsAddress);
+
+// All transfers are now enforced -- sanctioned addresses are blocked
+token.Transfer(bob, new UInt256(1000));          // OK
+token.Transfer(badActor, new UInt256(1000));      // Reverts: "transfer denied by policy"
+```
+
+### Design Notes
+
+- **Mint/burn bypass policies** -- admin-only operations, matching ERC-20 convention
+- **BST-4626 inherits BST-20** -- vault share policies propagate automatically
+- **BST-1155 batch atomicity** -- all policy checks run before any state mutations
+- **Reentrancy safe** -- policies can query token state (e.g. `BalanceOf`) via cross-contract callbacks
+
 ## ContractRegistry Type IDs
 
 All contract types are registered with `ContractRegistry.CreateDefault()` and identified by a 2-byte type ID in the deployment manifest (`[0xBA, 0x5A][typeId BE][ctor args]`).
@@ -417,6 +481,15 @@ All contract types are registered with `ContractRegistry.CreateDefault()` and id
 | `0x0005` | `BST3525Token` | Semi-fungible token (ERC-3525) |
 | `0x0006` | `BST4626Vault` | Tokenized vault (ERC-4626) |
 | `0x0007` | `BSTVCRegistry` | Verifiable credentials (W3C VC) |
+
+### Policy Contracts
+
+| Type ID | Contract | Description |
+|---------|----------|-------------|
+| `0x0008` | `HoldingLimitPolicy` | Max balance per address per token |
+| `0x0009` | `LockupPolicy` | Time-based transfer lockup |
+| `0x000A` | `JurisdictionPolicy` | Country whitelist/blacklist |
+| `0x000B` | `SanctionsPolicy` | Admin-managed sanctions list |
 
 ### System Contracts
 
