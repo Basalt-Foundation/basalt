@@ -55,7 +55,8 @@ public static class FaucetEndpoint
         ChainParameters chainParams,
         byte[] faucetPrivateKey,
         ILogger? logger = null,
-        ChainManager? chainManager = null)
+        ChainManager? chainManager = null,
+        ITxForwarder? txForwarder = null)
     {
         _faucetPrivateKey = faucetPrivateKey;
         _logger = logger;
@@ -206,6 +207,9 @@ public static class FaucetEndpoint
 
             _logger?.LogInformation("Faucet tx {Hash} added to mempool (size={Size})",
                 signedTx.Hash.ToHexString()[..18] + "...", mempool.Count);
+
+            // Forward to validator (RPC mode — faucet txs bypass POST /v1/transactions)
+            _ = txForwarder?.ForwardAsync(signedTx, CancellationToken.None);
 
             // Record the request time
             _lastRequest[addrKey] = DateTimeOffset.UtcNow;

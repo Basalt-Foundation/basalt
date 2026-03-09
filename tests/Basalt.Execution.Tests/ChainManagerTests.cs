@@ -279,4 +279,86 @@ public class ChainManagerTests
             block!.Number.Should().Be(i);
         }
     }
+
+    [Fact]
+    public void RollbackTo_RemovesBlocksAfterTarget()
+    {
+        var chainManager = new ChainManager();
+        var genesis = CreateBlock(0, Hash256.Zero);
+        chainManager.AddBlock(genesis);
+
+        var blocks = new List<Block> { genesis };
+        var prevHash = genesis.Hash;
+        for (ulong i = 1; i <= 5; i++)
+        {
+            var block = CreateBlock(i, prevHash);
+            chainManager.AddBlock(block);
+            blocks.Add(block);
+            prevHash = block.Hash;
+        }
+
+        chainManager.LatestBlockNumber.Should().Be(5);
+
+        // Roll back to block 3
+        chainManager.RollbackTo(blocks[3]);
+
+        chainManager.LatestBlockNumber.Should().Be(3);
+        chainManager.LatestBlock!.Hash.Should().Be(blocks[3].Hash);
+
+        // Blocks 0-3 should still exist
+        for (int i = 0; i <= 3; i++)
+            chainManager.GetBlockByNumber((ulong)i).Should().NotBeNull();
+
+        // Blocks 4-5 should be removed
+        chainManager.GetBlockByNumber(4).Should().BeNull();
+        chainManager.GetBlockByNumber(5).Should().BeNull();
+        chainManager.GetBlockByHash(blocks[4].Hash).Should().BeNull();
+        chainManager.GetBlockByHash(blocks[5].Hash).Should().BeNull();
+    }
+
+    [Fact]
+    public void RollbackTo_CanAddNewBlocksAfterRollback()
+    {
+        var chainManager = new ChainManager();
+        var genesis = CreateBlock(0, Hash256.Zero);
+        chainManager.AddBlock(genesis);
+
+        var block1 = CreateBlock(1, genesis.Hash);
+        chainManager.AddBlock(block1);
+
+        var block2 = CreateBlock(2, block1.Hash);
+        chainManager.AddBlock(block2);
+
+        // Roll back to block 1
+        chainManager.RollbackTo(block1);
+        chainManager.LatestBlockNumber.Should().Be(1);
+
+        // Can add a new block 2 (different from original)
+        var newBlock2 = CreateBlock(2, block1.Hash);
+        var result = chainManager.AddBlock(newBlock2);
+        result.IsSuccess.Should().BeTrue();
+        chainManager.LatestBlockNumber.Should().Be(2);
+    }
+
+    [Fact]
+    public void RollbackTo_Genesis_RemovesAllBlocksExceptGenesis()
+    {
+        var chainManager = new ChainManager();
+        var genesis = CreateBlock(0, Hash256.Zero);
+        chainManager.AddBlock(genesis);
+
+        var prevHash = genesis.Hash;
+        for (ulong i = 1; i <= 3; i++)
+        {
+            var block = CreateBlock(i, prevHash);
+            chainManager.AddBlock(block);
+            prevHash = block.Hash;
+        }
+
+        chainManager.RollbackTo(genesis);
+
+        chainManager.LatestBlockNumber.Should().Be(0);
+        chainManager.LatestBlock!.Hash.Should().Be(genesis.Hash);
+        chainManager.GetBlockByNumber(1).Should().BeNull();
+    }
 }

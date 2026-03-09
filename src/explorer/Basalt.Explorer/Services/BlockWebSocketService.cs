@@ -15,13 +15,20 @@ public sealed class BlockWebSocketService : IAsyncDisposable
     private int _reconnectAttempts;
 
     public event Action<WebSocketBlockEvent>? OnNewBlock;
+    public event Action? OnConnected;
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     public BlockWebSocketService(string nodeUrl)
     {
         var uri = new Uri(nodeUrl);
         var wsScheme = uri.Scheme == "https" ? "wss" : "ws";
-        _wsUrl = $"{wsScheme}://{uri.Host}:{uri.Port}/ws/blocks";
+        // Omit default ports (443 for wss, 80 for ws) — explicit default ports
+        // cause a Host header mismatch with Cloudflare Tunnel routing.
+        var isDefaultPort = (wsScheme == "wss" && uri.Port == 443) ||
+                            (wsScheme == "ws" && uri.Port == 80);
+        _wsUrl = isDefaultPort
+            ? $"{wsScheme}://{uri.Host}/ws/blocks"
+            : $"{wsScheme}://{uri.Host}:{uri.Port}/ws/blocks";
     }
 
     public async Task ConnectAsync()
@@ -33,6 +40,7 @@ public sealed class BlockWebSocketService : IAsyncDisposable
         {
             await _ws.ConnectAsync(new Uri(_wsUrl), _cts.Token);
             _reconnectAttempts = 0; // LOW-03: Reset on successful connection
+            OnConnected?.Invoke();
             _ = ReceiveLoop(_cts.Token);
         }
         catch
@@ -90,6 +98,7 @@ public sealed class BlockWebSocketService : IAsyncDisposable
                 _ws = new ClientWebSocket();
                 await _ws.ConnectAsync(new Uri(_wsUrl), ct);
                 _reconnectAttempts = 0; // Reset on successful reconnect
+                OnConnected?.Invoke();
                 _ = ReceiveLoop(ct);
             }
             catch { /* give up reconnecting */ }

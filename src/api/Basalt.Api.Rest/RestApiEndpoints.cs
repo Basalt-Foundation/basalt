@@ -33,7 +33,9 @@ public static class RestApiEndpoints
         Storage.RocksDb.ReceiptStore? receiptStore = null,
         Microsoft.Extensions.Logging.ILogger? logger = null,
         ChainParameters? chainParams = null,
-        ISolverInfoProvider? solverProvider = null)
+        ISolverInfoProvider? solverProvider = null,
+        Storage.RocksDb.BlockStore? blockStore = null,
+        ITxForwarder? txForwarder = null)
     {
         // Helper: look up a receipt by tx hash (persistent store first, then in-memory fallback)
         Storage.RocksDb.ReceiptData? LookupReceipt(Hash256 txHash)
@@ -150,6 +152,10 @@ public static class RestApiEndpoints
                         Message = "Transaction already in mempool or mempool is full.",
                     });
                 }
+
+                // RPC mode: forward transaction to sync source (fire-and-forget)
+                if (txForwarder != null)
+                    _ = txForwarder.ForwardAsync(tx, CancellationToken.None);
 
                 return Microsoft.AspNetCore.Http.Results.Ok(new TransactionResponse
                 {
@@ -945,9 +951,12 @@ public static class RestApiEndpoints
                 ? BatchAuctionSolver.ComputeSpotPrice(reserves.Value.Reserve0, reserves.Value.Reserve1)
                 : UInt256.Zero;
 
-            // Precompute latest block timestamp for estimation fallback
+            // Precompute latest block timestamp (seconds) for estimation fallback.
+            // BlockHeader.Timestamp is in milliseconds — convert to seconds for the API.
             var latestBlock = chainManager.GetBlockByNumber(currentBlock);
-            var latestTs = latestBlock?.Header.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var latestTs = latestBlock != null
+                ? latestBlock.Header.Timestamp / 1000
+                : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             var points = new List<DexPricePointResponse>();
             for (ulong b = start; b <= end; b += step)
@@ -990,12 +999,12 @@ public static class RestApiEndpoints
                     price = spotPrice;
                 }
 
-                // Determine timestamp from block header, with estimation fallback
+                // Determine timestamp from block header (ms → s), with estimation fallback
                 long timestamp;
                 var block = chainManager.GetBlockByNumber(b);
                 if (block != null)
                 {
-                    timestamp = block.Header.Timestamp;
+                    timestamp = block.Header.Timestamp / 1000;
                 }
                 else
                 {
@@ -1017,7 +1026,7 @@ public static class RestApiEndpoints
                 {
                     var block = chainManager.GetBlockByNumber(b);
                     var timestamp = block != null
-                        ? block.Header.Timestamp
+                        ? block.Header.Timestamp / 1000
                         : latestTs - (long)(currentBlock - b) * (long)blockTimeMs / 1000;
 
                     points.Add(new DexPricePointResponse
@@ -1090,6 +1099,53 @@ public static class RestApiEndpoints
                 });
             });
         }
+
+        // ── Sync endpoints (used by RPC nodes to fetch blocks from validators) ──
+
+        app.MapGet("/v1/sync/status", () =>
+        {
+            var latest = chainManager.LatestBlock;
+            return Microsoft.AspNetCore.Http.Results.Ok(new SyncStatusResponse
+            {
+                LatestBlock = latest?.Number ?? 0,
+                LatestHash = latest?.Hash.ToHexString() ?? Hash256.Zero.ToHexString(),
+                ChainId = chainParams?.ChainId ?? 0,
+            });
+        });
+
+        app.MapGet("/v1/sync/blocks", (ulong from, int? count) =>
+        {
+            if (blockStore == null)
+                return Microsoft.AspNetCore.Http.Results.StatusCode(501);
+
+            var requestedCount = Math.Min(count ?? 100, 100);
+            var blocks = new List<SyncBlockEntry>();
+
+            for (ulong n = from; n < from + (ulong)requestedCount; n++)
+            {
+                var raw = blockStore.GetRawBlockByNumber(n);
+                if (raw == null)
+                    break;
+
+                var meta = blockStore.GetByNumber(n);
+                blocks.Add(new SyncBlockEntry
+                {
+                    Number = n,
+                    Hash = meta?.Hash.ToHexString() ?? "",
+                    RawHex = Convert.ToHexString(raw),
+                    CommitBitmap = blockStore.GetCommitBitmap(n),
+                });
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new SyncBlocksResponse
+            {
+                Blocks = blocks.ToArray(),
+            });
+        });
+
+        // ── Transaction forwarding hook ──
+        // When txForwarder is set (RPC mode), fire-and-forget forward after mempool add.
+        // The forwarding is wired inside the POST /v1/transactions handler via the txForwarder parameter.
     }
 }
 
@@ -1511,6 +1567,38 @@ public sealed class DexPriceHistoryResponse
     [JsonPropertyName("blockTimeMs")] public uint BlockTimeMs { get; set; }
 }
 
+// ── Sync DTOs ──
+
+public sealed class SyncStatusResponse
+{
+    [JsonPropertyName("latestBlock")] public ulong LatestBlock { get; set; }
+    [JsonPropertyName("latestHash")] public string LatestHash { get; set; } = "";
+    [JsonPropertyName("chainId")] public uint ChainId { get; set; }
+}
+
+public sealed class SyncBlockEntry
+{
+    [JsonPropertyName("number")] public ulong Number { get; set; }
+    [JsonPropertyName("hash")] public string Hash { get; set; } = "";
+    [JsonPropertyName("rawHex")] public string RawHex { get; set; } = "";
+    [JsonPropertyName("commitBitmap")] public ulong? CommitBitmap { get; set; }
+}
+
+public sealed class SyncBlocksResponse
+{
+    [JsonPropertyName("blocks")] public SyncBlockEntry[] Blocks { get; set; } = [];
+}
+
+// ── Transaction forwarding interface (RPC mode) ──
+
+/// <summary>
+/// Forwards transactions from RPC nodes to validators.
+/// </summary>
+
+[JsonSerializable(typeof(SyncStatusResponse))]
+[JsonSerializable(typeof(SyncBlockEntry))]
+[JsonSerializable(typeof(SyncBlockEntry[]))]
+[JsonSerializable(typeof(SyncBlocksResponse))]
 [JsonSerializable(typeof(TransactionRequest))]
 [JsonSerializable(typeof(TransactionResponse))]
 [JsonSerializable(typeof(BlockResponse))]

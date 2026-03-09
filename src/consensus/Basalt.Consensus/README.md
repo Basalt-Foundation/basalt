@@ -49,7 +49,7 @@ var pipeline = new PipelinedConsensus(
     validatorSet, localPeerId, privateKey, blsSigner, logger,
     lastFinalizedBlock: 0);  // IBlsSigner is required, lastFinalizedBlock is optional
 
-pipeline.OnBlockFinalized += (hash, data, commitBitmap) => { /* commit block */ };
+pipeline.OnBlockFinalized = (hash, data, commitBitmap) => { /* commit block */ return true; };
 pipeline.OnViewChange += (newView) => { /* leader rotation */ };
 pipeline.OnBehindDetected += (blockNumber) => { /* trigger sync */ };
 

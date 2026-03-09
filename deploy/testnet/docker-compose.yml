@@ -45,7 +45,7 @@ services:
       - basalt-testnet
     restart: unless-stopped
     depends_on:
-      validator-0:
+      rpc-0:
         condition: service_healthy
       explorer:
         condition: service_started
@@ -158,11 +158,44 @@ services:
     cap_drop:
       - ALL
 
+  # ─── RPC Node 0 (public API, no consensus) ────────────────────────
+  rpc-0:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: basalt-rpc-0
+    environment:
+      - BASALT_MODE=rpc
+      - BASALT_SYNC_SOURCE=http://validator-0:5000
+      - BASALT_NETWORK=basalt-testnet
+      - BASALT_CHAIN_ID=4242
+      - ASPNETCORE_URLS=http://+:5000
+      - BASALT_DATA_DIR=/data/basalt
+    volumes:
+      - rpc-0-data:/data/basalt
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      validator-0:
+        condition: service_healthy
+
 volumes:
   validator-0-data:
   validator-1-data:
   validator-2-data:
   validator-3-data:
+  rpc-0-data:
 
 networks:
   basalt-testnet:

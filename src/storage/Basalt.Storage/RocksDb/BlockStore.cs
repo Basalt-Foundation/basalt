@@ -186,6 +186,38 @@ public sealed class BlockStore
         return key;
     }
 
+    /// <summary>
+    /// Atomically delete all block data for blocks after the target block number.
+    /// Used during fork rollback to remove divergent chain data.
+    /// </summary>
+    public void RollbackToBlock(ulong targetBlockNumber, ulong currentBlockNumber)
+    {
+        using var batch = _store.CreateWriteBatch();
+
+        for (ulong i = targetBlockNumber + 1; i <= currentBlockNumber; i++)
+        {
+            var numberKey = NumberToKey(i);
+
+            // Look up the block hash from the index so we can delete block data and raw block
+            var hashKey = _store.Get(RocksDbStore.CF.BlockIndex, numberKey);
+            if (hashKey != null)
+            {
+                batch.Delete(RocksDbStore.CF.Blocks, hashKey);
+                batch.Delete(RocksDbStore.CF.Blocks, RawBlockKeyFromHashBytes(hashKey));
+            }
+
+            batch.Delete(RocksDbStore.CF.BlockIndex, numberKey);
+            batch.Delete(RocksDbStore.CF.Blocks, BitmapKey(i));
+        }
+
+        // Update the latest block number metadata
+        var data = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(data, targetBlockNumber);
+        batch.Put(RocksDbStore.CF.Metadata, "latest_block"u8.ToArray(), data);
+
+        batch.Commit();
+    }
+
     private static byte[] BitmapKey(ulong blockNumber)
     {
         var key = new byte[4 + 8];

@@ -131,17 +131,22 @@
         await LoadData();
 
         WsService.OnNewBlock += HandleNewBlock;
+        WsService.OnConnected += HandleConnected;
         _ = WsService.ConnectAsync();
 
         // Increase poll interval as fallback
         _timer = new Timer(async _ =>
         {
             if (!WsService.IsConnected)
-            {
                 await LoadData();
-                await InvokeAsync(StateHasChanged);
-            }
+            await InvokeAsync(StateHasChanged);
         }, null, 10000, 10000);
+    }
+
+    private async void HandleConnected()
+    {
+        try { await InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
     }
 
     // M-4: Wrap async void handler in try-catch to prevent unobserved exceptions
@@ -196,6 +201,7 @@
     {
         _timer?.Dispose();
         WsService.OnNewBlock -= HandleNewBlock;
+        WsService.OnConnected -= HandleConnected;
         return ValueTask.CompletedTask;
     }
 }

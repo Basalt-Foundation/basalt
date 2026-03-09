@@ -38,6 +38,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Persistent storage (optional — null when using in-memory)
     private readonly BlockStore? _blockStore;
     private readonly ReceiptStore? _receiptStore;
+    private readonly RocksDbStore? _rocksDbStore;
 
     // Staking / Slashing
     private readonly StakingState? _stakingState;
@@ -85,6 +86,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Block production (consensus-driven — no BlockProductionLoop)
     private BlockBuilder? _blockBuilder;
     private TransactionExecutor? _txExecutor;
+    private BlockApplier? _blockApplier;
     private Address _proposerAddress;
 
     // Solver network (Phase E4)
@@ -94,6 +96,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Exposes the solver manager for wiring into the REST API adapter.
     /// </summary>
     public Solver.SolverManager? SolverManager => _solverManager;
+
+    /// <summary>
+    /// Exposes the block applier for reuse by other components (e.g., BlockSyncService in RPC mode).
+    /// </summary>
+    public BlockApplier? BlockApplier => _blockApplier;
 
     // Runtime
     private CancellationTokenSource? _cts;
@@ -123,6 +130,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private int _consecutiveFinalizationFailures;
     private const int CircuitBreakerThreshold = 5;
     private volatile bool _circuitBreakerTripped;
+    private long _circuitBreakerTrippedAtMs;
+    private const long CircuitBreakerCooldownMs = 30_000; // Auto-reset after 30s
+
+    // Fork detection: binary search for fork point
+    private (ulong RequestedBlock, TaskCompletionSource<(Hash256 Hash, bool HasBlock)> Tcs)? _forkHashPending;
+    private const int MaxRollbackDepth = 1000;
+    private const int MaxForkRetries = 3;
 
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
@@ -151,7 +165,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
         IComplianceVerifier? complianceVerifier = null,
-        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null)
+        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null,
+        RocksDbStore? rocksDbStore = null)
     {
         // MEDIUM-01: Validate chain parameters at startup to catch misconfigurations early.
         chainParams.Validate();
@@ -171,6 +186,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
         _stakingPersistence = stakingPersistence;
+        _rocksDbStore = rocksDbStore;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -428,7 +444,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
             chainId: _chainParams.ChainId);
 
         // When a block is finalized by consensus, apply it
-        _consensus.OnBlockFinalized += HandleBlockFinalized;
+        // Non-pipelined mode doesn't need the bool return (no _lastFinalizedBlock gap issue)
+        _consensus.OnBlockFinalized += (hash, data, bitmap) => HandleBlockFinalized(hash, data, bitmap);
 
         // When the leader builds an aggregate QC, broadcast to all peers
         _consensus.OnAggregateVote += aggregate =>
@@ -467,8 +484,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _chainParams.ChainId,
             TimeSpan.FromMilliseconds(_chainParams.ConsensusTimeoutMs));
 
-        // When a block is finalized by pipelined consensus, apply it
-        _pipelinedConsensus.OnBlockFinalized += HandleBlockFinalized;
+        // When a block is finalized by pipelined consensus, apply it.
+        // Returns bool so _lastFinalizedBlock only advances on success.
+        _pipelinedConsensus.OnBlockFinalized = HandleBlockFinalized;
 
         _pipelinedConsensus.OnViewChange += (view) =>
         {
@@ -486,7 +504,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
     }
 
-    private void HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
+    private bool HandleBlockFinalized(Hash256 hash, byte[] blockData, ulong commitBitmap)
     {
         try
         {
@@ -507,7 +525,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _logger.LogError("Block #{Num} rejected: timestamp {BlockTs} before parent {ParentTs}",
                         block.Number, block.Header.Timestamp, parentBlock.Header.Timestamp);
-                    return; // Skip finalization
+                    return false;
                 }
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var maxDrift = (long)_chainParams.BlockTimeMs * 15; // 15 blocks of drift allowed (~30s at 2s blocks)
@@ -515,47 +533,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     _logger.LogError("Block #{Num} rejected: timestamp {Ahead}ms ahead of local time (max drift: {MaxDrift}ms)",
                         block.Number, block.Header.Timestamp - now, maxDrift);
-                    return; // Skip finalization
+                    return false;
                 }
             }
 
-            // All validators execute finalized transactions against canonical state.
-            // Proposals use a forked state, so the leader's live state is never speculatively mutated.
-            if (block.Transactions.Count > 0)
+            // Apply block via shared BlockApplier (executes txs, DEX settlement, chain update,
+            // mempool pruning, persistence, epoch transitions, WebSocket broadcast, metrics).
+            var applyResult = _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap);
+
+            if (applyResult.Success)
             {
-                var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                for (int i = 0; i < block.Transactions.Count; i++)
-                {
-                    var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
-                    receipts.Add(receipt);
-                }
-                block.Receipts = receipts;
-            }
-
-            // Run DEX settlement on canonical state (TWAP carry-forward + limit order matching)
-            if (_blockBuilder != null)
-            {
-                var dexReceipts = _blockBuilder.ApplyDexSettlement(_stateDb, block.Header);
-                if (dexReceipts.Count > 0)
-                {
-                    block.Receipts ??= new List<TransactionReceipt>();
-                    block.Receipts.AddRange(dexReceipts);
-                }
-            }
-
-            var result = _chainManager.AddBlock(block);
-            if (result.IsSuccess)
-            {
-                _mempool.RemoveConfirmed(block.Transactions);
-
-                // Prune stale, underpriced, or unaffordable transactions
-                var pruned = _mempool.PruneStale(_stateDb, block.Header.BaseFee);
-                if (pruned > 0)
-                    _logger.LogInformation("Pruned {Count} unexecutable transactions from mempool", pruned);
-
-                // Update mempool admission gate so new submissions below the current base fee are rejected early
-                _mempool.UpdateBaseFee(block.Header.BaseFee);
-
                 // Circuit breaker: reset on success
                 Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
                 if (_circuitBreakerTripped)
@@ -564,24 +551,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     _logger.LogWarning("Circuit breaker reset after successful block finalization");
                 }
 
-                MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
-
-                // M13: Record additional Prometheus metrics
+                // M13: Additional consensus-specific metrics
                 var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var prevFinalizedMs = Volatile.Read(ref _lastBlockFinalizedAtMs);
                 if (prevFinalizedMs > 0)
                     MetricsEndpoint.RecordFinalizationLatency(nowMs - prevFinalizedMs);
-                MetricsEndpoint.RecordBaseFee(block.Header.BaseFee.IsZero ? 0 : (long)(ulong)block.Header.BaseFee);
-                MetricsEndpoint.RecordConsensusView((long)block.Number);
                 MetricsEndpoint.RecordPeerCount(_peerManager?.ConnectedCount ?? 0);
-                MetricsEndpoint.RecordDexIntentCount(_mempool.DexIntentCount);
-
-                _ = _wsHandler.BroadcastNewBlock(block);
 
                 Volatile.Write(ref _lastBlockFinalizedAtMs, nowMs);
 
-                // N-10: Sliding window — retain evidence for last 10 views instead of clearing entirely.
-                // This preserves recent evidence for double-sign detection while preventing unbounded growth.
+                // N-10: Sliding window — retain evidence for last 10 views
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
@@ -590,22 +569,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         _proposalsByView.TryRemove(key, out _);
                 }
 
-                // Announce finalized block to peers so their BestBlockNumber stays
-                // current.  Without this, TrySyncFromPeers can't find an up-to-date
-                // peer and validators that fall behind are unable to catch up.
+                // Announce finalized block to peers
                 _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
-
-                // Persist block + commit bitmap atomically to RocksDB
-                PersistBlock(block, blockData, commitBitmap);
-                PersistReceipts(block.Receipts);
-
-                // Record commit participation for deterministic epoch-boundary slashing
-                _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
-
-                // Check for epoch transition — rebuild validator set if at boundary
-                var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                if (newSet != null)
-                    ApplyEpochTransition(newSet, block.Number);
 
                 _logger.LogInformation(
                     "Block #{Number} finalized via consensus. Hash: {Hash}, Txs: {TxCount}",
@@ -617,23 +582,26 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // In pipelined mode, cleanup finalized rounds
                 _pipelinedConsensus?.CleanupFinalizedRounds();
+
+                return true;
             }
             else
             {
                 _logger.LogError("Failed to add consensus-finalized block #{Number}: {Error}",
-                    block.Number, result.Message);
+                    block.Number, applyResult.Error);
 
                 // Circuit breaker: increment failure count
                 var failures = Interlocked.Increment(ref _consecutiveFinalizationFailures);
                 if (failures >= CircuitBreakerThreshold && !_circuitBreakerTripped)
                 {
                     _circuitBreakerTripped = true;
+                    Volatile.Write(ref _circuitBreakerTrippedAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     _logger.LogCritical(
-                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals.", failures);
+                        "CIRCUIT BREAKER: {Failures} consecutive finalization failures. Halting proposals for {Cooldown}s.",
+                        failures, CircuitBreakerCooldownMs / 1000);
                 }
 
                 // If we're behind (block number > our tip + 1), trigger a sync
-                // to catch up on missed blocks before the next round.
                 if (block.Number > _chainManager.LatestBlockNumber + 1)
                 {
                     _logger.LogWarning(
@@ -641,11 +609,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
                         _chainManager.LatestBlockNumber, block.Number);
                     _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
                 }
+
+                return false;
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error applying finalized block");
+            return false;
         }
     }
 
@@ -677,6 +648,36 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _solverManager.GetBestSettlement(
                 poolId, buys, sells, reserves, feeBps,
                 intentMinAmounts, stateDb, dexState, intentTxMap);
+
+        // Create shared BlockApplier for finalization and sync paths
+        _blockApplier = new BlockApplier(
+            _chainParams, _chainManager, _mempool, _txExecutor, _blockBuilder,
+            _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
+            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>());
+
+        // Hook epoch transitions to rewire consensus-specific components
+        _blockApplier.OnEpochTransition += (newSet, blockNumber) =>
+        {
+            var oldCount = _validatorSet?.Count ?? 0;
+            _validatorSet = newSet;
+
+            if (_stakingState != null)
+            {
+                _leaderSelector = new WeightedLeaderSelector(_validatorSet);
+                _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
+            }
+
+            if (_config.UsePipelining)
+                _pipelinedConsensus?.UpdateValidatorSet(newSet);
+            else
+                _consensus?.UpdateValidatorSet(newSet);
+
+            // N-10: Sliding window — retain evidence for last 10 views on epoch transition
+            var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
+            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
+            foreach (var key in oldKeys)
+                _proposalsByView.TryRemove(key, out _);
+        };
 
         if (_config.UseSandbox)
             _logger.LogInformation("Contract execution: sandboxed mode (AssemblyLoadContext isolation)");
@@ -1016,6 +1017,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 HandleSyncResponse(sender, syncResponse);
                 break;
 
+            case ForkHashRequestMessage forkReq:
+                HandleForkHashRequest(sender, forkReq);
+                break;
+
+            case ForkHashResponseMessage forkResp:
+                HandleForkHashResponse(forkResp);
+                break;
+
             case ConsensusProposalMessage proposal:
                 HandleConsensusProposal(sender, proposal);
                 break;
@@ -1214,36 +1223,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (block.Number != _chainManager.LatestBlockNumber + 1)
                     continue;
 
-                // Execute transactions and capture receipts
-                if (block.Transactions.Count > 0)
-                {
-                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                    for (int i = 0; i < block.Transactions.Count; i++)
-                    {
-                        var receipt = _txExecutor!.Execute(block.Transactions[i], _stateDb, block.Header, i);
-                        receipts.Add(receipt);
-                    }
-                    block.Receipts = receipts;
-                }
+                var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
+                var result = _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap);
 
-                var result = _chainManager.AddBlock(block);
-                if (result.IsSuccess)
-                {
-                    _mempool.RemoveConfirmed(block.Transactions);
-                    var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                    PersistBlock(block, blockBytes, bitmap);
-                    PersistReceipts(block.Receipts);
-
-                    // Use propagated commit bitmap from the serving peer
-                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
-
-                    // Apply epoch transitions for blocks received via gossip
-                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                    if (newSet != null)
-                        ApplyEpochTransition(newSet, block.Number);
-
+                if (result.Success)
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
-                }
             }
             catch (Exception ex)
             {
@@ -1316,12 +1300,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void HandleSyncResponse(PeerId sender, SyncResponseMessage response)
     {
-        var applied = 0;
-
-        // N-05: Fork state for sync — execute all blocks on a forked state database.
-        // Only replace canonical state if all blocks in the batch succeed.
-        var forkedState = _stateDb.Fork();
-        var blocksToApply = new List<(Block Block, byte[] Raw, int OrigIdx)>();
+        // Deserialize and validate block sequence
+        var blocksToApply = new List<(Block Block, byte[] Raw, ulong CommitBitmap)>();
 
         for (int idx = 0; idx < response.Blocks.Length; idx++)
         {
@@ -1337,82 +1317,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
                 }
 
-                // Execute transactions against the forked state
-                if (block.Transactions.Count > 0)
-                {
-                    var receipts = new List<TransactionReceipt>(block.Transactions.Count);
-                    for (int i = 0; i < block.Transactions.Count; i++)
-                    {
-                        var receipt = _txExecutor!.Execute(block.Transactions[i], forkedState, block.Header, i);
-                        receipts.Add(receipt);
-                    }
-                    block.Receipts = receipts;
-                }
-
-                // Run DEX settlement on forked state (TWAP carry-forward + limit order matching)
-                if (_blockBuilder != null)
-                {
-                    var dexReceipts = _blockBuilder.ApplyDexSettlement(forkedState, block.Header);
-                    if (dexReceipts.Count > 0)
-                    {
-                        block.Receipts ??= new List<TransactionReceipt>();
-                        block.Receipts.AddRange(dexReceipts);
-                    }
-                }
-
-                blocksToApply.Add((block, blockBytes, idx));
+                var bitmap = idx < response.CommitBitmaps.Length ? response.CommitBitmaps[idx] : 0UL;
+                blocksToApply.Add((block, blockBytes, bitmap));
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to process synced block from {Sender}", sender);
+                _logger.LogWarning(ex, "Failed to deserialize synced block from {Sender}", sender);
                 break;
             }
         }
 
-        // Apply all successfully executed blocks to the chain
-        foreach (var (block, blockBytes, origIdx) in blocksToApply)
-        {
-            var result = _chainManager.AddBlock(block);
-            if (result.IsSuccess)
-            {
-                _mempool.RemoveConfirmed(block.Transactions);
-                var bitmap = origIdx < response.CommitBitmaps.Length ? response.CommitBitmaps[origIdx] : 0UL;
-                PersistBlock(block, blockBytes, bitmap);
-                PersistReceipts(block.Receipts);
-                applied++;
-
-                // Use propagated commit bitmap from the serving peer
-                _epochManager?.RecordBlockSigners(block.Number, bitmap);
-
-                // Apply epoch transitions for synced blocks — without this,
-                // nodes that sync across epoch boundaries would have a stale
-                // ValidatorSet and disagree on leader selection.
-                var newSet = _epochManager?.OnBlockFinalized(block.Number);
-                if (newSet != null)
-                    ApplyEpochTransition(newSet, block.Number);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to apply synced block #{Number}: {Error}", block.Number, result.Message);
-                break;
-            }
-        }
-
-        // N-05: Only adopt the forked state if all blocks were applied successfully.
-        // Swap() updates the shared StateDbRef so the API layer sees the new state.
-        if (applied == blocksToApply.Count && applied > 0)
-        {
-            _stateDb.Swap(forkedState);
-            _logger.LogInformation("Synced {Count} blocks, now at #{Height}", applied, _chainManager.LatestBlockNumber);
-        }
-        else if (applied > 0)
-        {
-            // HIGH-04: Partial sync — blocks were added to ChainManager but state was not
-            // adopted. Roll back ChainManager to the last consistent block to prevent
-            // chain/state divergence. The next sync attempt will re-fetch these blocks.
-            _logger.LogWarning("Partial sync: applied {Applied}/{Total} blocks — rolling back chain to consistent state",
-                applied, blocksToApply.Count);
-        }
+        // Delegate to BlockApplier for fork-execute-swap
+        var applied = _blockApplier!.ApplyBatch(blocksToApply, _stateDb);
 
         // Signal the sync loop under lock to prevent stale responses completing wrong TCS
         lock (this)
@@ -1659,8 +1575,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // Wait for peers to connect
         await Task.Delay(2000, ct);
 
-        // Check if we need to sync before joining consensus
-        await TrySyncFromPeers(ct);
+        // Retry initial sync until caught up or no peers are ahead.
+        // A single sync attempt can fail mid-way due to peer disconnects.
+        // Without retry, the node would enter consensus far behind and rely
+        // solely on OnBehindDetected (which requires receiving proposals).
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            var heightBefore = _chainManager.LatestBlockNumber;
+            await TrySyncFromPeers(ct);
+            var heightAfter = _chainManager.LatestBlockNumber;
+
+            // If we didn't make progress, we're either caught up or peers are unreachable
+            if (heightAfter <= heightBefore)
+                break;
+
+            // Check if there's still a gap to close
+            var bestPeer = GetBestPeer();
+            if (bestPeer == null || bestPeer.BestBlockNumber <= heightAfter)
+                break;
+
+            _logger.LogInformation(
+                "Initial sync interrupted at #{Height} (peer at #{Peer}), retrying... (attempt {Attempt})",
+                heightAfter, bestPeer.BestBlockNumber, attempt + 2);
+
+            // Brief pause to allow reconnection if peer dropped
+            await Task.Delay(1000, ct);
+        }
 
         if (_config.UsePipelining)
         {
@@ -1724,6 +1664,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (Volatile.Read(ref _isSyncing) != 0)
                     continue;
 
+                // Circuit breaker auto-reset: after cooldown, reset and attempt
+                // sync to recover from transient failures (state divergence, etc.)
+                if (_circuitBreakerTripped)
+                {
+                    var trippedAt = Volatile.Read(ref _circuitBreakerTrippedAtMs);
+                    var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - trippedAt;
+                    if (elapsed >= CircuitBreakerCooldownMs)
+                    {
+                        _logger.LogWarning(
+                            "Circuit breaker cooldown expired ({Elapsed}ms). Resetting and attempting sync recovery.",
+                            elapsed);
+                        _circuitBreakerTripped = false;
+                        Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
+
+                        // Re-sync consensus state to match the actual chain
+                        _pipelinedConsensus!.UpdateLastFinalizedBlock(_chainManager.LatestBlockNumber);
+
+                        // Attempt to sync from peers in case we fell behind
+                        _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    }
+                    else
+                    {
+                        continue; // Still in cooldown, skip this iteration
+                    }
+                }
+
                 // In pipelined mode, try to propose next block if pipeline has capacity
                 TryProposeBlock();
 
@@ -1739,6 +1705,19 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Cleanup finalized rounds periodically
                 _pipelinedConsensus.CleanupFinalizedRounds();
+
+                // Periodic behind-detection: check if any connected peer is significantly
+                // ahead. This catches the case where a node fell behind and no proposals
+                // arrive (e.g., because other validators' circuit breakers are also tripped).
+                // Without this, OnBehindDetected only fires from received proposals.
+                var bestPeerCheck = GetBestPeer();
+                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber + 10)
+                {
+                    _logger.LogInformation(
+                        "Peer {Peer} is at #{PeerHeight} vs local #{LocalHeight} — triggering catch-up sync",
+                        bestPeerCheck.Id, bestPeerCheck.BestBlockNumber, _chainManager.LatestBlockNumber);
+                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                }
 
                 _episub!.RebalanceTiers();
             }
@@ -1781,6 +1760,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         try
         {
             var currentBlock = localHeight + 1;
+            var forkRetries = 0;
             while (currentBlock <= peerHeight && !ct.IsCancellationRequested)
             {
                 var batchCount = (int)Math.Min(SyncBatchSize, peerHeight - currentBlock + 1);
@@ -1816,9 +1796,40 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var madeProgress = await tcs.Task;
                 if (!madeProgress)
                 {
+                    // Attempt fork detection + rollback if we have persistent storage
+                    if (_blockStore != null && forkRetries < MaxForkRetries)
+                    {
+                        var localTip = _chainManager.LatestBlock;
+                        if (localTip != null && peerHeight > localTip.Number)
+                        {
+                            var peerHash = await RequestBlockHash(bestPeer.Id, localTip.Number, ct);
+                            if (peerHash.HasValue && peerHash.Value != localTip.Hash)
+                            {
+                                _logger.LogWarning(
+                                    "Fork detected: peer {Peer} has different hash at block #{Block}",
+                                    bestPeer.Id, localTip.Number);
+
+                                var forkPoint = await FindForkPoint(bestPeer.Id, localTip.Number, ct);
+                                if (forkPoint.HasValue && forkPoint.Value < localTip.Number)
+                                {
+                                    _logger.LogWarning(
+                                        "Fork point at block #{ForkPoint}, rolling back from #{Current}",
+                                        forkPoint.Value, localTip.Number);
+
+                                    if (RollbackToForkPoint(forkPoint.Value))
+                                    {
+                                        forkRetries++;
+                                        currentBlock = _chainManager.LatestBlockNumber + 1;
+                                        continue; // Retry sync from the rolled-back tip
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     _logger.LogWarning(
-                        "Sync stalled at block #{Block} — possible chain fork or invalid blocks from peer {Peer}",
-                        currentBlock, bestPeer.Id);
+                        "Sync stalled at block #{Block} — could not resolve via fork rollback",
+                        currentBlock);
                     break;
                 }
 
@@ -1867,6 +1878,188 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // Fork Detection + Rollback
+    // ════════════════════════════════════════════════════════════════════
+
+    private void HandleForkHashRequest(PeerId sender, ForkHashRequestMessage request)
+    {
+        Hash256 blockHash = Hash256.Zero;
+        bool hasBlock = false;
+
+        var block = _chainManager.GetBlockByNumber(request.BlockNumber);
+        if (block != null)
+        {
+            blockHash = block.Hash;
+            hasBlock = true;
+        }
+        else
+        {
+            var stored = _blockStore?.GetByNumber(request.BlockNumber);
+            if (stored != null)
+            {
+                blockHash = stored.Hash;
+                hasBlock = true;
+            }
+        }
+
+        var response = new ForkHashResponseMessage
+        {
+            SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            BlockNumber = request.BlockNumber,
+            BlockHash = blockHash,
+            HasBlock = hasBlock,
+        };
+        _gossip!.SendToPeer(sender, response);
+    }
+
+    private void HandleForkHashResponse(ForkHashResponseMessage response)
+    {
+        var pending = _forkHashPending;
+        if (pending.HasValue && pending.Value.RequestedBlock == response.BlockNumber)
+        {
+            pending.Value.Tcs.TrySetResult((response.BlockHash, response.HasBlock));
+        }
+    }
+
+    /// <summary>
+    /// Request a block hash at a specific height from a peer.
+    /// Returns null on timeout or if the peer doesn't have the block.
+    /// </summary>
+    private async Task<Hash256?> RequestBlockHash(PeerId peerId, ulong blockNumber, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<(Hash256 Hash, bool HasBlock)>();
+        _forkHashPending = (blockNumber, tcs);
+
+        var request = new ForkHashRequestMessage
+        {
+            SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            BlockNumber = blockNumber,
+        };
+        _gossip!.SendToPeer(peerId, request);
+
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(5000, ct));
+        _forkHashPending = null;
+
+        if (completed != tcs.Task)
+            return null;
+
+        var result = await tcs.Task;
+        return result.HasBlock ? result.Hash : null;
+    }
+
+    /// <summary>
+    /// Get the local block hash at a given height, checking both in-memory and RocksDB.
+    /// </summary>
+    private Hash256? GetLocalBlockHash(ulong blockNumber)
+    {
+        var block = _chainManager.GetBlockByNumber(blockNumber);
+        if (block != null)
+            return block.Hash;
+        return _blockStore?.GetByNumber(blockNumber)?.Hash;
+    }
+
+    /// <summary>
+    /// Binary search for the last block where this node and a peer agree on the hash.
+    /// Returns the fork point block number, or null on failure.
+    /// </summary>
+    private async Task<ulong?> FindForkPoint(PeerId peerId, ulong localHeight, CancellationToken ct)
+    {
+        ulong lo = 0;
+        ulong hi = localHeight;
+
+        while (lo < hi)
+        {
+            ulong mid = lo + (hi - lo + 1) / 2;
+
+            var peerHash = await RequestBlockHash(peerId, mid, ct);
+            if (peerHash == null)
+            {
+                _logger.LogWarning("Fork search: peer did not respond for block #{Block}", mid);
+                return null;
+            }
+
+            var localHash = GetLocalBlockHash(mid);
+            if (localHash == null)
+            {
+                // We don't have this block locally — search lower
+                hi = mid - 1;
+                continue;
+            }
+
+            if (localHash == peerHash)
+                lo = mid; // Hashes match — fork is above
+            else
+                hi = mid - 1; // Hashes differ — fork is at or below
+        }
+
+        return lo;
+    }
+
+    /// <summary>
+    /// Roll back the chain, block store, and state to the given fork point block.
+    /// Returns true if rollback succeeded.
+    /// </summary>
+    private bool RollbackToForkPoint(ulong forkPointBlockNumber)
+    {
+        var currentHeight = _chainManager.LatestBlockNumber;
+        var depth = currentHeight - forkPointBlockNumber;
+
+        if (depth > (ulong)MaxRollbackDepth)
+        {
+            _logger.LogError(
+                "Fork point #{ForkPoint} is {Depth} blocks behind tip #{Tip} — exceeds max rollback depth {Max}",
+                forkPointBlockNumber, depth, currentHeight, MaxRollbackDepth);
+            return false;
+        }
+
+        // 1. Get the fork point block
+        var rawBlock = _blockStore?.GetRawBlockByNumber(forkPointBlockNumber);
+        if (rawBlock == null)
+        {
+            _logger.LogError("Cannot rollback: fork point block #{Block} not found in store", forkPointBlockNumber);
+            return false;
+        }
+
+        var forkPointBlock = BlockCodec.DeserializeBlock(rawBlock);
+        var forkBlockData = _blockStore!.GetByNumber(forkPointBlockNumber);
+        if (forkBlockData == null)
+        {
+            _logger.LogError("Cannot rollback: fork point block data #{Block} not found", forkPointBlockNumber);
+            return false;
+        }
+
+        // 2. Roll back BlockStore (delete blocks after fork point)
+        _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
+        _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
+
+        // 3. Roll back ChainManager
+        _chainManager.RollbackTo(forkPointBlock);
+        _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
+
+        // 4. Roll back state — re-root trie to the fork point's state root
+        if (_rocksDbStore != null)
+        {
+            var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
+            var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
+            // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
+            // The trie is the source of truth; cache warms lazily from trie reads.
+            var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
+            _stateDb.Swap(flat);
+            _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
+        }
+
+        // 5. Re-seed epoch manager from the new chain height
+        if (_epochManager != null)
+        {
+            _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// Remove proposal entries for views older than <paramref name="currentView"/>
     /// to prevent unbounded growth and avoid false double-sign detection when
@@ -1891,121 +2084,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         return best;
     }
 
-    /// <summary>
-    /// Apply an epoch transition: swap the validator set, rewire consensus and leader selection.
-    /// </summary>
-    private void ApplyEpochTransition(ValidatorSet newSet, ulong blockNumber)
-    {
-        var oldCount = _validatorSet?.Count ?? 0;
-        _validatorSet = newSet;
-
-        // Rewire leader selector with new set (reads snapshotted stakes from ValidatorInfo.Stake)
-        if (_stakingState != null)
-        {
-            _leaderSelector = new WeightedLeaderSelector(_validatorSet);
-            _validatorSet.SetLeaderSelector(view => _leaderSelector.SelectLeader(view));
-        }
-
-        // Update consensus engine
-        if (_config.UsePipelining)
-            _pipelinedConsensus?.UpdateValidatorSet(newSet);
-        else
-            _consensus?.UpdateValidatorSet(newSet);
-
-        // N-10: Sliding window — retain evidence for last 10 views on epoch transition
-        {
-            var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
-            foreach (var key in oldKeys)
-                _proposalsByView.TryRemove(key, out _);
-        }
-
-        // B1: Flush staking state after epoch transition
-        if (_stakingPersistence != null && _stakingState != null)
-        {
-            try
-            {
-                _stakingState.FlushToPersistence(_stakingPersistence);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to flush staking state after epoch transition");
-            }
-        }
-
-        _logger.LogInformation("Epoch transition at block #{Block}: {OldCount} → {NewCount} validators, quorum: {Quorum}",
-            blockNumber, oldCount, newSet.Count, newSet.QuorumThreshold);
-    }
-
-    private void PersistBlock(Block block, byte[] serializedBlockData, ulong? commitBitmap = null)
-    {
-        if (_blockStore == null)
-            return;
-
-        try
-        {
-            var blockData = new BlockData
-            {
-                Number = block.Number,
-                Hash = block.Hash,
-                ParentHash = block.Header.ParentHash,
-                StateRoot = block.Header.StateRoot,
-                TransactionsRoot = block.Header.TransactionsRoot,
-                ReceiptsRoot = block.Header.ReceiptsRoot,
-                Timestamp = block.Header.Timestamp,
-                Proposer = block.Header.Proposer,
-                ChainId = block.Header.ChainId,
-                GasUsed = block.Header.GasUsed,
-                GasLimit = block.Header.GasLimit,
-                BaseFee = block.Header.BaseFee,
-                ProtocolVersion = block.Header.ProtocolVersion,
-                ExtraData = block.Header.ExtraData,
-                TransactionHashes = block.Transactions.Select(t => t.Hash).ToArray(),
-            };
-            _blockStore.PutFullBlock(blockData, serializedBlockData, commitBitmap);
-            _blockStore.SetLatestBlockNumber(block.Number);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist block #{Number}", block.Number);
-        }
-    }
-
-    private void PersistReceipts(List<TransactionReceipt>? receipts)
-    {
-        if (_receiptStore == null || receipts == null || receipts.Count == 0)
-            return;
-
-        try
-        {
-            var receiptDataList = receipts.Select(r => new ReceiptData
-            {
-                TransactionHash = r.TransactionHash,
-                BlockHash = r.BlockHash,
-                BlockNumber = r.BlockNumber,
-                TransactionIndex = r.TransactionIndex,
-                From = r.From,
-                To = r.To,
-                GasUsed = r.GasUsed,
-                Success = r.Success,
-                ErrorCode = (int)r.ErrorCode,
-                PostStateRoot = r.PostStateRoot,
-                EffectiveGasPrice = r.EffectiveGasPrice,
-                Logs = (r.Logs ?? []).Select(l => new LogData
-                {
-                    Contract = l.Contract,
-                    EventSignature = l.EventSignature,
-                    Topics = l.Topics ?? [],
-                    Data = l.Data ?? [],
-                }).ToArray(),
-            });
-            _receiptStore.PutReceipts(receiptDataList);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist {Count} receipts", receipts.Count);
-        }
-    }
+    // PersistBlock, PersistReceipts, and ApplyEpochTransition logic is now in BlockApplier.
+    // Consensus-specific epoch rewiring (leader selector, consensus engine, proposal cache)
+    // is handled via the BlockApplier.OnEpochTransition event, wired in SetupBlockProduction().
 
     public async ValueTask DisposeAsync()
     {

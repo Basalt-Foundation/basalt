@@ -160,6 +160,16 @@ public static class MessageCodec
                 WriteUInt64Array(ref writer, syncResp.CommitBitmaps);
                 break;
 
+            case ForkHashRequestMessage forkReq:
+                writer.WriteUInt64(forkReq.BlockNumber);
+                break;
+
+            case ForkHashResponseMessage forkResp:
+                writer.WriteUInt64(forkResp.BlockNumber);
+                writer.WriteHash256(forkResp.BlockHash);
+                writer.WriteBool(forkResp.HasBlock);
+                break;
+
             case IHaveMessage iHave:
                 WriteHashArray(ref writer, iHave.MessageIds);
                 break;
@@ -272,6 +282,18 @@ public static class MessageCodec
             MessageType.ConsensusAggregateVote => ReadAggregateVote(ref reader, senderId, timestamp),
             MessageType.SyncRequest => ReadSyncRequest(ref reader, senderId, timestamp),
             MessageType.SyncResponse => ReadSyncResponse(ref reader, senderId, timestamp),
+            MessageType.ForkHashRequest => new ForkHashRequestMessage
+            {
+                SenderId = senderId, Timestamp = timestamp,
+                BlockNumber = reader.ReadUInt64(),
+            },
+            MessageType.ForkHashResponse => new ForkHashResponseMessage
+            {
+                SenderId = senderId, Timestamp = timestamp,
+                BlockNumber = reader.ReadUInt64(),
+                BlockHash = reader.ReadHash256(),
+                HasBlock = reader.ReadBool(),
+            },
             MessageType.IHave => new IHaveMessage
             {
                 SenderId = senderId, Timestamp = timestamp,
@@ -741,6 +763,8 @@ public static class MessageCodec
             AggregateVoteMessage => 8 + 8 + 32 + 1 + BlsSignature.Size + 8,
             SyncRequestMessage => 8 + 4,
             SyncResponseMessage m => EstimateByteArraysSize(m.Blocks) + 10 + (m.CommitBitmaps.Length * 8),
+            ForkHashRequestMessage => 8,
+            ForkHashResponseMessage => 8 + Hash256.Size + 1,
             IHaveMessage m => 10 + (m.MessageIds.Length * Hash256.Size),
             IWantMessage m => 10 + (m.MessageIds.Length * Hash256.Size),
             GraftMessage => 0,
