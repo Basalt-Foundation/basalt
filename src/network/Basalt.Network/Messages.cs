@@ -31,6 +31,8 @@ public enum MessageType : byte
     // Sync
     SyncRequest = 0x40,
     SyncResponse = 0x41,
+    ForkHashRequest = 0x42,
+    ForkHashResponse = 0x43,
 
     // Gossip protocol (Episub)
     IHave = 0x50,
@@ -467,4 +469,29 @@ public sealed class SolverSolutionMessage : NetworkMessage
 
     /// <summary>Ed25519 signature of BLAKE3(blockNumber || poolId || clearingPrice).</summary>
     public Signature SolverSignature { get; init; }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Fork Detection Messages
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Request the block hash at a specific height from a peer.
+/// Used during fork detection to binary-search for the fork point.
+/// </summary>
+public sealed class ForkHashRequestMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.ForkHashRequest;
+    public ulong BlockNumber { get; init; }
+}
+
+/// <summary>
+/// Response with the block hash at the requested height.
+/// </summary>
+public sealed class ForkHashResponseMessage : NetworkMessage
+{
+    public override MessageType Type => MessageType.ForkHashResponse;
+    public ulong BlockNumber { get; init; }
+    public Hash256 BlockHash { get; init; }
+    public bool HasBlock { get; init; }
 }

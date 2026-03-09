@@ -38,6 +38,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Persistent storage (optional — null when using in-memory)
     private readonly BlockStore? _blockStore;
     private readonly ReceiptStore? _receiptStore;
+    private readonly RocksDbStore? _rocksDbStore;
 
     // Staking / Slashing
     private readonly StakingState? _stakingState;
@@ -132,6 +133,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private long _circuitBreakerTrippedAtMs;
     private const long CircuitBreakerCooldownMs = 30_000; // Auto-reset after 30s
 
+    // Fork detection: binary search for fork point
+    private (ulong RequestedBlock, TaskCompletionSource<(Hash256 Hash, bool HasBlock)> Tcs)? _forkHashPending;
+    private const int MaxRollbackDepth = 1000;
+    private const int MaxForkRetries = 3;
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -159,7 +165,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
         IComplianceVerifier? complianceVerifier = null,
-        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null)
+        Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null,
+        RocksDbStore? rocksDbStore = null)
     {
         // MEDIUM-01: Validate chain parameters at startup to catch misconfigurations early.
         chainParams.Validate();
@@ -179,6 +186,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
         _stakingPersistence = stakingPersistence;
+        _rocksDbStore = rocksDbStore;
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -1009,6 +1017,14 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 HandleSyncResponse(sender, syncResponse);
                 break;
 
+            case ForkHashRequestMessage forkReq:
+                HandleForkHashRequest(sender, forkReq);
+                break;
+
+            case ForkHashResponseMessage forkResp:
+                HandleForkHashResponse(forkResp);
+                break;
+
             case ConsensusProposalMessage proposal:
                 HandleConsensusProposal(sender, proposal);
                 break;
@@ -1744,6 +1760,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         try
         {
             var currentBlock = localHeight + 1;
+            var forkRetries = 0;
             while (currentBlock <= peerHeight && !ct.IsCancellationRequested)
             {
                 var batchCount = (int)Math.Min(SyncBatchSize, peerHeight - currentBlock + 1);
@@ -1779,9 +1796,40 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 var madeProgress = await tcs.Task;
                 if (!madeProgress)
                 {
+                    // Attempt fork detection + rollback if we have persistent storage
+                    if (_blockStore != null && forkRetries < MaxForkRetries)
+                    {
+                        var localTip = _chainManager.LatestBlock;
+                        if (localTip != null && peerHeight > localTip.Number)
+                        {
+                            var peerHash = await RequestBlockHash(bestPeer.Id, localTip.Number, ct);
+                            if (peerHash.HasValue && peerHash.Value != localTip.Hash)
+                            {
+                                _logger.LogWarning(
+                                    "Fork detected: peer {Peer} has different hash at block #{Block}",
+                                    bestPeer.Id, localTip.Number);
+
+                                var forkPoint = await FindForkPoint(bestPeer.Id, localTip.Number, ct);
+                                if (forkPoint.HasValue && forkPoint.Value < localTip.Number)
+                                {
+                                    _logger.LogWarning(
+                                        "Fork point at block #{ForkPoint}, rolling back from #{Current}",
+                                        forkPoint.Value, localTip.Number);
+
+                                    if (RollbackToForkPoint(forkPoint.Value))
+                                    {
+                                        forkRetries++;
+                                        currentBlock = _chainManager.LatestBlockNumber + 1;
+                                        continue; // Retry sync from the rolled-back tip
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     _logger.LogWarning(
-                        "Sync stalled at block #{Block} — possible chain fork or invalid blocks from peer {Peer}",
-                        currentBlock, bestPeer.Id);
+                        "Sync stalled at block #{Block} — could not resolve via fork rollback",
+                        currentBlock);
                     break;
                 }
 
@@ -1828,6 +1876,188 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
             }
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Fork Detection + Rollback
+    // ════════════════════════════════════════════════════════════════════
+
+    private void HandleForkHashRequest(PeerId sender, ForkHashRequestMessage request)
+    {
+        Hash256 blockHash = Hash256.Zero;
+        bool hasBlock = false;
+
+        var block = _chainManager.GetBlockByNumber(request.BlockNumber);
+        if (block != null)
+        {
+            blockHash = block.Hash;
+            hasBlock = true;
+        }
+        else
+        {
+            var stored = _blockStore?.GetByNumber(request.BlockNumber);
+            if (stored != null)
+            {
+                blockHash = stored.Hash;
+                hasBlock = true;
+            }
+        }
+
+        var response = new ForkHashResponseMessage
+        {
+            SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            BlockNumber = request.BlockNumber,
+            BlockHash = blockHash,
+            HasBlock = hasBlock,
+        };
+        _gossip!.SendToPeer(sender, response);
+    }
+
+    private void HandleForkHashResponse(ForkHashResponseMessage response)
+    {
+        var pending = _forkHashPending;
+        if (pending.HasValue && pending.Value.RequestedBlock == response.BlockNumber)
+        {
+            pending.Value.Tcs.TrySetResult((response.BlockHash, response.HasBlock));
+        }
+    }
+
+    /// <summary>
+    /// Request a block hash at a specific height from a peer.
+    /// Returns null on timeout or if the peer doesn't have the block.
+    /// </summary>
+    private async Task<Hash256?> RequestBlockHash(PeerId peerId, ulong blockNumber, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<(Hash256 Hash, bool HasBlock)>();
+        _forkHashPending = (blockNumber, tcs);
+
+        var request = new ForkHashRequestMessage
+        {
+            SenderId = _localPeerId,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            BlockNumber = blockNumber,
+        };
+        _gossip!.SendToPeer(peerId, request);
+
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(5000, ct));
+        _forkHashPending = null;
+
+        if (completed != tcs.Task)
+            return null;
+
+        var result = await tcs.Task;
+        return result.HasBlock ? result.Hash : null;
+    }
+
+    /// <summary>
+    /// Get the local block hash at a given height, checking both in-memory and RocksDB.
+    /// </summary>
+    private Hash256? GetLocalBlockHash(ulong blockNumber)
+    {
+        var block = _chainManager.GetBlockByNumber(blockNumber);
+        if (block != null)
+            return block.Hash;
+        return _blockStore?.GetByNumber(blockNumber)?.Hash;
+    }
+
+    /// <summary>
+    /// Binary search for the last block where this node and a peer agree on the hash.
+    /// Returns the fork point block number, or null on failure.
+    /// </summary>
+    private async Task<ulong?> FindForkPoint(PeerId peerId, ulong localHeight, CancellationToken ct)
+    {
+        ulong lo = 0;
+        ulong hi = localHeight;
+
+        while (lo < hi)
+        {
+            ulong mid = lo + (hi - lo + 1) / 2;
+
+            var peerHash = await RequestBlockHash(peerId, mid, ct);
+            if (peerHash == null)
+            {
+                _logger.LogWarning("Fork search: peer did not respond for block #{Block}", mid);
+                return null;
+            }
+
+            var localHash = GetLocalBlockHash(mid);
+            if (localHash == null)
+            {
+                // We don't have this block locally — search lower
+                hi = mid - 1;
+                continue;
+            }
+
+            if (localHash == peerHash)
+                lo = mid; // Hashes match — fork is above
+            else
+                hi = mid - 1; // Hashes differ — fork is at or below
+        }
+
+        return lo;
+    }
+
+    /// <summary>
+    /// Roll back the chain, block store, and state to the given fork point block.
+    /// Returns true if rollback succeeded.
+    /// </summary>
+    private bool RollbackToForkPoint(ulong forkPointBlockNumber)
+    {
+        var currentHeight = _chainManager.LatestBlockNumber;
+        var depth = currentHeight - forkPointBlockNumber;
+
+        if (depth > (ulong)MaxRollbackDepth)
+        {
+            _logger.LogError(
+                "Fork point #{ForkPoint} is {Depth} blocks behind tip #{Tip} — exceeds max rollback depth {Max}",
+                forkPointBlockNumber, depth, currentHeight, MaxRollbackDepth);
+            return false;
+        }
+
+        // 1. Get the fork point block
+        var rawBlock = _blockStore?.GetRawBlockByNumber(forkPointBlockNumber);
+        if (rawBlock == null)
+        {
+            _logger.LogError("Cannot rollback: fork point block #{Block} not found in store", forkPointBlockNumber);
+            return false;
+        }
+
+        var forkPointBlock = BlockCodec.DeserializeBlock(rawBlock);
+        var forkBlockData = _blockStore!.GetByNumber(forkPointBlockNumber);
+        if (forkBlockData == null)
+        {
+            _logger.LogError("Cannot rollback: fork point block data #{Block} not found", forkPointBlockNumber);
+            return false;
+        }
+
+        // 2. Roll back BlockStore (delete blocks after fork point)
+        _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
+        _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
+
+        // 3. Roll back ChainManager
+        _chainManager.RollbackTo(forkPointBlock);
+        _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
+
+        // 4. Roll back state — re-root trie to the fork point's state root
+        if (_rocksDbStore != null)
+        {
+            var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
+            var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
+            // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
+            // The trie is the source of truth; cache warms lazily from trie reads.
+            var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
+            _stateDb.Swap(flat);
+            _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
+        }
+
+        // 5. Re-seed epoch manager from the new chain height
+        if (_epochManager != null)
+        {
+            _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
+        }
+
+        return true;
     }
 
     /// <summary>

@@ -189,6 +189,28 @@ public sealed class ChainManager
     }
 
     /// <summary>
+    /// Roll back the chain to the given target block, removing all blocks after it.
+    /// Used during fork recovery to revert to the last common ancestor.
+    /// </summary>
+    public void RollbackTo(Block targetBlock)
+    {
+        lock (_lock)
+        {
+            var toRemove = _blocksByNumber.Keys.Where(n => n > targetBlock.Number).ToList();
+            foreach (var number in toRemove)
+            {
+                if (_blocksByNumber.Remove(number, out var block))
+                    _blocksByHash.Remove(block.Hash);
+            }
+
+            // Ensure the target block is tracked
+            _blocksByHash[targetBlock.Hash] = targetBlock;
+            _blocksByNumber[targetBlock.Number] = targetBlock;
+            _latestBlock = targetBlock;
+        }
+    }
+
+    /// <summary>
     /// H-9: Evict old blocks beyond the retention window to prevent unbounded memory growth.
     /// Retains genesis (block 0) and the most recent MaxInMemoryBlocks blocks.
     /// Must be called under _lock.

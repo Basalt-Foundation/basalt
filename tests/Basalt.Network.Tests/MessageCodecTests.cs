@@ -796,4 +796,64 @@ public class MessageCodecTests
         var result = Assert.IsType<SolverSolutionMessage>(deserialized);
         Assert.Empty(result.SerializedFills);
     }
+
+    [Fact]
+    public void Roundtrip_ForkHashRequestMessage()
+    {
+        var original = new ForkHashRequestMessage
+        {
+            SenderId = MakePeerId(33),
+            Timestamp = Now(),
+            BlockNumber = 12345UL,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<ForkHashRequestMessage>(deserialized);
+        AssertHeaderEquals(original, result);
+        Assert.Equal(original.BlockNumber, result.BlockNumber);
+    }
+
+    [Fact]
+    public void Roundtrip_ForkHashResponseMessage()
+    {
+        var original = new ForkHashResponseMessage
+        {
+            SenderId = MakePeerId(34),
+            Timestamp = Now(),
+            BlockNumber = 12345UL,
+            BlockHash = MakeHash(0xAB),
+            HasBlock = true,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<ForkHashResponseMessage>(deserialized);
+        AssertHeaderEquals(original, result);
+        Assert.Equal(original.BlockNumber, result.BlockNumber);
+        Assert.Equal(original.BlockHash, result.BlockHash);
+        Assert.True(result.HasBlock);
+    }
+
+    [Fact]
+    public void Roundtrip_ForkHashResponseMessage_NoBlock()
+    {
+        var original = new ForkHashResponseMessage
+        {
+            SenderId = MakePeerId(35),
+            Timestamp = Now(),
+            BlockNumber = 99999UL,
+            BlockHash = Hash256.Zero,
+            HasBlock = false,
+        };
+
+        var bytes = MessageCodec.Serialize(original);
+        var deserialized = MessageCodec.Deserialize(bytes);
+
+        var result = Assert.IsType<ForkHashResponseMessage>(deserialized);
+        Assert.Equal(original.BlockNumber, result.BlockNumber);
+        Assert.False(result.HasBlock);
+    }
 }

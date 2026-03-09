@@ -435,7 +435,8 @@ try
                 blockStore, receiptStore,
                 stakingState, slashingEngine,
                 complianceEngine,
-                stakingPersistence);
+                stakingPersistence,
+                rocksDbStore);
 
             // E4: Wire solver manager into REST API adapter after NodeCoordinator is initialized
             if (coordinator.SolverManager != null)
