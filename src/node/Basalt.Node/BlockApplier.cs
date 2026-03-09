@@ -244,6 +244,16 @@ public sealed class BlockApplier
                 applied, blocks.Count);
         }
 
+        // WebSocket broadcast + metrics for the latest synced block
+        if (applied > 0)
+        {
+            var lastApplied = blocks[applied - 1].Block;
+            _ = _wsHandler.BroadcastNewBlock(lastApplied);
+            MetricsEndpoint.RecordBlock(lastApplied.Transactions.Count, lastApplied.Header.Timestamp);
+            MetricsEndpoint.RecordBaseFee(lastApplied.Header.BaseFee.IsZero ? 0 : (long)(ulong)lastApplied.Header.BaseFee);
+            MetricsEndpoint.RecordConsensusView((long)lastApplied.Number);
+        }
+
         // Prune mempool after sync with current base fee
         var latestBlock = _chainManager.LatestBlock;
         if (latestBlock != null && applied > 0)
