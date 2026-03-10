@@ -13,17 +13,15 @@ namespace Basalt.Sdk.Contracts.Policies;
 /// </remarks>
 public sealed class PolicyEnforcer
 {
-    private readonly StorageList<ulong> _policySlots; // placeholder for count tracking
     private readonly StorageMap<string, string> _policies; // index -> policy address hex
+    private readonly StorageMap<string, bool> _policyExists; // address hex -> registered
     private readonly StorageValue<ulong> _policyCount;
-    private readonly string _prefix;
 
     public PolicyEnforcer(string storagePrefix = "pol")
     {
-        _prefix = storagePrefix;
-        _policies = new StorageMap<string, string>($"{_prefix}_addr");
-        _policyCount = new StorageValue<ulong>($"{_prefix}_count");
-        _policySlots = new StorageList<ulong>($"{_prefix}_slots");
+        _policies = new StorageMap<string, string>($"{storagePrefix}_addr");
+        _policyExists = new StorageMap<string, bool>($"{storagePrefix}_exists");
+        _policyCount = new StorageValue<ulong>($"{storagePrefix}_count");
     }
 
     /// <summary>
@@ -37,8 +35,7 @@ public sealed class PolicyEnforcer
     public byte[] GetPolicy(ulong index)
     {
         Context.Require(index < Count, "Policy: index out of bounds");
-        var hex = _policies.Get(index.ToString());
-        return string.IsNullOrEmpty(hex) ? [] : Convert.FromHexString(hex);
+        return Convert.FromHexString(_policies.Get(index.ToString()));
     }
 
     /// <summary>
@@ -49,14 +46,11 @@ public sealed class PolicyEnforcer
         Context.Require(policyAddress.Length == 20, "Policy: invalid address");
         var hex = Convert.ToHexString(policyAddress);
 
-        // Check for duplicates
-        var count = Count;
-        for (ulong i = 0; i < count; i++)
-        {
-            Context.Require(_policies.Get(i.ToString()) != hex, "Policy: already registered");
-        }
+        Context.Require(!_policyExists.Get(hex), "Policy: already registered");
 
+        var count = Count;
         _policies.Set(count.ToString(), hex);
+        _policyExists.Set(hex, true);
         _policyCount.Set(count + 1);
 
         Context.Emit(new PolicyAddedEvent
@@ -91,6 +85,7 @@ public sealed class PolicyEnforcer
 
         Context.Require(found, "Policy: not registered");
         _policies.Delete((count - 1).ToString());
+        _policyExists.Delete(hex);
         _policyCount.Set(count - 1);
 
         Context.Emit(new PolicyRemovedEvent

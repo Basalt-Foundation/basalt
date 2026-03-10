@@ -16,6 +16,11 @@ namespace Basalt.Sdk.Analyzers;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
 {
+    private static readonly string[] StorageTypeNames =
+    {
+        "StorageValue", "StorageMap", "StorageList",
+    };
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(DiagnosticIds.StateWriteBeforePolicyCheck);
 
@@ -56,7 +61,14 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
                 }
                 else if (methodName == "Set")
                 {
-                    storageWrites.Add((invocation, invocation.SpanStart));
+                    // Verify the receiver is a Basalt storage type via semantic model
+                    var receiverType = context.SemanticModel.GetTypeInfo(
+                        memberAccess.Expression, context.CancellationToken).Type;
+
+                    if (receiverType != null && IsStorageType(receiverType))
+                    {
+                        storageWrites.Add((invocation, invocation.SpanStart));
+                    }
                 }
             }
         }
@@ -75,5 +87,16 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
                     ".Set() called before policy enforcement — move state writes after EnforceTransfer()/EnforceNftTransfer()"));
             }
         }
+    }
+
+    private static bool IsStorageType(ITypeSymbol type)
+    {
+        var name = type.Name;
+        for (int i = 0; i < StorageTypeNames.Length; i++)
+        {
+            if (name == StorageTypeNames[i])
+                return true;
+        }
+        return false;
     }
 }

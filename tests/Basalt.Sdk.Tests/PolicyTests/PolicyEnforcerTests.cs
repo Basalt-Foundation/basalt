@@ -135,5 +135,17 @@ public class PolicyEnforcerTests : IDisposable
         msg.Should().Contain("transfer denied");
     }
 
+    [Fact]
+    public void RemovePolicy_AllowsReAddingRemovedPolicy()
+    {
+        _enforcer.AddPolicy(_policyAddr1);
+        _enforcer.RemovePolicy(_policyAddr1);
+        _enforcer.Count.Should().Be(0);
+
+        // Should succeed — existence flag was cleared on remove
+        _enforcer.AddPolicy(_policyAddr1);
+        _enforcer.Count.Should().Be(1);
+    }
+
     public void Dispose() => _host.Dispose();
 }

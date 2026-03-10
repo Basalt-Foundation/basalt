@@ -103,5 +103,18 @@ public class HoldingLimitPolicyTests : IDisposable
         msg.Should().Contain("not admin");
     }
 
+    [Fact]
+    public void CheckTransfer_DeniesWhenBalancePlusAmountOverflows()
+    {
+        _host.SetCaller(_admin);
+        Context.Self = _policyAddr;
+        _policy.SetDefaultLimit(_tokenAddr, new UInt256(100));
+
+        // Transfer a huge amount that would overflow when added to any balance
+        var result = _host.Call(() =>
+            _policy.CheckTransfer(_tokenAddr, _admin, _alice, UInt256.MaxValue));
+        result.Should().BeFalse();
+    }
+
     public void Dispose() => _host.Dispose();
 }

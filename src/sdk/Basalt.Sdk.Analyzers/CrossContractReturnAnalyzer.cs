@@ -32,15 +32,24 @@ public sealed class CrossContractReturnAnalyzer : DiagnosticAnalyzer
         if (!AnalyzerHelper.IsInsideBasaltContract(exprStmt))
             return;
 
-        // Check if the expression is an invocation
         if (exprStmt.Expression is not InvocationExpressionSyntax invocation)
             return;
 
-        var exprText = invocation.Expression.ToString();
+        // Use semantic model to resolve the invocation target
+        var symbolInfo = context.SemanticModel.GetSymbolInfo(invocation, context.CancellationToken);
+        if (symbolInfo.Symbol is not IMethodSymbol method)
+            return;
 
-        // Match Context.CallContract<bool>(...) used as a statement (return value discarded)
-        if (exprText.Contains("CallContract<bool>") ||
-            exprText.Contains("CallContract<Bool>"))
+        // Check for Context.CallContract<bool> — a generic method named CallContract
+        // on a type named Context, with bool as the type argument
+        if (method.Name != "CallContract" || !method.IsGenericMethod)
+            return;
+
+        if (method.ContainingType?.Name != "Context")
+            return;
+
+        if (method.TypeArguments.Length == 1 &&
+            method.TypeArguments[0].SpecialType == SpecialType.System_Boolean)
         {
             context.ReportDiagnostic(Diagnostic.Create(
                 DiagnosticIds.UncheckedCrossContractReturn,

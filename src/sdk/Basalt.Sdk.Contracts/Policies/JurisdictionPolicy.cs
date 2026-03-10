@@ -9,7 +9,7 @@ namespace Basalt.Sdk.Contracts.Policies;
 /// Type ID: 0x000A
 /// </summary>
 [BasaltContract]
-public partial class JurisdictionPolicy : ITransferPolicy
+public partial class JurisdictionPolicy : ITransferPolicy, INftTransferPolicy
 {
     private readonly StorageMap<string, string> _admin;
     private readonly StorageMap<string, bool> _allowedJurisdictions; // "token:countryCode" -> allowed
@@ -91,6 +91,15 @@ public partial class JurisdictionPolicy : ITransferPolicy
 
         // Whitelist: must be listed. Blacklist: must NOT be listed.
         return isWhitelist ? isListed : !isListed;
+    }
+
+    [BasaltView]
+    public bool CheckNftTransfer(byte[] token, byte[] from, byte[] to, ulong tokenId)
+    {
+        var tokenHex = Convert.ToHexString(token);
+        if (!CheckAddress(tokenHex, from)) return false;
+        if (!CheckAddress(tokenHex, to)) return false;
+        return true;
     }
 
     private void RequireAdmin()

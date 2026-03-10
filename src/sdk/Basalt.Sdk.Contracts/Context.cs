@@ -123,6 +123,19 @@ public static class Context
     public static HashSet<string> ReentrancyGuard { get; } = new();
 
     /// <summary>
+    /// Contracts that currently have an active outgoing cross-contract call.
+    /// If any of these is called back (re-entry), the call is forced into static mode.
+    /// </summary>
+    private static readonly HashSet<string> ActiveCallers = new();
+
+    /// <summary>
+    /// True when the current execution is a static (read-only) callback.
+    /// Storage writes are blocked during static calls to prevent reentrancy attacks
+    /// while still allowing view-method callbacks (e.g. policy querying BalanceOf).
+    /// </summary>
+    public static bool IsStaticCall { get; set; }
+
+    /// <summary>
     /// Delegate for cross-contract calls. Set by the runtime/test host.
     /// Parameters: targetAddress, methodName, args. Returns: result object or null.
     /// </summary>
@@ -147,12 +160,18 @@ public static class Context
         var previousEventEmitted = EventEmitted;
         var previousNativeTransferHandler = NativeTransferHandler;
 
+        var selfKey = Convert.ToHexString(Self);
+        var previousIsStaticCall = IsStaticCall;
+
         try
         {
-            // Guard only the target contract against self-reentrancy (B→B).
-            // The caller is NOT guarded, allowing A→B→A callback chains (e.g. policy
-            // contracts querying token.BalanceOf during transfer enforcement).
-            // The BST004 analyzer catches unsafe state-writes-after-external-call patterns.
+            // If the target has an active outgoing call (it's a caller higher in the
+            // chain), this is a re-entrant callback. Force static mode so the callee
+            // can read state (e.g. BalanceOf) but cannot mutate it.
+            if (ActiveCallers.Contains(targetKey))
+                IsStaticCall = true;
+
+            ActiveCallers.Add(selfKey);
             ReentrancyGuard.Add(targetKey);
             CallDepth++;
             Caller = Self; // The calling contract becomes the caller
@@ -165,7 +184,9 @@ public static class Context
         finally
         {
             // H-3: Restore full caller context
+            ActiveCallers.Remove(selfKey);
             ReentrancyGuard.Remove(targetKey);
+            IsStaticCall = previousIsStaticCall;
             CallDepth = previousDepth;
             Caller = previousCaller;
             Self = previousSelf;
@@ -198,6 +219,8 @@ public static class Context
         IsDeploying = false;
         CallDepth = 0;
         ReentrancyGuard.Clear();
+        ActiveCallers.Clear();
+        IsStaticCall = false;
         EventEmitted = null;
         NativeTransferHandler = null;
         CrossContractCallHandler = null;

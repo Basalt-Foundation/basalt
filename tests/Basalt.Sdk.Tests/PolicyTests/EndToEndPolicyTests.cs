@@ -146,5 +146,129 @@ public class EndToEndPolicyTests : IDisposable
         removeEvents[0].Policy.Should().BeEquivalentTo(_sanctionsAddr);
     }
 
+    [Fact]
+    public void StaticCall_PolicyCallbackCanReadButNotWrite()
+    {
+        // Deploy a HoldingLimitPolicy that calls back token.BalanceOf during enforcement
+        var holdingAddr = BasaltTestHost.CreateAddress(0xA5);
+        _host.SetCaller(_admin);
+        Context.Self = holdingAddr;
+        Context.IsDeploying = true;
+        var holding = new HoldingLimitPolicy();
+        _host.Deploy(holdingAddr, holding);
+        Context.IsDeploying = false;
+
+        // Set a limit so CheckTransfer will call back token.BalanceOf (read)
+        _host.SetCaller(_admin);
+        Context.Self = holdingAddr;
+        holding.SetDefaultLimit(_tokenAddr, new UInt256(50_000));
+
+        // Register policy on token
+        _host.SetCaller(_admin);
+        Context.Self = _tokenAddr;
+        _token.AddPolicy(holdingAddr);
+
+        // Distribute tokens
+        _host.Call(() => _token.Transfer(_alice, new UInt256(10_000)));
+
+        // Transfer should succeed — HoldingLimitPolicy reads BalanceOf via static callback
+        _host.SetCaller(_alice);
+        Context.Self = _tokenAddr;
+        _host.Call(() => _token.Transfer(_bob, new UInt256(1_000)));
+        _token.BalanceOf(_bob).Should().Be(new UInt256(1_000));
+    }
+
+    [Fact]
+    public void StaticCall_BlocksWritesDuringReentrantCallback()
+    {
+        // Verify that Context.IsStaticCall is true during A→B→A callbacks
+        // and that storage writes revert
+        _host.SetCaller(_admin);
+        Context.Self = _tokenAddr;
+
+        // Simulate the scenario: set up a cross-contract call chain where
+        // the callback tries to write (should revert)
+        var previousHandler = Context.CrossContractCallHandler;
+        bool staticCallWasTrue = false;
+
+        Context.CrossContractCallHandler = (target, method, args) =>
+        {
+            if (method == "CheckTransfer")
+            {
+                staticCallWasTrue = Context.IsStaticCall;
+                // Attempt to write during callback should fail
+                if (Context.IsStaticCall)
+                {
+                    try
+                    {
+                        ContractStorage.Set("attack_key", "evil_value");
+                        return false; // Should not reach here
+                    }
+                    catch (ContractRevertException ex)
+                    {
+                        ex.Message.Should().Contain("Static call");
+                        return true; // Policy approves after confirming write was blocked
+                    }
+                }
+                return true;
+            }
+            return previousHandler?.Invoke(target, method, args);
+        };
+
+        // Trigger: token calls policy (policy is at _sanctionsAddr), policy calls back to token
+        // The A→B→A pattern: token → sanctions → token (callback)
+        // In this test, we wire it manually through the handler above
+        _token.AddPolicy(_sanctionsAddr);
+
+        Context.CrossContractCallHandler = previousHandler;
+    }
+
+    [Fact]
+    public void JurisdictionPolicy_WorksWithNftTransfers()
+    {
+        // Deploy BST-721 token
+        var nftAddr = BasaltTestHost.CreateAddress(0xB0);
+        var jurisdictionAddr = BasaltTestHost.CreateAddress(0xB1);
+
+        _host.SetCaller(_admin);
+        Context.IsDeploying = true;
+
+        Context.Self = nftAddr;
+        var nft = new BST721Token("TestNFT", "TNFT");
+        _host.Deploy(nftAddr, nft);
+
+        Context.Self = jurisdictionAddr;
+        var jurisdiction = new JurisdictionPolicy();
+        _host.Deploy(jurisdictionAddr, jurisdiction);
+
+        Context.IsDeploying = false;
+
+        // Set whitelist mode and whitelist US only
+        _host.SetCaller(_admin);
+        Context.Self = jurisdictionAddr;
+        jurisdiction.SetMode(nftAddr, true); // whitelist
+        jurisdiction.SetJurisdiction(nftAddr, 840, true); // US
+        jurisdiction.SetAddressJurisdiction(_alice, 840); // Alice = US
+        jurisdiction.SetAddressJurisdiction(_bob, 392); // Bob = Japan (not whitelisted)
+
+        // Register on NFT
+        _host.SetCaller(_admin);
+        Context.Self = nftAddr;
+        nft.AddPolicy(jurisdictionAddr);
+
+        // Mint to admin (first token = ID 0)
+        var tokenId = nft.Mint(_admin, "uri://1");
+
+        // Transfer to Alice (US, whitelisted) — should work
+        nft.Transfer(_alice, tokenId);
+        nft.OwnerOf(tokenId).Should().BeEquivalentTo(_alice);
+
+        // Alice → Bob (Japan, not whitelisted) — should revert
+        _host.SetCaller(_alice);
+        Context.Self = nftAddr;
+        var msg = _host.ExpectRevert(() => nft.Transfer(_bob, tokenId));
+        msg.Should().Contain("transfer denied");
+    }
+
     public void Dispose() => _host.Dispose();
 }

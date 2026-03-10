@@ -91,13 +91,23 @@ public static class ContractStorage
     /// </summary>
     public static IStorageProvider Provider => _provider;
 
-    public static void Set(string key, object? value) => _provider.Set(key, value);
+    public static void Set(string key, object? value)
+    {
+        if (Context.IsStaticCall)
+            throw new ContractRevertException("Static call: state modification not allowed");
+        _provider.Set(key, value);
+    }
 
     public static T Get<T>(string key) => _provider.Get<T>(key);
 
     public static bool ContainsKey(string key) => _provider.ContainsKey(key);
 
-    public static void Delete(string key) => _provider.Delete(key);
+    public static void Delete(string key)
+    {
+        if (Context.IsStaticCall)
+            throw new ContractRevertException("Static call: state modification not allowed");
+        _provider.Delete(key);
+    }
 
     public static void Clear()
     {

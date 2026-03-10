@@ -64,9 +64,21 @@ public partial class HoldingLimitPolicy : ITransferPolicy
         var limit = GetEffectiveLimit(token, to);
         if (limit.IsZero) return true; // No limit configured
 
-        // Query recipient's current balance on the token
-        var currentBalance = Context.CallContract<UInt256>(token, "BalanceOf", to);
-        var newBalance = UInt256.CheckedAdd(currentBalance, amount);
+        // Query recipient's current balance on the token.
+        // If the call fails (e.g. incompatible BalanceOf signature), deny conservatively.
+        UInt256 currentBalance;
+        try
+        {
+            currentBalance = Context.CallContract<UInt256>(token, "BalanceOf", to);
+        }
+        catch
+        {
+            return false;
+        }
+
+        // If adding would overflow UInt256, the balance obviously exceeds any limit.
+        if (!UInt256.TryAdd(currentBalance, amount, out var newBalance))
+            return false;
 
         return newBalance <= limit;
     }
