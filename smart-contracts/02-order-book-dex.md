@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Included in **Caldera Fusion DEX** order book engine.
+
 # Order Book DEX
 
 ## Category

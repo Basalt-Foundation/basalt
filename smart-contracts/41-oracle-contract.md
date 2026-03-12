@@ -1,3 +1,5 @@
+> **STATUS: PRIORITY** — Critical infrastructure gap. Unblocks 13+ other contracts. Build first.
+
 # Decentralized Oracle Network
 
 ## Category

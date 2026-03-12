@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires oracle integration for IoT delivery confirmation.
+
 # Supply Chain Finance
 
 ## Category

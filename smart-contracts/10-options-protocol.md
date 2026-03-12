@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for underlying asset price at expiry.
+
 # Options Protocol
 
 ## Category

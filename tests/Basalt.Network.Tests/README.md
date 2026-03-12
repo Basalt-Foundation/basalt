@@ -1,6 +1,6 @@
 # Basalt.Network.Tests
 
-Unit tests for Basalt P2P networking: message serialization, Kademlia DHT, TCP transport, Episub gossip protocol, reputation scoring, transport encryption, and network audit. **113 tests.**
+Unit tests for Basalt P2P networking: message serialization, Kademlia DHT, TCP transport, Episub gossip protocol, reputation scoring, transport encryption, and network audit. **116 tests.**
 
 ## Test Coverage
 
@@ -15,7 +15,7 @@ Unit tests for Basalt P2P networking: message serialization, Kademlia DHT, TCP t
 | TcpTransport | 6 | TCP connection lifecycle, length-prefixed framing, peer connection management, async disposal |
 | Episub | 5 | Eager/lazy tier management, graft/prune, priority vs standard broadcast, rebalancing |
 
-**Total: 113 tests**
+**Total: 116 tests**
 
 ## Test Files
 

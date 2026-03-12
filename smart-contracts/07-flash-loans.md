@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (Escrow 0x0103). Needs: atomic single-tx borrow/repay mechanics, fee model.
+
 # Flash Loan Pool
 
 ## Category

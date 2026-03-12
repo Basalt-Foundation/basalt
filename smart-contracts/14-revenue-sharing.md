@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (Governance 0x0102). Needs: multi-source fee aggregation, epoch-based snapshots.
+
 # Revenue Sharing / Dividend Distributor
 
 ## Category

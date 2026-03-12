@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for mark price and funding rate calculation.
+
 # Perpetual Futures Exchange
 
 ## Category

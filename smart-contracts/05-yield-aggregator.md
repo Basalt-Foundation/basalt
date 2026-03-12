@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (BST-4626 Vault). Needs: multi-strategy orchestration, auto-harvest, reward swapping.
+
 # Yield Aggregator
 
 ## Category

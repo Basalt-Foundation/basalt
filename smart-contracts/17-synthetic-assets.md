@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for underlying price feed.
+
 # Synthetic Asset Protocol
 
 ## Category

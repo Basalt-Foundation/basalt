@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Implemented via **Policy Hooks**: ITransferPolicy/INftTransferPolicy on BST-721/1155/3525 with PolicyEnforcer. Royalty deduction achievable as a custom policy contract.
+
 # NFT Royalty Enforcement
 
 ## Category

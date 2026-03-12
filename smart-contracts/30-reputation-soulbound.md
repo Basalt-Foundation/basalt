@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (BST-721). Needs: activity tracking, weight calculations, cross-protocol queries.
+
 # Reputation System (Soulbound Tokens)
 
 ## Category

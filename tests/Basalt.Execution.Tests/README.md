@@ -1,6 +1,6 @@
 # Basalt.Execution.Tests
 
-Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, sandboxed contract runtime, staking transactions, SDK contract execution, and the Caldera Fusion DEX engine. **556 tests.**
+Unit tests for Basalt transaction processing: validation, execution, mempool, chain management, block building, VM operations, sandboxed contract runtime, staking transactions, SDK contract execution, and the Caldera Fusion DEX engine. **559 tests.**
 
 ## Test Coverage
 
@@ -38,7 +38,7 @@ Unit tests for Basalt transaction processing: validation, execution, mempool, ch
 | Transaction | 5 | Transaction creation, signing, hash computation, serialization roundtrip |
 | FaucetDiagnostic | 3 | Faucet endpoint and SDK contract diagnostics |
 
-**Total: 556 tests**
+**Total: 559 tests**
 
 ## Test Files
 

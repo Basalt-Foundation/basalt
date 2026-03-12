@@ -111,6 +111,8 @@ Access blockchain state from within contracts via `Context`:
 | `Context.BlockHeight` | `ulong` | Current block number |
 | `Context.ChainId` | `uint` | Chain identifier |
 | `Context.GasRemaining` | `ulong` | Remaining gas |
+| `Context.IsDeploying` | `bool` | True during first-time contract deployment (check before one-time side effects) |
+| `Context.IsStaticCall` | `bool` | True during read-only re-entrant callbacks (storage writes blocked) |
 | `Context.CallDepth` | `int` | Current call depth (0 = top-level call) |
 | `Context.MaxCallDepth` | `int` | Maximum cross-contract call depth (const `8`) |
 | `Context.ReentrancyGuard` | `HashSet<string>` | Set of contract addresses currently on the call stack |
@@ -459,12 +461,24 @@ token.Transfer(bob, new UInt256(1000));          // OK
 token.Transfer(badActor, new UInt256(1000));      // Reverts: "transfer denied by policy"
 ```
 
+### Admin Transfer
+
+All policy contracts support two-step admin transfer to prevent accidental lockout:
+
+```csharp
+policy.TransferAdmin(newAdminAddr);  // Current admin proposes
+policy.AcceptAdmin();                 // New admin accepts (must be called by pending admin)
+```
+
 ### Design Notes
 
+- **Max 16 policies** per token (`PolicyEnforcer.MaxPolicies`) -- prevents unbounded gas cost
 - **Mint/burn bypass policies** -- admin-only operations, matching ERC-20 convention
 - **BST-4626 inherits BST-20** -- vault share policies propagate automatically
 - **BST-1155 batch atomicity** -- all policy checks run before any state mutations
-- **Reentrancy safe** -- policies can query token state (e.g. `BalanceOf`) via cross-contract callbacks
+- **Reentrancy safe** -- policies can query token state (e.g. `BalanceOf`) via static-mode re-entrant callbacks (`Context.IsStaticCall` blocks writes)
+- **Corrupted slot detection** -- PolicyEnforcer reverts on empty policy slots instead of silently skipping
+- **Jurisdiction whitelist mode** -- unregistered addresses (no KYC) are denied in whitelist mode, allowed in blacklist mode
 
 ## ContractRegistry Type IDs
 

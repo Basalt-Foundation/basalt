@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (Governance 0x0102). Needs: matching pool logic, QF formula, ZK Sybil resistance.
+
 # Quadratic Funding (Gitcoin-style)
 
 ## Category
