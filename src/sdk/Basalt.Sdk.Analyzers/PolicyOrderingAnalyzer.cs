@@ -59,7 +59,7 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
                     if (invocation.SpanStart < firstEnforcePosition)
                         firstEnforcePosition = invocation.SpanStart;
                 }
-                else if (methodName == "Set")
+                else if (methodName == "Set" || methodName == "Delete")
                 {
                     // Verify the receiver is a Basalt storage type via semantic model
                     var receiverType = context.SemanticModel.GetTypeInfo(

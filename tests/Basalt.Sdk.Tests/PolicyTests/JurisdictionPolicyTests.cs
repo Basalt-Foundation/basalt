@@ -79,13 +79,24 @@ public class JurisdictionPolicyTests : IDisposable
     }
 
     [Fact]
-    public void NoJurisdictionRegistered_AllowsByDefault()
+    public void NoJurisdictionRegistered_DeniesInWhitelistMode()
     {
         _host.SetCaller(_admin);
         Context.Self = _policyAddr;
         _policy.SetMode(_tokenAddr, true); // whitelist
 
-        // Neither Alice nor Bob has a registered jurisdiction
+        // Neither Alice nor Bob has a registered jurisdiction — denied in whitelist mode
+        _policy.CheckTransfer(_tokenAddr, _alice, _bob, new UInt256(100)).Should().BeFalse();
+    }
+
+    [Fact]
+    public void NoJurisdictionRegistered_AllowsInBlacklistMode()
+    {
+        _host.SetCaller(_admin);
+        Context.Self = _policyAddr;
+        _policy.SetMode(_tokenAddr, false); // blacklist
+
+        // Neither Alice nor Bob has a registered jurisdiction — allowed in blacklist mode
         _policy.CheckTransfer(_tokenAddr, _alice, _bob, new UInt256(100)).Should().BeTrue();
     }
 

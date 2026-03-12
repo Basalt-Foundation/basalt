@@ -39,6 +39,11 @@ public sealed class PolicyEnforcer
     }
 
     /// <summary>
+    /// Maximum number of policies that can be registered on a single token.
+    /// </summary>
+    public const ulong MaxPolicies = 16;
+
+    /// <summary>
     /// Add a policy contract address. Caller must verify admin access.
     /// </summary>
     public void AddPolicy(byte[] policyAddress)
@@ -49,6 +54,8 @@ public sealed class PolicyEnforcer
         Context.Require(!_policyExists.Get(hex), "Policy: already registered");
 
         var count = Count;
+        Context.Require(count < MaxPolicies, "Policy: max policy count reached");
+
         _policies.Set(count.ToString(), hex);
         _policyExists.Set(hex, true);
         _policyCount.Set(count + 1);
@@ -108,7 +115,7 @@ public sealed class PolicyEnforcer
         for (ulong i = 0; i < count; i++)
         {
             var policyHex = _policies.Get(i.ToString());
-            if (string.IsNullOrEmpty(policyHex)) continue;
+            Context.Require(!string.IsNullOrEmpty(policyHex), "Policy: corrupted policy slot");
 
             var policyAddr = Convert.FromHexString(policyHex);
             var allowed = Context.CallContract<bool>(
@@ -141,7 +148,7 @@ public sealed class PolicyEnforcer
         for (ulong i = 0; i < count; i++)
         {
             var policyHex = _policies.Get(i.ToString());
-            if (string.IsNullOrEmpty(policyHex)) continue;
+            Context.Require(!string.IsNullOrEmpty(policyHex), "Policy: corrupted policy slot");
 
             var policyAddr = Convert.FromHexString(policyHex);
             var allowed = Context.CallContract<bool>(

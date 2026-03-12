@@ -84,9 +84,11 @@ public partial class JurisdictionPolicy : ITransferPolicy, INftTransferPolicy
     private bool CheckAddress(string tokenHex, byte[] account)
     {
         var country = _addressJurisdictions.Get(Convert.ToHexString(account));
-        if (country == 0) return true; // No jurisdiction registered — allow by default
-
         var isWhitelist = _useWhitelist.Get(tokenHex);
+
+        // No jurisdiction registered: deny in whitelist mode (must be KYC'd), allow in blacklist mode
+        if (country == 0) return !isWhitelist;
+
         var isListed = _allowedJurisdictions.Get(JurKey(tokenHex, country));
 
         // Whitelist: must be listed. Blacklist: must NOT be listed.
@@ -100,6 +102,30 @@ public partial class JurisdictionPolicy : ITransferPolicy, INftTransferPolicy
         if (!CheckAddress(tokenHex, from)) return false;
         if (!CheckAddress(tokenHex, to)) return false;
         return true;
+    }
+
+    /// <summary>
+    /// Propose a new admin. The new admin must call AcceptAdmin to complete the transfer.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void TransferAdmin(byte[] newAdmin)
+    {
+        RequireAdmin();
+        Context.Require(newAdmin.Length == 20, "Jurisdiction: invalid address");
+        _admin.Set("pending", Convert.ToHexString(newAdmin));
+    }
+
+    /// <summary>
+    /// Accept admin role. Must be called by the pending admin.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void AcceptAdmin()
+    {
+        var pending = _admin.Get("pending");
+        Context.Require(!string.IsNullOrEmpty(pending), "Jurisdiction: no pending admin");
+        Context.Require(Convert.ToHexString(Context.Caller) == pending, "Jurisdiction: not pending admin");
+        _admin.Set("owner", pending);
+        _admin.Delete("pending");
     }
 
     private void RequireAdmin()

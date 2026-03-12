@@ -181,46 +181,67 @@ public class EndToEndPolicyTests : IDisposable
     [Fact]
     public void StaticCall_BlocksWritesDuringReentrantCallback()
     {
-        // Verify that Context.IsStaticCall is true during A→B→A callbacks
-        // and that storage writes revert
+        // Use HoldingLimitPolicy which triggers the A→B→A pattern:
+        // Token calls HoldingLimitPolicy.CheckTransfer, which calls back
+        // Token.BalanceOf — this re-entry into the token forces static mode.
+        var holdingAddr = BasaltTestHost.CreateAddress(0xA5);
+        _host.SetCaller(_admin);
+        Context.Self = holdingAddr;
+        Context.IsDeploying = true;
+        var holding = new HoldingLimitPolicy();
+        _host.Deploy(holdingAddr, holding);
+        Context.IsDeploying = false;
+
+        // Set a holding limit so CheckTransfer will callback token.BalanceOf
+        _host.SetCaller(_admin);
+        Context.Self = holdingAddr;
+        holding.SetDefaultLimit(_tokenAddr, new UInt256(50_000));
+
+        // Register holding policy on token
         _host.SetCaller(_admin);
         Context.Self = _tokenAddr;
+        _token.AddPolicy(holdingAddr);
+        _host.Call(() => _token.Transfer(_alice, new UInt256(1_000)));
 
-        // Simulate the scenario: set up a cross-contract call chain where
-        // the callback tries to write (should revert)
+        // Now intercept the callback from holding policy → token.BalanceOf
+        // to verify IsStaticCall is enforced and writes are blocked.
         var previousHandler = Context.CrossContractCallHandler;
         bool staticCallWasTrue = false;
+        bool writeWasBlocked = false;
 
         Context.CrossContractCallHandler = (target, method, args) =>
         {
-            if (method == "CheckTransfer")
+            // Intercept the BalanceOf callback (A→B→A: token→holding→token)
+            if (method == "BalanceOf" && target.SequenceEqual(_tokenAddr))
             {
                 staticCallWasTrue = Context.IsStaticCall;
-                // Attempt to write during callback should fail
-                if (Context.IsStaticCall)
+                // Attempt to write during re-entrant callback — should be blocked
+                try
                 {
-                    try
-                    {
-                        ContractStorage.Set("attack_key", "evil_value");
-                        return false; // Should not reach here
-                    }
-                    catch (ContractRevertException ex)
-                    {
-                        ex.Message.Should().Contain("Static call");
-                        return true; // Policy approves after confirming write was blocked
-                    }
+                    ContractStorage.Set("attack_key", "evil_value");
                 }
-                return true;
+                catch (ContractRevertException ex)
+                {
+                    writeWasBlocked = true;
+                    ex.Message.Should().Contain("Static call");
+                }
+                // Return a balance so the policy check can complete
+                return (UInt256)0;
             }
             return previousHandler?.Invoke(target, method, args);
         };
 
-        // Trigger: token calls policy (policy is at _sanctionsAddr), policy calls back to token
-        // The A→B→A pattern: token → sanctions → token (callback)
-        // In this test, we wire it manually through the handler above
-        _token.AddPolicy(_sanctionsAddr);
+        // Trigger: Alice transfers to Bob → token calls holding.CheckTransfer
+        // → holding calls back token.BalanceOf (re-entry, forced static)
+        _host.SetCaller(_alice);
+        Context.Self = _tokenAddr;
+        _host.Call(() => _token.Transfer(_bob, new UInt256(100)));
 
         Context.CrossContractCallHandler = previousHandler;
+
+        staticCallWasTrue.Should().BeTrue("re-entrant callback should execute in static mode");
+        writeWasBlocked.Should().BeTrue("storage writes should be blocked during static callbacks");
+        _token.BalanceOf(_bob).Should().Be(new UInt256(100));
     }
 
     [Fact]
@@ -248,6 +269,7 @@ public class EndToEndPolicyTests : IDisposable
         Context.Self = jurisdictionAddr;
         jurisdiction.SetMode(nftAddr, true); // whitelist
         jurisdiction.SetJurisdiction(nftAddr, 840, true); // US
+        jurisdiction.SetAddressJurisdiction(_admin, 840); // Admin = US
         jurisdiction.SetAddressJurisdiction(_alice, 840); // Alice = US
         jurisdiction.SetAddressJurisdiction(_bob, 392); // Bob = Japan (not whitelisted)
 

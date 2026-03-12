@@ -44,7 +44,7 @@ public sealed class CollectionOrderingAnalyzer : DiagnosticAnalyzer
 
         for (int i = 0; i < BannedTypeNames.Length; i++)
         {
-            if (typeName.StartsWith(BannedTypeNames[i]))
+            if (typeName == BannedTypeNames[i])
             {
                 context.ReportDiagnostic(Diagnostic.Create(
                     DiagnosticIds.NonDeterministicCollection,
@@ -62,12 +62,9 @@ public sealed class CollectionOrderingAnalyzer : DiagnosticAnalyzer
         if (!AnalyzerHelper.IsInsideBasaltContract(genericName))
             return;
 
-        // Only flag field declarations (not local variables used transiently)
-        if (genericName.Parent is not TypeSyntax typeParent)
-            return;
-
-        // Walk up to find if this is a field declaration
-        var current = typeParent.Parent;
+        // Only flag field declarations (not local variables used transiently).
+        // Walk up from the GenericName to find if it's part of a field declaration.
+        var current = genericName.Parent;
         while (current != null)
         {
             if (current is FieldDeclarationSyntax)

@@ -94,5 +94,69 @@ public class SanctionsPolicyTests : IDisposable
         msg.Should().Contain("not admin");
     }
 
+    [Fact]
+    public void TransferAdmin_TwoStepPattern()
+    {
+        var newAdmin = BasaltTestHost.CreateAddress(5);
+
+        // Step 1: Current admin proposes new admin
+        _host.SetCaller(_admin);
+        Context.Self = _policyAddr;
+        _policy.TransferAdmin(newAdmin);
+
+        // New admin cannot use admin functions yet
+        _host.SetCaller(newAdmin);
+        Context.Self = _policyAddr;
+        var msg = _host.ExpectRevert(() => _policy.AddSanction(_alice));
+        msg.Should().Contain("not admin");
+
+        // Step 2: New admin accepts
+        _policy.AcceptAdmin();
+
+        // New admin can now use admin functions
+        _policy.AddSanction(_alice);
+        _policy.IsSanctioned(_alice).Should().BeTrue();
+
+        // Old admin can no longer use admin functions
+        _host.SetCaller(_admin);
+        Context.Self = _policyAddr;
+        msg = _host.ExpectRevert(() => _policy.AddSanction(_bob));
+        msg.Should().Contain("not admin");
+    }
+
+    [Fact]
+    public void TransferAdmin_RevertsForNonAdmin()
+    {
+        var newAdmin = BasaltTestHost.CreateAddress(5);
+        _host.SetCaller(_alice);
+        Context.Self = _policyAddr;
+        var msg = _host.ExpectRevert(() => _policy.TransferAdmin(newAdmin));
+        msg.Should().Contain("not admin");
+    }
+
+    [Fact]
+    public void AcceptAdmin_RevertsWhenNoPending()
+    {
+        _host.SetCaller(_alice);
+        Context.Self = _policyAddr;
+        var msg = _host.ExpectRevert(() => _policy.AcceptAdmin());
+        msg.Should().Contain("no pending admin");
+    }
+
+    [Fact]
+    public void AcceptAdmin_RevertsForWrongCaller()
+    {
+        var newAdmin = BasaltTestHost.CreateAddress(5);
+        _host.SetCaller(_admin);
+        Context.Self = _policyAddr;
+        _policy.TransferAdmin(newAdmin);
+
+        // Alice tries to accept (she's not the pending admin)
+        _host.SetCaller(_alice);
+        Context.Self = _policyAddr;
+        var msg = _host.ExpectRevert(() => _policy.AcceptAdmin());
+        msg.Should().Contain("not pending admin");
+    }
+
     public void Dispose() => _host.Dispose();
 }

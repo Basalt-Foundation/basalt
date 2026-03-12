@@ -133,7 +133,7 @@ public static class Context
     /// Storage writes are blocked during static calls to prevent reentrancy attacks
     /// while still allowing view-method callbacks (e.g. policy querying BalanceOf).
     /// </summary>
-    public static bool IsStaticCall { get; set; }
+    public static bool IsStaticCall { get; internal set; }
 
     /// <summary>
     /// Delegate for cross-contract calls. Set by the runtime/test host.

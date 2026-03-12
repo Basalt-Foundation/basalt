@@ -147,5 +147,85 @@ public class PolicyEnforcerTests : IDisposable
         _enforcer.Count.Should().Be(1);
     }
 
+    [Fact]
+    public void EnforceNftTransfer_PassesWithNoPolicies()
+    {
+        _enforcer.EnforceNftTransfer(_alice, _bob, 1);
+    }
+
+    [Fact]
+    public void EnforceNftTransfer_RevertsWhenPolicyDenies()
+    {
+        // Deploy a sanctions policy and sanction Alice
+        var sanctionsAddr = BasaltTestHost.CreateAddress(0xE0);
+        _host.SetCaller(_admin);
+        Context.Self = sanctionsAddr;
+        Context.IsDeploying = true;
+        var sanctions = new SanctionsPolicy();
+        _host.Deploy(sanctionsAddr, sanctions);
+        Context.IsDeploying = false;
+
+        _host.SetCaller(_admin);
+        Context.Self = sanctionsAddr;
+        sanctions.AddSanction(_alice);
+
+        Context.Self = _tokenAddr;
+        _enforcer.AddPolicy(sanctionsAddr);
+
+        var msg = _host.ExpectRevert(() => _enforcer.EnforceNftTransfer(_alice, _bob, 1));
+        msg.Should().Contain("NFT transfer denied");
+    }
+
+    [Fact]
+    public void EnforceTransfer_MultiplePolicies_FirstPassesSecondDenies()
+    {
+        // Deploy two sanctions policies — second one sanctions Bob
+        var sanctions1Addr = BasaltTestHost.CreateAddress(0xE0);
+        var sanctions2Addr = BasaltTestHost.CreateAddress(0xE1);
+
+        _host.SetCaller(_admin);
+
+        Context.Self = sanctions1Addr;
+        Context.IsDeploying = true;
+        var sanctions1 = new SanctionsPolicy();
+        _host.Deploy(sanctions1Addr, sanctions1);
+
+        Context.Self = sanctions2Addr;
+        var sanctions2 = new SanctionsPolicy();
+        _host.Deploy(sanctions2Addr, sanctions2);
+        Context.IsDeploying = false;
+
+        // Only sanction Bob on the second policy
+        _host.SetCaller(_admin);
+        Context.Self = sanctions2Addr;
+        sanctions2.AddSanction(_bob);
+
+        // Register both policies
+        Context.Self = _tokenAddr;
+        _enforcer.AddPolicy(sanctions1Addr);
+        _enforcer.AddPolicy(sanctions2Addr);
+
+        // First policy passes (nobody sanctioned), second denies (Bob sanctioned)
+        var msg = _host.ExpectRevert(() => _enforcer.EnforceTransfer(_alice, _bob, new UInt256(100)));
+        msg.Should().Contain("transfer denied");
+    }
+
+    [Fact]
+    public void AddPolicy_RevertsAtMaxPolicies()
+    {
+        // Fill up to max
+        for (byte i = 0; i < (byte)PolicyEnforcer.MaxPolicies; i++)
+        {
+            var addr = BasaltTestHost.CreateAddress((byte)(0xA0 + i));
+            _enforcer.AddPolicy(addr);
+        }
+        _enforcer.Count.Should().Be(PolicyEnforcer.MaxPolicies);
+
+        // One more should fail
+        var overflow = BasaltTestHost.CreateAddress(0xC0);
+        var msg = _host.ExpectRevert(() => _enforcer.AddPolicy(overflow));
+        msg.Should().Contain("max policy count");
+    }
+
     public void Dispose() => _host.Dispose();
 }

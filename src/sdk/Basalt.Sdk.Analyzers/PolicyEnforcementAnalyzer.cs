@@ -25,6 +25,21 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(DiagnosticIds.MissingPolicyEnforcement);
 
+    /// <summary>
+    /// Transfer method names that require policy enforcement, mapped to the base types
+    /// on which they are defined. TransferInternal applies to BST20/BST721.
+    /// SafeTransferFrom/SafeBatchTransferFrom apply to BST1155.
+    /// TransferValueFrom/TransferFrom apply to BST3525.
+    /// </summary>
+    private static readonly (string MethodName, string[] BaseTypes)[] TransferMethods =
+    {
+        ("TransferInternal", new[] { "BST20Token", "BST721Token" }),
+        ("SafeTransferFrom", new[] { "BST1155Token" }),
+        ("SafeBatchTransferFrom", new[] { "BST1155Token" }),
+        ("TransferValueFrom", new[] { "BST3525Token" }),
+        ("TransferFrom", new[] { "BST3525Token" }),
+    };
+
     public override void Initialize(AnalysisContext context)
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
@@ -37,13 +52,25 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
     {
         var methodDecl = (MethodDeclarationSyntax)context.Node;
 
-        if (methodDecl.Identifier.Text != "TransferInternal")
-            return;
-
         if (!AnalyzerHelper.IsInsideBasaltContract(methodDecl))
             return;
 
-        // Check if the enclosing class derives from a BST token base type
+        var methodName = methodDecl.Identifier.Text;
+
+        // Find which base types this method name applies to
+        string[]? applicableBaseTypes = null;
+        for (int i = 0; i < TransferMethods.Length; i++)
+        {
+            if (TransferMethods[i].MethodName == methodName)
+            {
+                applicableBaseTypes = TransferMethods[i].BaseTypes;
+                break;
+            }
+        }
+        if (applicableBaseTypes == null)
+            return;
+
+        // Check if the enclosing class derives from an applicable BST token base type
         var classDecl = methodDecl.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
         if (classDecl?.BaseList == null)
             return;
@@ -53,9 +80,9 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
         {
             var name = GetUnqualifiedName(baseType.Type);
             if (name == null) continue;
-            for (int i = 0; i < BstTokenBaseTypes.Length; i++)
+            for (int i = 0; i < applicableBaseTypes.Length; i++)
             {
-                if (name == BstTokenBaseTypes[i])
+                if (name == applicableBaseTypes[i])
                 {
                     derivesBstToken = true;
                     break;
@@ -78,8 +105,8 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
             if (node is InvocationExpressionSyntax invocation &&
                 invocation.Expression is MemberAccessExpressionSyntax memberAccess)
             {
-                var methodName = memberAccess.Name.Identifier.Text;
-                if (methodName == "EnforceTransfer" || methodName == "EnforceNftTransfer")
+                var name = memberAccess.Name.Identifier.Text;
+                if (name == "EnforceTransfer" || name == "EnforceNftTransfer")
                 {
                     hasEnforcement = true;
                     break;
@@ -92,7 +119,7 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(
                 DiagnosticIds.MissingPolicyEnforcement,
                 methodDecl.Identifier.GetLocation(),
-                $"TransferInternal in {classDecl.Identifier.Text} does not call EnforceTransfer()/EnforceNftTransfer() — policy hooks will be bypassed"));
+                $"{methodName} in {classDecl.Identifier.Text} does not call EnforceTransfer()/EnforceNftTransfer() — policy hooks will be bypassed"));
         }
     }
 

@@ -57,6 +57,30 @@ public partial class SanctionsPolicy : ITransferPolicy, INftTransferPolicy
         return true;
     }
 
+    /// <summary>
+    /// Propose a new admin. The new admin must call AcceptAdmin to complete the transfer.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void TransferAdmin(byte[] newAdmin)
+    {
+        RequireAdmin();
+        Context.Require(newAdmin.Length == 20, "Sanctions: invalid address");
+        _admin.Set("pending", Convert.ToHexString(newAdmin));
+    }
+
+    /// <summary>
+    /// Accept admin role. Must be called by the pending admin.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void AcceptAdmin()
+    {
+        var pending = _admin.Get("pending");
+        Context.Require(!string.IsNullOrEmpty(pending), "Sanctions: no pending admin");
+        Context.Require(Convert.ToHexString(Context.Caller) == pending, "Sanctions: not pending admin");
+        _admin.Set("owner", pending);
+        _admin.Delete("pending");
+    }
+
     private void RequireAdmin()
     {
         Context.Require(
