@@ -81,6 +81,7 @@ public class HoldingLimitPolicyTests : IDisposable
     [Fact]
     public void CheckTransfer_AllowsWhenNoLimitConfigured()
     {
+        Context.Self = _policyAddr;
         var result = _host.Call(() => _policy.CheckTransfer(_tokenAddr, _admin, _alice, new UInt256(999)));
         result.Should().BeTrue();
     }

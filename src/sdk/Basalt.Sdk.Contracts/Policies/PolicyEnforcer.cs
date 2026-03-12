@@ -35,7 +35,9 @@ public sealed class PolicyEnforcer
     public byte[] GetPolicy(ulong index)
     {
         Context.Require(index < Count, "Policy: index out of bounds");
-        return Convert.FromHexString(_policies.Get(index.ToString()));
+        var hex = _policies.Get(index.ToString());
+        Context.Require(!string.IsNullOrEmpty(hex), "Policy: corrupted policy slot");
+        return Convert.FromHexString(hex);
     }
 
     /// <summary>

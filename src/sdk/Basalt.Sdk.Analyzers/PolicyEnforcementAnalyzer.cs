@@ -71,24 +71,29 @@ public sealed class PolicyEnforcementAnalyzer : DiagnosticAnalyzer
             return;
 
         // Check if the enclosing class derives from an applicable BST token base type
+        // Uses the semantic model to walk the full inheritance chain (catches indirect inheritance)
         var classDecl = methodDecl.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
-        if (classDecl?.BaseList == null)
+        if (classDecl == null)
+            return;
+
+        var classSymbol = context.SemanticModel.GetDeclaredSymbol(classDecl, context.CancellationToken);
+        if (classSymbol == null)
             return;
 
         bool derivesBstToken = false;
-        foreach (var baseType in classDecl.BaseList.Types)
+        var current = classSymbol.BaseType;
+        while (current != null)
         {
-            var name = GetUnqualifiedName(baseType.Type);
-            if (name == null) continue;
             for (int i = 0; i < applicableBaseTypes.Length; i++)
             {
-                if (name == applicableBaseTypes[i])
+                if (current.Name == applicableBaseTypes[i])
                 {
                     derivesBstToken = true;
                     break;
                 }
             }
             if (derivesBstToken) break;
+            current = current.BaseType;
         }
 
         if (!derivesBstToken)

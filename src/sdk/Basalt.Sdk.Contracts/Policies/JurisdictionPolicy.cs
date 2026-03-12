@@ -5,7 +5,7 @@ namespace Basalt.Sdk.Contracts.Policies;
 /// <summary>
 /// Policy contract that restricts transfers based on jurisdiction (country code).
 /// Maintains a whitelist or blacklist of country codes per token.
-/// Queries an on-chain registry for address→jurisdiction mapping.
+/// Stores address→jurisdiction mappings locally, set by the admin.
 /// Type ID: 0x000A
 /// </summary>
 [BasaltContract]
