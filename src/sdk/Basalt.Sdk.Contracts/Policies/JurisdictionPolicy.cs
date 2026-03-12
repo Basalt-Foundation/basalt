@@ -49,7 +49,7 @@ public partial class JurisdictionPolicy : ITransferPolicy, INftTransferPolicy
     }
 
     /// <summary>
-    /// Register an address's jurisdiction. Can be called by admin or by a KYC provider.
+    /// Register an address's jurisdiction. Admin-only.
     /// </summary>
     [BasaltEntrypoint]
     public void SetAddressJurisdiction(byte[] account, ushort countryCode)

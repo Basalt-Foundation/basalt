@@ -111,6 +111,8 @@ public static class ContractStorage
 
     public static void Clear()
     {
+        if (Context.IsStaticCall)
+            throw new ContractRevertException("Static call: state modification not allowed");
         if (_provider is InMemoryStorageProvider mem)
             mem.Clear();
         else

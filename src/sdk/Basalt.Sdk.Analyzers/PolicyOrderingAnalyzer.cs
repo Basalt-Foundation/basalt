@@ -9,9 +9,9 @@ using Microsoft.CodeAnalysis.Diagnostics;
 namespace Basalt.Sdk.Analyzers;
 
 /// <summary>
-/// BST010: Warns when a storage .Set() call appears before an EnforceTransfer()
-/// or EnforceNftTransfer() call within the same method body. State should be
-/// mutated only after policy enforcement passes.
+/// BST010: Warns when a storage .Set() or .Delete() call appears before an
+/// EnforceTransfer() or EnforceNftTransfer() call within the same method body.
+/// State should be mutated only after policy enforcement passes.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
@@ -44,7 +44,7 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
 
         SyntaxNode bodyNode = (SyntaxNode?)methodDecl.Body ?? methodDecl.ExpressionBody!;
 
-        var storageWrites = new List<(SyntaxNode Node, int Position)>();
+        var storageWrites = new List<(SyntaxNode Node, int Position, string MethodName)>();
         int firstEnforcePosition = int.MaxValue;
 
         foreach (var node in bodyNode.DescendantNodes())
@@ -67,7 +67,7 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
 
                     if (receiverType != null && IsStorageType(receiverType))
                     {
-                        storageWrites.Add((invocation, invocation.SpanStart));
+                        storageWrites.Add((invocation, invocation.SpanStart, methodName));
                     }
                 }
             }
@@ -84,7 +84,7 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
                 context.ReportDiagnostic(Diagnostic.Create(
                     DiagnosticIds.StateWriteBeforePolicyCheck,
                     write.Node.GetLocation(),
-                    ".Set() called before policy enforcement — move state writes after EnforceTransfer()/EnforceNftTransfer()"));
+                    $".{write.MethodName}() called before policy enforcement — move state writes after EnforceTransfer()/EnforceNftTransfer()"));
             }
         }
     }

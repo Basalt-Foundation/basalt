@@ -406,7 +406,7 @@ bool supports = issuerRegistry.SupportsSchema(issuerAddr, schemaIdBytes);
 
 ## Policy Hooks (`Policies/`)
 
-The SDK provides a standardized policy enforcement layer for all token standards. Deploy modular compliance policies as independent contracts, then register them on any BST token. All transfers are automatically checked against registered policies before execution -- zero policies means zero overhead.
+The SDK provides a standardized policy enforcement layer for all token standards. Deploy modular compliance policies as independent contracts, then register them on any BST token. All transfers are automatically checked against registered policies before execution -- zero policies means near-zero overhead (single storage read).
 
 ### Architecture
 
