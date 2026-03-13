@@ -58,6 +58,13 @@ public partial class HoldingLimitPolicy : ITransferPolicy
     /// ITransferPolicy implementation. Called by token contracts via cross-contract call.
     /// Queries the recipient's balance on the token and checks against the limit.
     /// </summary>
+    /// <remarks>
+    /// This policy calls <c>BalanceOf(byte[] account) → UInt256</c>, which is the BST-20
+    /// and BST-721 signature. Standards with different BalanceOf signatures (BST-1155
+    /// uses <c>BalanceOf(byte[], ulong)</c>, BST-3525 uses <c>BalanceOf(ulong)</c>) will
+    /// fail the cross-contract call and be denied conservatively. To enforce holding
+    /// limits on those standards, deploy a standard-specific policy variant.
+    /// </remarks>
     [BasaltView]
     public bool CheckTransfer(byte[] token, byte[] from, byte[] to, UInt256 amount)
     {

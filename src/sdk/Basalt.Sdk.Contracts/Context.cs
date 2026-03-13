@@ -123,10 +123,13 @@ public static class Context
     public static HashSet<string> ReentrancyGuard { get; } = new();
 
     /// <summary>
-    /// Contracts that currently have an active outgoing cross-contract call.
+    /// Ref-counted set of contracts that currently have active outgoing cross-contract calls.
     /// If any of these is called back (re-entry), the call is forced into static mode.
+    /// A dictionary is used instead of a HashSet so that nested outgoing calls from
+    /// the same contract (A → B → A → C) correctly maintain the "active" state until
+    /// all outgoing calls from that contract have returned.
     /// </summary>
-    private static readonly HashSet<string> ActiveCallers = new();
+    private static readonly Dictionary<string, int> ActiveCallers = new();
 
     /// <summary>
     /// True when the current execution is a static (read-only) callback.
@@ -168,10 +171,10 @@ public static class Context
             // If the target has an active outgoing call (it's a caller higher in the
             // chain), this is a re-entrant callback. Force static mode so the callee
             // can read state (e.g. BalanceOf) but cannot mutate it.
-            if (ActiveCallers.Contains(targetKey))
+            if (ActiveCallers.ContainsKey(targetKey))
                 IsStaticCall = true;
 
-            ActiveCallers.Add(selfKey);
+            ActiveCallers[selfKey] = ActiveCallers.GetValueOrDefault(selfKey) + 1;
             ReentrancyGuard.Add(targetKey);
             CallDepth++;
             Caller = Self; // The calling contract becomes the caller
@@ -184,7 +187,11 @@ public static class Context
         finally
         {
             // H-3: Restore full caller context
-            ActiveCallers.Remove(selfKey);
+            var count = ActiveCallers.GetValueOrDefault(selfKey);
+            if (count <= 1)
+                ActiveCallers.Remove(selfKey);
+            else
+                ActiveCallers[selfKey] = count - 1;
             ReentrancyGuard.Remove(targetKey);
             IsStaticCall = previousIsStaticCall;
             CallDepth = previousDepth;

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using Xunit;
 using FluentAssertions;
 using Basalt.Core;
+using Basalt.Crypto;
 using Basalt.Execution;
 using Basalt.Execution.Dex;
 using Basalt.Sdk.Wallet.Transactions;
@@ -60,21 +61,8 @@ public sealed class DexSwapIntentBuilderTests
     [Fact]
     public void Encrypted_Build_ProducesLargerPayload()
     {
-        // Create a dummy 48-byte BLS public key
-        var gpkBytes = new byte[48];
-        gpkBytes[0] = 0x80; // Compressed G1 point prefix
-        for (int i = 1; i < 48; i++) gpkBytes[i] = (byte)i;
-
-        BlsPublicKey gpk;
-        try
-        {
-            gpk = new BlsPublicKey(gpkBytes);
-        }
-        catch
-        {
-            // If BLS key validation fails on this platform, skip
-            return;
-        }
+        // Use the real BLS12-381 G1 generator — a known-valid compressed point
+        var gpk = new BlsPublicKey(BlsCrypto.G1Generator());
 
         var tx = DexSwapIntentBuilder.CreateEncrypted(gpk, epoch: 42)
             .WithTokenIn(TokenA)
