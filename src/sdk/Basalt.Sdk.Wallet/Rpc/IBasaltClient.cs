@@ -82,6 +82,18 @@ public interface IBasaltClient : IDisposable
     Task<ValidatorInfo[]> GetValidatorsAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Retrieves a DEX swap quote showing expected output, fees, and price impact.
+    /// Returns null if no pool exists for the given token pair.
+    /// </summary>
+    /// <param name="tokenIn">The input token address in "0x..." hex format.</param>
+    /// <param name="tokenOut">The output token address in "0x..." hex format.</param>
+    /// <param name="amountIn">The input amount as a decimal string (UInt256).</param>
+    /// <param name="feeBps">Optional fee tier in basis points. If null, selects the best pool.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Quote information, or null if no pool found.</returns>
+    Task<DexQuoteInfo?> GetDexQuoteAsync(string tokenIn, string tokenOut, string amountIn, uint? feeBps = null, CancellationToken ct = default);
+
+    /// <summary>
     /// Executes a read-only contract call without submitting a transaction.
     /// Equivalent to eth_call — executes against current state and returns the result.
     /// </summary>

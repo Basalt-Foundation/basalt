@@ -64,6 +64,16 @@ public sealed class TransactionBuilder
     public static TransactionBuilder ValidatorRegister() => new(TransactionType.ValidatorRegister);
 
     /// <summary>
+    /// Creates a builder for a DEX swap intent transaction (plaintext).
+    /// </summary>
+    public static TransactionBuilder DexSwapIntent() => new(TransactionType.DexSwapIntent);
+
+    /// <summary>
+    /// Creates a builder for a DEX encrypted swap intent transaction.
+    /// </summary>
+    public static TransactionBuilder DexEncryptedSwapIntent() => new(TransactionType.DexEncryptedSwapIntent);
+
+    /// <summary>
     /// Sets the transaction nonce (sender's sequence number).
     /// </summary>
     /// <param name="nonce">The account nonce.</param>

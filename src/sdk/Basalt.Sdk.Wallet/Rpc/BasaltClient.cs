@@ -179,6 +179,23 @@ public sealed class BasaltClient : IBasaltClient
     }
 
     /// <inheritdoc />
+    public async Task<DexQuoteInfo?> GetDexQuoteAsync(string tokenIn, string tokenOut, string amountIn, uint? feeBps = null, CancellationToken ct = default)
+    {
+        var url = $"/v1/dex/quote?tokenIn={Uri.EscapeDataString(tokenIn)}&tokenOut={Uri.EscapeDataString(tokenOut)}&amountIn={Uri.EscapeDataString(amountIn)}";
+        if (feeBps.HasValue)
+            url += $"&feeBps={feeBps.Value}";
+
+        var response = await _http.GetAsync(url, ct).ConfigureAwait(false);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        return await JsonSerializer.DeserializeAsync(stream, WalletJsonContext.Default.DexQuoteInfo, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<CallResult> CallReadOnlyAsync(string to, string data, string? from = null, ulong gasLimit = 1_000_000, CancellationToken ct = default)
     {
         var request = new CallReadOnlyRequest

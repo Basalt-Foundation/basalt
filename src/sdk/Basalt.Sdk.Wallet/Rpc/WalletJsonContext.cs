@@ -132,4 +132,5 @@ public sealed class CallReadOnlyRequest
 [JsonSerializable(typeof(FaucetRequest))]
 [JsonSerializable(typeof(CallReadOnlyRequest))]
 [JsonSerializable(typeof(CallResult))]
+[JsonSerializable(typeof(DexQuoteInfo))]
 internal partial class WalletJsonContext : JsonSerializerContext;

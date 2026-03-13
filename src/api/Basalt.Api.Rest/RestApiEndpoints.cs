@@ -807,6 +807,172 @@ public static class RestApiEndpoints
 
         // ═══ DEX Endpoints ═══
 
+        app.MapGet("/v1/dex/quote", (string? tokenIn, string? tokenOut, string? amountIn, uint? feeBps) =>
+        {
+            if (string.IsNullOrEmpty(tokenIn) || string.IsNullOrEmpty(tokenOut) || string.IsNullOrEmpty(amountIn))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "tokenIn, tokenOut, and amountIn are required" });
+
+            if (!Address.TryFromHexString(tokenIn, out var tokenInAddr))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "Invalid tokenIn address format" });
+            if (!Address.TryFromHexString(tokenOut, out var tokenOutAddr))
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "Invalid tokenOut address format" });
+            if (!UInt256.TryParse(amountIn, out var amountInVal) || amountInVal.IsZero)
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "amountIn must be a non-zero integer" });
+            if (tokenInAddr == tokenOutAddr)
+                return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "tokenIn and tokenOut must be different" });
+
+            var dexState = new DexState(stateDb);
+            var (token0, token1) = DexEngine.SortTokens(tokenInAddr, tokenOutAddr);
+            var zeroForOne = tokenInAddr == token0;
+
+            var currentBlock = chainManager.LatestBlock?.Number ?? 0;
+
+            // If feeBps specified, look up that specific pool. Otherwise try all fee tiers.
+            uint[] feeTiers = feeBps.HasValue ? [feeBps.Value] : DexLibrary.AllowedFeeTiers;
+
+            ulong bestPoolId = 0;
+            UInt256 bestAmountOut = UInt256.Zero;
+            uint bestEffectiveFee = 0;
+            bool bestIsConcentrated = false;
+            bool found = false;
+
+            foreach (var tier in feeTiers)
+            {
+                var poolId = dexState.LookupPool(token0, token1, tier);
+                if (poolId == null) continue;
+
+                var isConcentrated = dexState.GetConcentratedPoolState(poolId.Value) != null;
+                UInt256 amountOut;
+
+                if (isConcentrated)
+                {
+                    var clPool = new ConcentratedPool(dexState);
+                    var sqrtPriceLimit = zeroForOne ? TickMath.MinSqrtRatio + UInt256.One : TickMath.MaxSqrtRatio - UInt256.One;
+                    var effectiveFee = DynamicFeeCalculator.ComputeDynamicFeeFromState(dexState, poolId.Value, tier, currentBlock);
+                    var result = clPool.SimulateSwap(poolId.Value, zeroForOne, amountInVal, sqrtPriceLimit, effectiveFee);
+                    if (result == null) continue;
+                    amountOut = result.Value.AmountOut;
+
+                    if (amountOut > bestAmountOut)
+                    {
+                        bestPoolId = poolId.Value;
+                        bestAmountOut = amountOut;
+                        bestEffectiveFee = effectiveFee;
+                        bestIsConcentrated = true;
+                        found = true;
+                    }
+                }
+                else
+                {
+                    var reserves = dexState.GetPoolReserves(poolId.Value);
+                    if (reserves == null || reserves.Value.Reserve0.IsZero || reserves.Value.Reserve1.IsZero)
+                        continue;
+
+                    var reserveIn = zeroForOne ? reserves.Value.Reserve0 : reserves.Value.Reserve1;
+                    var reserveOut = zeroForOne ? reserves.Value.Reserve1 : reserves.Value.Reserve0;
+                    var effectiveFee = DynamicFeeCalculator.ComputeDynamicFeeFromState(dexState, poolId.Value, tier, currentBlock);
+
+                    try
+                    {
+                        amountOut = DexLibrary.GetAmountOut(amountInVal, reserveIn, reserveOut, effectiveFee);
+                    }
+                    catch (ArgumentException)
+                    {
+                        continue;
+                    }
+
+                    if (amountOut > bestAmountOut)
+                    {
+                        bestPoolId = poolId.Value;
+                        bestAmountOut = amountOut;
+                        bestEffectiveFee = effectiveFee;
+                        bestIsConcentrated = false;
+                        found = true;
+                    }
+                }
+            }
+
+            if (!found)
+                return Microsoft.AspNetCore.Http.Results.NotFound(new ErrorResponse { Code = 404, Message = "No pool found for this token pair" });
+
+            // Compute spot price, TWAP, volatility
+            UInt256 spotPrice;
+            if (bestIsConcentrated)
+            {
+                // For concentrated pools, derive spot price from sqrtPriceX96:
+                // price = (sqrtPriceX96)^2 / 2^192, scaled by PriceScale (2^64) = sqrtPriceX96^2 / 2^128
+                var clState = dexState.GetConcentratedPoolState(bestPoolId);
+                if (clState != null && !clState.Value.SqrtPriceX96.IsZero)
+                {
+                    var sqrtP = clState.Value.SqrtPriceX96;
+                    // PriceScale = 2^64; price_scaled = sqrtP * sqrtP * 2^64 / 2^192 = sqrtP * sqrtP / 2^128
+                    // Use FullMath.MulDiv(sqrtP, sqrtP, 2^128) but 2^128 is UInt128.MaxValue+1
+                    // Instead: MulDiv(sqrtP, sqrtP, 1) >> 128 doesn't work easily.
+                    // Simpler: MulDiv(sqrtP, sqrtP, 2^96) / 2^96 * PriceScale
+                    //        = MulDiv(sqrtP, sqrtP, 2^96) * 2^64 / 2^96
+                    //        = MulDiv(sqrtP, sqrtP, 2^96) / 2^32
+                    // But integer division loses precision. Better approach:
+                    // spotPrice = MulDiv(sqrtP, MulDiv(sqrtP, PriceScale, Q96), Q96)
+                    // where Q96 = 2^96
+                    var q96 = UInt256.One << 96;
+                    spotPrice = FullMath.MulDiv(sqrtP, FullMath.MulDiv(sqrtP, BatchAuctionSolver.PriceScale, q96), q96);
+                }
+                else
+                {
+                    spotPrice = UInt256.Zero;
+                }
+            }
+            else
+            {
+                var bestReserves = dexState.GetPoolReserves(bestPoolId);
+                spotPrice = (bestReserves != null && !bestReserves.Value.Reserve0.IsZero)
+                    ? BatchAuctionSolver.ComputeSpotPrice(bestReserves.Value.Reserve0, bestReserves.Value.Reserve1)
+                    : UInt256.Zero;
+            }
+
+            var twap = TwapOracle.ComputeTwap(dexState, bestPoolId, currentBlock, 100);
+            var volatilityBps = TwapOracle.ComputeVolatilityBps(dexState, bestPoolId, currentBlock, 7200);
+
+            // Price impact: compare spot-based output (if no slippage) vs actual output
+            uint priceImpactBps = 0;
+            if (!spotPrice.IsZero)
+            {
+                // Spot amount out = amountIn * spotPrice / PriceScale (for zeroForOne)
+                // or amountIn * PriceScale / spotPrice (for oneForZero)
+                // Then deduct fee to get spotAmountOutAfterFee
+                UInt256 spotAmountOutAfterFee;
+                var feeComplement = new UInt256(10_000 - bestEffectiveFee);
+                var feeDenom = new UInt256(10_000);
+                var amountInAfterFee = FullMath.MulDiv(amountInVal, feeComplement, feeDenom);
+
+                if (zeroForOne)
+                    spotAmountOutAfterFee = FullMath.MulDiv(amountInAfterFee, spotPrice, BatchAuctionSolver.PriceScale);
+                else
+                    spotAmountOutAfterFee = FullMath.MulDiv(amountInAfterFee, BatchAuctionSolver.PriceScale, spotPrice);
+
+                if (!spotAmountOutAfterFee.IsZero && spotAmountOutAfterFee > bestAmountOut)
+                {
+                    var impact = FullMath.MulDiv(spotAmountOutAfterFee - bestAmountOut, new UInt256(10_000), spotAmountOutAfterFee);
+                    priceImpactBps = (uint)(ulong)impact.Lo;
+                }
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new DexQuoteResponse
+            {
+                PoolId = bestPoolId,
+                TokenIn = tokenIn,
+                TokenOut = tokenOut,
+                AmountIn = amountInVal.ToString(),
+                AmountOut = bestAmountOut.ToString(),
+                EffectiveFeeBps = bestEffectiveFee,
+                PriceImpactBps = priceImpactBps,
+                SpotPrice = spotPrice.ToString(),
+                Twap = twap.ToString(),
+                VolatilityBps = volatilityBps,
+                IsConcentrated = bestIsConcentrated,
+            });
+        });
+
         app.MapGet("/v1/dex/pools", () =>
         {
             var dexState = new DexState(stateDb);
@@ -1535,6 +1701,21 @@ public sealed class DexOrderResponse
     }
 }
 
+public sealed class DexQuoteResponse
+{
+    [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
+    [JsonPropertyName("tokenIn")] public string TokenIn { get; set; } = "";
+    [JsonPropertyName("tokenOut")] public string TokenOut { get; set; } = "";
+    [JsonPropertyName("amountIn")] public string AmountIn { get; set; } = "0";
+    [JsonPropertyName("amountOut")] public string AmountOut { get; set; } = "0";
+    [JsonPropertyName("effectiveFeeBps")] public uint EffectiveFeeBps { get; set; }
+    [JsonPropertyName("priceImpactBps")] public uint PriceImpactBps { get; set; }
+    [JsonPropertyName("spotPrice")] public string SpotPrice { get; set; } = "0";
+    [JsonPropertyName("twap")] public string Twap { get; set; } = "0";
+    [JsonPropertyName("volatilityBps")] public uint VolatilityBps { get; set; }
+    [JsonPropertyName("isConcentrated")] public bool IsConcentrated { get; set; }
+}
+
 public sealed class DexLpBalanceResponse
 {
     [JsonPropertyName("poolId")] public ulong PoolId { get; set; }
@@ -1624,6 +1805,7 @@ public sealed class SyncBlocksResponse
 [JsonSerializable(typeof(LogResponse[]))]
 [JsonSerializable(typeof(ComplianceProofDto))]
 [JsonSerializable(typeof(ComplianceProofDto[]))]
+[JsonSerializable(typeof(DexQuoteResponse))]
 [JsonSerializable(typeof(DexLpBalanceResponse))]
 [JsonSerializable(typeof(DexPoolResponse))]
 [JsonSerializable(typeof(DexPoolResponse[]))]
