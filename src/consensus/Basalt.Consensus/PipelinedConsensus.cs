@@ -482,7 +482,9 @@ public sealed class PipelinedConsensus
             if (round.CommitSignatures.Count == 0)
                 return null;
 
-            var sigs = round.CommitSignatures.Select(s => s.Signature).ToArray();
+            var sigs = new byte[round.CommitSignatures.Count][];
+            for (int i = 0; i < round.CommitSignatures.Count; i++)
+                sigs[i] = round.CommitSignatures[i].Signature;
             return _blsSigner.AggregateSignatures(sigs);
         }
     }
