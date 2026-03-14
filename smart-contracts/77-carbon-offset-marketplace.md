@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (BST-3525 + BST-VC). Needs: retirement mechanism, corporate accounting dashboard.
+
 # Carbon Offset Marketplace
 
 ## Category

@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Sdk.Contracts.Policies;
 
 namespace Basalt.Sdk.Contracts.Standards;
 
@@ -13,6 +14,7 @@ public partial class BST1155Token : IBST1155
     private readonly StorageMap<string, string> _tokenURIs;      // tokenId -> uri
     private readonly StorageValue<ulong> _nextTokenId;
     private readonly StorageMap<string, string> _contractAdmin;
+    private readonly PolicyEnforcer _policyEnforcer;
     private readonly string _baseUri;
 
     public BST1155Token(string baseUri)
@@ -23,6 +25,7 @@ public partial class BST1155Token : IBST1155
         _tokenURIs = new StorageMap<string, string>("m_uris");
         _nextTokenId = new StorageValue<ulong>("m_next_id");
         _contractAdmin = new StorageMap<string, string>("m_admin");
+        _policyEnforcer = new PolicyEnforcer("m_pol");
         if (Context.IsDeploying)
             _contractAdmin.Set("owner", Convert.ToHexString(Context.Caller));
     }
@@ -50,6 +53,9 @@ public partial class BST1155Token : IBST1155
         Context.Require(
             IsCallerOrApproved(from, caller),
             "BST1155: caller is not owner or approved");
+
+        // Policy enforcement before any state mutation
+        _policyEnforcer.EnforceTransfer(from, to, amount);
 
         var fromBalance = _balances.Get(BalanceKey(from, tokenId));
         Context.Require(fromBalance >= amount, "BST1155: insufficient balance");
@@ -79,6 +85,12 @@ public partial class BST1155Token : IBST1155
         Context.Require(
             IsCallerOrApproved(from, caller),
             "BST1155: caller is not owner or approved");
+
+        // Policy enforcement: check all items before any state mutations
+        for (int i = 0; i < tokenIds.Length; i++)
+        {
+            _policyEnforcer.EnforceTransfer(from, to, (UInt256)amounts[i]);
+        }
 
         for (int i = 0; i < tokenIds.Length; i++)
         {
@@ -170,6 +182,30 @@ public partial class BST1155Token : IBST1155
 
         return tokenId;
     }
+
+    // --- Policy Management ---
+
+    [BasaltEntrypoint]
+    public void AddPolicy(byte[] policyAddress)
+    {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "BST1155: not owner");
+        _policyEnforcer.AddPolicy(policyAddress);
+    }
+
+    [BasaltEntrypoint]
+    public void RemovePolicy(byte[] policyAddress)
+    {
+        Context.Require(Convert.ToHexString(Context.Caller) == _contractAdmin.Get("owner"), "BST1155: not owner");
+        _policyEnforcer.RemovePolicy(policyAddress);
+    }
+
+    [BasaltView]
+    public ulong PolicyCount() => _policyEnforcer.Count;
+
+    [BasaltView]
+    public byte[] GetPolicyAt(ulong index) => _policyEnforcer.GetPolicy(index);
+
+    // --- Internal ---
 
     private bool IsCallerOrApproved(byte[] owner, byte[] caller)
     {

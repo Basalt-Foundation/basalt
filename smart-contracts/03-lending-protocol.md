@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (BST-4626 Vault). Needs: collateral baskets, liquidation engine, variable rates, oracle price feeds.
+
 # Lending/Borrowing Protocol
 
 ## Category

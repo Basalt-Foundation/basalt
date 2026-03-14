@@ -1,3 +1,5 @@
+> **STATUS: DONE** — M-of-N Ed25519 multisig pattern implemented in **BridgeETH** (0x0107). Extractable as reusable wallet.
+
 # Multi-Signature Wallet
 
 ## Category

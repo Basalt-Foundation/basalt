@@ -13,6 +13,7 @@ A high-performance Layer 1 blockchain built on .NET 9 with Native AOT compilatio
 - **Merkle Patricia Trie** -- Cryptographically verifiable state with RocksDB persistence
 - **Smart Contracts** -- C# contracts with gas metering, sandboxed execution, and Roslyn analyzers
 - **Token Standards** -- BST-20 (ERC-20), BST-721 (ERC-721), BST-1155 (ERC-1155), BST-3525 (ERC-3525 SFT), BST-4626 (ERC-4626 Vault), BST-VC (W3C Verifiable Credentials), BST-DID
+- **Policy Hooks** -- Modular transfer policy enforcement on all token standards: sanctions, holding limits, lockup periods, jurisdiction whitelist/blacklist. Deploy policies as independent contracts, register on any token.
 - **EIP-1559 Gas Pricing** -- Dynamic base fee with elastic block gas, tip/burn fee split, MaxFeePerGas/MaxPriorityFeePerGas
 - **On-Chain Governance** -- Stake-weighted quadratic voting, single-hop delegation, timelock, executable proposals
 - **Block Explorer** -- Blazor WASM explorer with responsive design, dark/light theme, live WebSocket updates, Faucet, and Network Stats
@@ -60,7 +61,7 @@ dotnet build
 dotnet test
 ```
 
-2,789 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
+2,891 tests across 16 test projects covering core types, cryptography, codec serialization, storage, networking, consensus, execution (including DEX), API, compliance, bridge, confidentiality, node configuration, SDK contracts, analyzers, wallet, and end-to-end integration.
 
 ### Run a Local Node
 
@@ -115,7 +116,7 @@ dotnet run --project tools/Basalt.Cli -- init MyToken
 ## Project Structure
 
 ```
-Basalt.sln                              (42 C# projects)
+Basalt.sln                              (43 C# projects)
 +-- src/
 |   +-- core/
 |   |   +-- Basalt.Core/               # Hash256, Address, UInt256, chain parameters
@@ -152,7 +153,7 @@ Basalt.sln                              (42 C# projects)
 |   |   +-- Basalt.Explorer/           # Blazor WASM block explorer (responsive, dark/light theme, WebSocket live updates)
 |   +-- node/
 |       +-- Basalt.Node/               # Composition root, single binary
-+-- tests/                             # 16 test projects, 2,781 tests
++-- tests/                             # 16 test projects, 2,891 tests
 |   +-- Basalt.Core.Tests/
 |   +-- Basalt.Crypto.Tests/
 |   +-- Basalt.Codec.Tests/
@@ -175,7 +176,10 @@ Basalt.sln                              (42 C# projects)
 |   +-- Basalt.Cli/                    # CLI tool (account, tx, block, faucet, contract init/compile/test)
 |   +-- Basalt.DevNet/                 # Docker devnet genesis config + validator setup script
 |   +-- TestVectorGen/                 # Codec test vector generator
++-- examples/
+|   +-- Basalt.Example.Contracts/      # Example contracts (ComplianceToken, PolicyVault)
 +-- contracts/                         # Solidity bridge contracts (BasaltBridge, WBST)
++-- smart-contracts/                   # 78 contract specifications with implementation status
 +-- docs/                              # Design plan, technical specification
 ```
 

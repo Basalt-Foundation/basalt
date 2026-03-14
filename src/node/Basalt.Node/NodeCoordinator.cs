@@ -1664,6 +1664,18 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (Volatile.Read(ref _isSyncing) != 0)
                     continue;
 
+                // Periodic behind-detection: check if any connected peer is ahead.
+                // This runs BEFORE the circuit breaker check so that a node stuck 1 block
+                // behind can still trigger sync during cooldown — otherwise small gaps
+                // cause a permanent stall when all validators trip their circuit breakers.
+                // The _isSyncing guard in TrySyncFromPeers prevents concurrent attempts.
+                var bestPeerCheck = GetBestPeer();
+                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber)
+                {
+                    // Fire-and-forget sync attempt; _isSyncing guard deduplicates
+                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                }
+
                 // Circuit breaker auto-reset: after cooldown, reset and attempt
                 // sync to recover from transient failures (state divergence, etc.)
                 if (_circuitBreakerTripped)
@@ -1686,7 +1698,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     }
                     else
                     {
-                        continue; // Still in cooldown, skip this iteration
+                        continue; // Still in cooldown, skip proposals
                     }
                 }
 
@@ -1705,19 +1717,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
                 // Cleanup finalized rounds periodically
                 _pipelinedConsensus.CleanupFinalizedRounds();
-
-                // Periodic behind-detection: check if any connected peer is significantly
-                // ahead. This catches the case where a node fell behind and no proposals
-                // arrive (e.g., because other validators' circuit breakers are also tripped).
-                // Without this, OnBehindDetected only fires from received proposals.
-                var bestPeerCheck = GetBestPeer();
-                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber + 10)
-                {
-                    _logger.LogInformation(
-                        "Peer {Peer} is at #{PeerHeight} vs local #{LocalHeight} — triggering catch-up sync",
-                        bestPeerCheck.Id, bestPeerCheck.BestBlockNumber, _chainManager.LatestBlockNumber);
-                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
-                }
 
                 _episub!.RebalanceTiers();
             }

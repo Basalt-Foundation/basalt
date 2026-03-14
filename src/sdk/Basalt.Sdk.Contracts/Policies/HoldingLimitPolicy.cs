@@ -1,0 +1,126 @@
+using Basalt.Core;
+
+namespace Basalt.Sdk.Contracts.Policies;
+
+/// <summary>
+/// Policy contract that enforces maximum holding limits per address per token.
+/// Deploy this contract, configure limits, then register it with BST tokens.
+/// Type ID: 0x0008
+/// </summary>
+[BasaltContract]
+public partial class HoldingLimitPolicy : ITransferPolicy
+{
+    private readonly StorageMap<string, string> _admin;
+    private readonly StorageMap<string, UInt256> _limits; // "token:address" -> max balance
+    private readonly StorageMap<string, UInt256> _defaultLimits; // token -> default max
+
+    public HoldingLimitPolicy()
+    {
+        _admin = new StorageMap<string, string>("hlp_admin");
+        _limits = new StorageMap<string, UInt256>("hlp_limits");
+        _defaultLimits = new StorageMap<string, UInt256>("hlp_deflim");
+        if (Context.IsDeploying)
+            _admin.Set("owner", Convert.ToHexString(Context.Caller));
+    }
+
+    /// <summary>
+    /// Set the default holding limit for a token. Zero means no limit.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetDefaultLimit(byte[] token, UInt256 maxBalance)
+    {
+        RequireAdmin();
+        _defaultLimits.Set(Convert.ToHexString(token), maxBalance);
+    }
+
+    /// <summary>
+    /// Set a per-address holding limit for a specific token. Zero means use default.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetAddressLimit(byte[] token, byte[] account, UInt256 maxBalance)
+    {
+        RequireAdmin();
+        _limits.Set(LimitKey(token, account), maxBalance);
+    }
+
+    /// <summary>
+    /// Query the effective limit for an address on a token.
+    /// </summary>
+    [BasaltView]
+    public UInt256 GetEffectiveLimit(byte[] token, byte[] account)
+    {
+        var perAddr = _limits.Get(LimitKey(token, account));
+        if (perAddr > 0) return perAddr;
+        return _defaultLimits.Get(Convert.ToHexString(token));
+    }
+
+    /// <summary>
+    /// ITransferPolicy implementation. Called by token contracts via cross-contract call.
+    /// Queries the recipient's balance on the token and checks against the limit.
+    /// </summary>
+    /// <remarks>
+    /// This policy calls <c>BalanceOf(byte[] account) → UInt256</c>, which is the BST-20
+    /// and BST-721 signature. Standards with different BalanceOf signatures (BST-1155
+    /// uses <c>BalanceOf(byte[], ulong)</c>, BST-3525 uses <c>BalanceOf(ulong)</c>) will
+    /// fail the cross-contract call and be denied conservatively. To enforce holding
+    /// limits on those standards, deploy a standard-specific policy variant.
+    /// </remarks>
+    [BasaltView]
+    public bool CheckTransfer(byte[] token, byte[] from, byte[] to, UInt256 amount)
+    {
+        var limit = GetEffectiveLimit(token, to);
+        if (limit.IsZero) return true; // No limit configured
+
+        // Query recipient's current balance on the token.
+        // If the call fails (e.g. incompatible BalanceOf signature), deny conservatively.
+        UInt256 currentBalance;
+        try
+        {
+            currentBalance = Context.CallContract<UInt256>(token, "BalanceOf", to);
+        }
+        catch
+        {
+            return false;
+        }
+
+        // If adding would overflow UInt256, the balance obviously exceeds any limit.
+        if (!UInt256.TryAdd(currentBalance, amount, out var newBalance))
+            return false;
+
+        return newBalance <= limit;
+    }
+
+    /// <summary>
+    /// Propose a new admin. The new admin must call AcceptAdmin to complete the transfer.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void TransferAdmin(byte[] newAdmin)
+    {
+        RequireAdmin();
+        Context.Require(newAdmin.Length == 20, "HoldingLimit: invalid address");
+        _admin.Set("pending", Convert.ToHexString(newAdmin));
+    }
+
+    /// <summary>
+    /// Accept admin role. Must be called by the pending admin.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void AcceptAdmin()
+    {
+        var pending = _admin.Get("pending");
+        Context.Require(!string.IsNullOrEmpty(pending), "HoldingLimit: no pending admin");
+        Context.Require(Convert.ToHexString(Context.Caller) == pending, "HoldingLimit: not pending admin");
+        _admin.Set("owner", pending);
+        _admin.Delete("pending");
+    }
+
+    private void RequireAdmin()
+    {
+        Context.Require(
+            Convert.ToHexString(Context.Caller) == _admin.Get("owner"),
+            "HoldingLimit: not admin");
+    }
+
+    private static string LimitKey(byte[] token, byte[] account) =>
+        Convert.ToHexString(token) + ":" + Convert.ToHexString(account);
+}

@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Implemented as **StakingPool** system contract (0x0105) at `0x...1005`.
+
 # Liquid Staking Token (stBSLT)
 
 ## Category

@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Implemented as **Governance** system contract (0x0102): stake-weighted quadratic voting, delegation, timelock, executable proposals, StakingPool integration.
+
 # DAO Treasury
 
 ## Category

@@ -68,4 +68,36 @@ internal static class DiagnosticIds
         "Basalt.Compatibility",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UncheckedCrossContractReturn = new(
+        "BST009",
+        "Unchecked cross-contract call return value",
+        "Cross-contract call return value not checked: {0}",
+        "Basalt.Safety",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor StateWriteBeforePolicyCheck = new(
+        "BST010",
+        "State write before policy enforcement",
+        "Storage write before policy check: {0}",
+        "Basalt.Safety",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor NonDeterministicCollection = new(
+        "BST011",
+        "Non-deterministic collection iteration",
+        "Non-deterministic collection: {0}",
+        "Basalt.Determinism",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor MissingPolicyEnforcement = new(
+        "BST012",
+        "Missing policy enforcement in transfer override",
+        "Transfer override without policy enforcement: {0}",
+        "Basalt.Safety",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
 }

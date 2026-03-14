@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (Escrow 0x0103). Needs: linear/cliff vesting curves, revocation logic.
+
 # Token Vesting Contract
 
 ## Category

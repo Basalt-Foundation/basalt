@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Implemented as **BridgeETH** (0x0107): lock/unlock native BST, M-of-N Ed25519 multisig relayers, deposit lifecycle, pause/unpause. Currently EVM-focused.
+
 # Generic Cross-Chain Message Bridge
 
 ## Category

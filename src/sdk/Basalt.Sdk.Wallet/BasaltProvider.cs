@@ -177,6 +177,27 @@ public sealed class BasaltProvider : IDisposable
         return _client.CallReadOnlyAsync(toHex, dataHex, fromHex, gasLimit, ct);
     }
 
+    /// <summary>
+    /// Gets a DEX swap quote for the given token pair and amount.
+    /// Returns null if no pool exists for this pair.
+    /// </summary>
+    /// <param name="tokenIn">The input token address.</param>
+    /// <param name="tokenOut">The output token address.</param>
+    /// <param name="amountIn">The input amount.</param>
+    /// <param name="feeBps">Optional fee tier. If null, selects the best pool.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public Task<DexQuoteInfo?> GetDexQuoteAsync(
+        Address tokenIn,
+        Address tokenOut,
+        UInt256 amountIn,
+        uint? feeBps = null,
+        CancellationToken ct = default)
+    {
+        var tokenInHex = "0x" + Convert.ToHexString(tokenIn.ToArray()).ToLowerInvariant();
+        var tokenOutHex = "0x" + Convert.ToHexString(tokenOut.ToArray()).ToLowerInvariant();
+        return _client.GetDexQuoteAsync(tokenInHex, tokenOutHex, amountIn.ToString(), feeBps, ct);
+    }
+
     // ── Transaction Methods ────────────────────────────────────────────
 
     /// <summary>

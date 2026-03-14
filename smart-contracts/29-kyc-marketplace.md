@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (IssuerRegistry + ComplianceEngine + ZK compliance). Needs: provider bidding, credential pricing.
+
 # Decentralized KYC Marketplace
 
 ## Category

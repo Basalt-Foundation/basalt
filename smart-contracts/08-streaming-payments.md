@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (Escrow 0x0103). Needs: linear streaming curves, cancellation, top-up.
+
 # Streaming Payments (Sablier-style)
 
 ## Category

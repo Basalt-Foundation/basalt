@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for parametric trigger conditions.
+
 # Insurance Protocol
 
 ## Category

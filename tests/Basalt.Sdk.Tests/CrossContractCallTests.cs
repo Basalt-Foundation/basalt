@@ -83,6 +83,70 @@ public class CrossContractCallTests : IDisposable
         Context.CallDepth.Should().Be(0);
     }
 
+    [Fact]
+    public void ReentrantCallback_IsStaticCall_BlocksWrites()
+    {
+        // A (TokenContract) calls B (PolicyContract), B calls back A.BalanceOf (read — OK)
+        var tokenAddr = BasaltTestHost.CreateAddress(10);
+        var policyAddr = BasaltTestHost.CreateAddress(11);
+
+        var token = new MintableBST20("Token", "TK", 18);
+        var policy = new CallbackPolicyContract(tokenAddr);
+        _host.Deploy(tokenAddr, token);
+        _host.Deploy(policyAddr, policy);
+
+        var caller = BasaltTestHost.CreateAddress(1);
+        _host.SetCaller(caller);
+        _host.Call(() => token.MintPublic(caller, 1000));
+
+        // Token calls Policy.CheckBalance which calls back Token.BalanceOf (read)
+        Context.Self = tokenAddr;
+        var balance = Context.CallContract<UInt256>(policyAddr, "CheckBalance", caller);
+        balance.Should().Be((UInt256)1000);
+    }
+
+    [Fact]
+    public void ReentrantCallback_IsStaticCall_WritesRevert()
+    {
+        // A calls B, B calls back A with a method that writes — should revert
+        var contractAAddr = BasaltTestHost.CreateAddress(10);
+        var contractBAddr = BasaltTestHost.CreateAddress(11);
+
+        var contractA = new WritableContract();
+        var contractB = new CallbackWriterContract(contractAAddr);
+        _host.Deploy(contractAAddr, contractA);
+        _host.Deploy(contractBAddr, contractB);
+
+        var caller = BasaltTestHost.CreateAddress(1);
+        _host.SetCaller(caller);
+        Context.Self = contractAAddr;
+
+        // A calls B.TriggerWriteBack, which calls A.WriteState — should fail with static call error
+        var act = () => Context.CallContract(contractBAddr, "TriggerWriteBack");
+        act.Should().Throw<ContractRevertException>()
+            .WithMessage("*Static call*");
+    }
+
+    [Fact]
+    public void IsStaticCall_RestoredAfterCallback()
+    {
+        var tokenAddr = BasaltTestHost.CreateAddress(10);
+        var policyAddr = BasaltTestHost.CreateAddress(11);
+
+        var token = new MintableBST20("Token", "TK", 18);
+        var policy = new CallbackPolicyContract(tokenAddr);
+        _host.Deploy(tokenAddr, token);
+        _host.Deploy(policyAddr, policy);
+
+        var caller = BasaltTestHost.CreateAddress(1);
+        _host.SetCaller(caller);
+        Context.Self = tokenAddr;
+
+        Context.IsStaticCall.Should().BeFalse();
+        Context.CallContract<UInt256>(policyAddr, "CheckBalance", caller);
+        Context.IsStaticCall.Should().BeFalse(); // Restored after call chain
+    }
+
     public void Dispose() => _host.Dispose();
 }
 
@@ -97,5 +161,45 @@ public class ReentrantContract
     public void Reenter()
     {
         Context.CallContract(_selfAddr, "Reenter");
+    }
+}
+
+/// <summary>
+/// Test policy contract that calls back into the token to read BalanceOf.
+/// </summary>
+public class CallbackPolicyContract
+{
+    private readonly byte[] _tokenAddr;
+    public CallbackPolicyContract(byte[] tokenAddr) => _tokenAddr = tokenAddr;
+
+    public UInt256 CheckBalance(byte[] account)
+    {
+        // This is a callback from token→policy→token.BalanceOf (read-only)
+        return Context.CallContract<UInt256>(_tokenAddr, "BalanceOf", account);
+    }
+}
+
+/// <summary>
+/// Test contract that calls back into the caller and attempts a storage write.
+/// </summary>
+public class CallbackWriterContract
+{
+    private readonly byte[] _targetAddr;
+    public CallbackWriterContract(byte[] targetAddr) => _targetAddr = targetAddr;
+
+    public void TriggerWriteBack()
+    {
+        Context.CallContract(_targetAddr, "WriteState");
+    }
+}
+
+/// <summary>
+/// Test contract with a write method (used to verify static call blocks writes).
+/// </summary>
+public class WritableContract
+{
+    public void WriteState()
+    {
+        ContractStorage.Set("test_key", "test_value");
     }
 }

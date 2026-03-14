@@ -1,3 +1,5 @@
+> **STATUS: PARTIAL** — Foundation exists (BST-3525 SFT). Needs: coupon distribution, maturity tracking, credit rating integration.
+
 # Tokenized Bonds
 
 ## Category

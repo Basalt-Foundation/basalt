@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for market outcome metrics and resolution.
+
 # Futarchy Governance
 
 ## Category

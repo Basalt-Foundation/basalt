@@ -1,4 +1,5 @@
 using Basalt.Core;
+using Basalt.Sdk.Contracts.Policies;
 
 namespace Basalt.Sdk.Contracts.Standards;
 
@@ -12,6 +13,8 @@ public partial class BST20Token : IBST20
     private readonly StorageValue<UInt256> _totalSupply;
     private readonly StorageMap<string, UInt256> _balances;
     private readonly StorageMap<string, UInt256> _allowances;
+    private readonly StorageMap<string, string> _tokenAdmin;
+    private readonly PolicyEnforcer _policyEnforcer;
     private readonly string _name;
     private readonly string _symbol;
     private readonly byte _decimals;
@@ -24,6 +27,13 @@ public partial class BST20Token : IBST20
         _totalSupply = new StorageValue<UInt256>("total_supply");
         _balances = new StorageMap<string, UInt256>("balances");
         _allowances = new StorageMap<string, UInt256>("allowances");
+        _tokenAdmin = new StorageMap<string, string>("bst20_admin");
+        _policyEnforcer = new PolicyEnforcer("bst20_pol");
+
+        if (Context.IsDeploying)
+        {
+            _tokenAdmin.Set("owner", Convert.ToHexString(Context.Caller));
+        }
 
         if (!initialSupply.IsZero && Context.IsDeploying)
         {
@@ -176,10 +186,48 @@ public partial class BST20Token : IBST20
         });
     }
 
+    // --- Policy Management ---
+
+    /// <summary>
+    /// Register a policy contract. Admin-only.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void AddPolicy(byte[] policyAddress)
+    {
+        Context.Require(
+            Convert.ToHexString(Context.Caller) == _tokenAdmin.Get("owner"),
+            "BST20: not admin");
+        _policyEnforcer.AddPolicy(policyAddress);
+    }
+
+    /// <summary>
+    /// Remove a policy contract. Admin-only.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void RemovePolicy(byte[] policyAddress)
+    {
+        Context.Require(
+            Convert.ToHexString(Context.Caller) == _tokenAdmin.Get("owner"),
+            "BST20: not admin");
+        _policyEnforcer.RemovePolicy(policyAddress);
+    }
+
+    [BasaltView]
+    public ulong PolicyCount() => _policyEnforcer.Count;
+
+    [BasaltView]
+    public byte[] GetPolicyAt(ulong index) => _policyEnforcer.GetPolicy(index);
+
+    // --- Internal ---
+
     private bool TransferInternal(byte[] from, byte[] to, UInt256 amount)
     {
         // L-1: Reject zero-amount transfers to prevent event spam
         Context.Require(!amount.IsZero, "BST20: zero amount");
+
+        // Policy enforcement before any state mutation
+        _policyEnforcer.EnforceTransfer(from, to, amount);
+
         var fromBalance = _balances.Get(ToKey(from));
         Context.Require(fromBalance >= amount, "BST20: insufficient balance");
 

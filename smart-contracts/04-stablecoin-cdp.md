@@ -1,3 +1,5 @@
+> **STATUS: NEEDS ORACLE** — Requires decentralized oracle (41) for collateral price feeds and peg stability.
+
 # Collateralized Stablecoin (CDP)
 
 ## Category

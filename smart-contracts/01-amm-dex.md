@@ -1,3 +1,5 @@
+> **STATUS: DONE** — Superseded by **Caldera Fusion DEX** (Phases A-E): batch auction, order book, TWAP oracle, dynamic fees, concentrated liquidity, encrypted intents, solver network.
+
 # Automated Market Maker (AMM DEX)
 
 ## Category

@@ -205,6 +205,19 @@ public sealed class ContractRegistry
             return new Basalt.Sdk.Contracts.Standards.BridgeETH();
         });
 
+        // Policy contracts (user-deployable)
+        registry.Register(0x0008, "HoldingLimitPolicy", _ =>
+            new Basalt.Sdk.Contracts.Policies.HoldingLimitPolicy());
+
+        registry.Register(0x0009, "LockupPolicy", _ =>
+            new Basalt.Sdk.Contracts.Policies.LockupPolicy());
+
+        registry.Register(0x000A, "JurisdictionPolicy", _ =>
+            new Basalt.Sdk.Contracts.Policies.JurisdictionPolicy());
+
+        registry.Register(0x000B, "SanctionsPolicy", _ =>
+            new Basalt.Sdk.Contracts.Policies.SanctionsPolicy());
+
         return registry;
     }
 

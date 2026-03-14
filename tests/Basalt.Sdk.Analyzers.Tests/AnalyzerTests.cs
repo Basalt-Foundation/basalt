@@ -844,4 +844,415 @@ public class BasaltContractAttribute : System.Attribute { }
         var diags = await GetDiagnosticsAsync<AotCompatibilityAnalyzer>(source);
         diags.Should().Contain(d => d.Id == "BST008");
     }
+
+    // ========================================================================
+    // BST009: CrossContractReturnAnalyzer
+    // ========================================================================
+
+    [Fact]
+    public async Task BST009_DiscardedBoolReturn_InContract_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    public void Transfer()
+    {
+        Context.CallContract<bool>(null, ""Transfer"");
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+public static class Context
+{
+    public static T CallContract<T>(object addr, string method) => default;
+}
+";
+        var diags = await GetDiagnosticsAsync<CrossContractReturnAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST009");
+    }
+
+    [Fact]
+    public async Task BST009_CheckedBoolReturn_InContract_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    public void Transfer()
+    {
+        var ok = Context.CallContract<bool>(null, ""Transfer"");
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+public static class Context
+{
+    public static T CallContract<T>(object addr, string method) => default;
+}
+";
+        var diags = await GetDiagnosticsAsync<CrossContractReturnAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BST009_OutsideContract_NoDiagnostic()
+    {
+        var source = @"
+public class NotAContract
+{
+    public void Transfer()
+    {
+        Context.CallContract<bool>(null, ""Transfer"");
+    }
+}
+public static class Context
+{
+    public static T CallContract<T>(object addr, string method) => default;
+}
+";
+        var diags = await GetDiagnosticsAsync<CrossContractReturnAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    // ========================================================================
+    // BST010: PolicyOrderingAnalyzer
+    // ========================================================================
+
+    [Fact]
+    public async Task BST010_SetBeforeEnforce_InContract_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    private StorageMap _balances = new StorageMap();
+
+    public void Transfer()
+    {
+        _balances.Set(""key"", ""value"");
+        _enforcer.EnforceTransfer(null, null, 0);
+    }
+
+    private PolicyEnforcer _enforcer = new PolicyEnforcer();
+}
+public class BasaltContractAttribute : System.Attribute { }
+public class StorageMap { public void Set(string k, string v) { } }
+public class PolicyEnforcer { public void EnforceTransfer(object a, object b, int c) { } }
+";
+        var diags = await GetDiagnosticsAsync<PolicyOrderingAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST010");
+    }
+
+    [Fact]
+    public async Task BST010_EnforceBeforeSet_InContract_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    private StorageMap _balances = new StorageMap();
+
+    public void Transfer()
+    {
+        _enforcer.EnforceTransfer(null, null, 0);
+        _balances.Set(""key"", ""value"");
+    }
+
+    private PolicyEnforcer _enforcer = new PolicyEnforcer();
+}
+public class BasaltContractAttribute : System.Attribute { }
+public class StorageMap { public void Set(string k, string v) { } }
+public class PolicyEnforcer { public void EnforceTransfer(object a, object b, int c) { } }
+";
+        var diags = await GetDiagnosticsAsync<PolicyOrderingAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BST010_NoEnforcement_InContract_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    private StorageMap _balances = new StorageMap();
+
+    public void Transfer()
+    {
+        _balances.Set(""key"", ""value"");
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+public class StorageMap { public void Set(string k, string v) { } }
+";
+        var diags = await GetDiagnosticsAsync<PolicyOrderingAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    // ========================================================================
+    // BST011: CollectionOrderingAnalyzer
+    // ========================================================================
+
+    [Fact]
+    public async Task BST011_DictionaryCreation_InContract_ReportsDiagnostic()
+    {
+        var source = @"
+using System.Collections.Generic;
+[BasaltContract]
+public class MyContract
+{
+    public void DoWork()
+    {
+        var d = new Dictionary<string, int>();
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<CollectionOrderingAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST011");
+    }
+
+    [Fact]
+    public async Task BST011_HashSetCreation_InContract_ReportsDiagnostic()
+    {
+        var source = @"
+using System.Collections.Generic;
+[BasaltContract]
+public class MyContract
+{
+    public void DoWork()
+    {
+        var h = new HashSet<string>();
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<CollectionOrderingAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST011");
+    }
+
+    [Fact]
+    public async Task BST011_OutsideContract_NoDiagnostic()
+    {
+        var source = @"
+using System.Collections.Generic;
+public class NotAContract
+{
+    public void DoWork()
+    {
+        var d = new Dictionary<string, int>();
+    }
+}
+";
+        var diags = await GetDiagnosticsAsync<CollectionOrderingAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BST011_DictionaryField_InContract_ReportsDiagnostic()
+    {
+        var source = @"
+using System.Collections.Generic;
+[BasaltContract]
+public class MyContract
+{
+    private Dictionary<string, int> _cache;
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<CollectionOrderingAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST011");
+    }
+
+    [Fact]
+    public async Task BST011_SortedDictionary_InContract_NoDiagnostic()
+    {
+        var source = @"
+using System.Collections.Generic;
+[BasaltContract]
+public class MyContract
+{
+    public void DoWork()
+    {
+        var d = new SortedDictionary<string, int>();
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<CollectionOrderingAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    // ========================================================================
+    // BST012: PolicyEnforcementAnalyzer
+    // ========================================================================
+
+    [Fact]
+    public async Task BST012_TransferInternalWithoutEnforce_InDerivedContract_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST20Token
+{
+}
+
+[BasaltContract]
+public class MyToken : BST20Token
+{
+    private bool TransferInternal(byte[] from, byte[] to, int amount)
+    {
+        // Missing EnforceTransfer call
+        return true;
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST012");
+    }
+
+    [Fact]
+    public async Task BST012_TransferInternalWithEnforce_InDerivedContract_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST20Token
+{
+}
+
+[BasaltContract]
+public class MyToken : BST20Token
+{
+    private PolicyEnforcer _policyEnforcer = new PolicyEnforcer();
+
+    private bool TransferInternal(byte[] from, byte[] to, int amount)
+    {
+        _policyEnforcer.EnforceTransfer(from, to, amount);
+        return true;
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+public class PolicyEnforcer
+{
+    public void EnforceTransfer(byte[] a, byte[] b, int c) { }
+}
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BST012_BST721_TransferInternalWithoutEnforce_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST721Token
+{
+}
+
+[BasaltContract]
+public class MyNFT : BST721Token
+{
+    private bool TransferInternal(byte[] from, byte[] to, ulong tokenId)
+    {
+        return true;
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST012");
+    }
+
+    [Fact]
+    public async Task BST012_BST1155_SafeTransferFromWithoutEnforce_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST1155Token
+{
+}
+
+[BasaltContract]
+public class MyMultiToken : BST1155Token
+{
+    public void SafeTransferFrom(byte[] from, byte[] to, ulong id, ulong amount)
+    {
+        // Missing EnforceTransfer call
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST012");
+    }
+
+    [Fact]
+    public async Task BST012_BST3525_TransferValueFromWithoutEnforce_ReportsDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST3525Token
+{
+}
+
+[BasaltContract]
+public class MySFT : BST3525Token
+{
+    public void TransferValueFrom(ulong fromId, byte[] to, ulong value)
+    {
+        // Missing EnforceTransfer call
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().Contain(d => d.Id == "BST012");
+    }
+
+    [Fact]
+    public async Task BST012_BST1155_SafeTransferFromWithEnforce_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class BST1155Token
+{
+}
+
+[BasaltContract]
+public class MyMultiToken : BST1155Token
+{
+    private PolicyEnforcer _policyEnforcer = new PolicyEnforcer();
+
+    public void SafeTransferFrom(byte[] from, byte[] to, ulong id, ulong amount)
+    {
+        _policyEnforcer.EnforceTransfer(from, to, amount);
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+public class PolicyEnforcer
+{
+    public void EnforceTransfer(byte[] a, byte[] b, ulong c) { }
+}
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BST012_NonBstClassWithTransferInternal_NoDiagnostic()
+    {
+        var source = @"
+[BasaltContract]
+public class MyContract
+{
+    private bool TransferInternal(byte[] from, byte[] to, int amount)
+    {
+        return true;
+    }
+}
+public class BasaltContractAttribute : System.Attribute { }
+";
+        var diags = await GetDiagnosticsAsync<PolicyEnforcementAnalyzer>(source);
+        diags.Should().BeEmpty();
+    }
 }
