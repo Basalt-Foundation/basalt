@@ -106,9 +106,8 @@ public sealed class BlockBuilder
                 continue;
 
             // L-5: Signature was already verified at mempool admission (M-2).
-            // Validate() re-verifies here for defense-in-depth. If performance
-            // becomes an issue, consider caching verification results.
-            var validation = _validator.Validate(tx, stateDb, baseFee);
+            // Skip signature re-verification during block building for performance.
+            var validation = _validator.Validate(tx, stateDb, baseFee, skipSignature: true);
             if (!validation.IsSuccess)
             {
                 _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
@@ -235,7 +234,7 @@ public sealed class BlockBuilder
             if (totalGasUsed + tx.GasLimit > _chainParams.BlockGasLimit)
                 continue;
 
-            var validation = _validator.Validate(tx, stateDb, baseFee);
+            var validation = _validator.Validate(tx, stateDb, baseFee, skipSignature: true);
             if (!validation.IsSuccess)
             {
                 _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",

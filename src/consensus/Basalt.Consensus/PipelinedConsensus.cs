@@ -261,7 +261,7 @@ public sealed class PipelinedConsensus
         // Verify signature (domain-separated)
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
         WriteConsensusSigningPayload(sigPayload, _chainId, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
-        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
+        if (!_blsSigner.Verify(leader.BlsPublicKeyBytes, sigPayload, proposal.ProposerSignature.ToArray()))
             return null;
 
         round.View = proposal.ViewNumber;
@@ -271,7 +271,7 @@ public sealed class PipelinedConsensus
 
         // Count leader's implicit PREPARE vote (the leader self-voted locally)
         RecordVote(round, VotePhase.Prepare, proposal.SenderId,
-            proposal.ProposerSignature.ToArray(), leader.BlsPublicKey.ToArray());
+            proposal.ProposerSignature.ToArray(), leader.BlsPublicKeyBytes);
 
         return CreateVote(round, VotePhase.Prepare);
     }
@@ -294,7 +294,7 @@ public sealed class PipelinedConsensus
         // Without this check, an attacker could submit votes with valid signatures from a
         // different key than the one registered for their validator identity.
         var voterInfo = _validatorSet.GetByPeerId(vote.SenderId);
-        if (voterInfo == null || voterInfo.BlsPublicKey.ToArray().AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()) == false)
+        if (voterInfo == null || voterInfo.BlsPublicKeyBytes.AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()) == false)
             return null;
 
         // F-CON-02: Verify vote is for the correct block hash
@@ -363,7 +363,7 @@ public sealed class PipelinedConsensus
 
         // MED-03 R3: Verify VoterPublicKey matches the registered BLS public key for the sender.
         var vcValidator = _validatorSet.GetByPeerId(viewChange.SenderId);
-        if (vcValidator == null || !vcValidator.BlsPublicKey.ToArray().AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
+        if (vcValidator == null || !vcValidator.BlsPublicKeyBytes.AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
             return null;
 
         // H-01: Verify view change signature (domain-separated)

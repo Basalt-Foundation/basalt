@@ -10,7 +10,19 @@ public sealed class ValidatorInfo
 {
     public required PeerId PeerId { get; set; }
     public required PublicKey PublicKey { get; set; }
-    public required BlsPublicKey BlsPublicKey { get; set; }
+
+    private BlsPublicKey _blsPublicKey;
+    private byte[]? _cachedBlsPublicKeyBytes;
+
+    public required BlsPublicKey BlsPublicKey
+    {
+        get => _blsPublicKey;
+        set { _blsPublicKey = value; _cachedBlsPublicKeyBytes = null; }
+    }
+
+    /// <summary>Cached byte[] of BlsPublicKey to avoid allocation in consensus hot path.</summary>
+    public byte[] BlsPublicKeyBytes => _cachedBlsPublicKeyBytes ??= _blsPublicKey.ToArray();
+
     public required Address Address { get; init; }
     public UInt256 Stake { get; set; } = UInt256.Zero;
     public int Index { get; init; }

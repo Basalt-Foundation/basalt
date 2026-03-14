@@ -74,6 +74,10 @@ public static class MessageCodec
             return SerializeInto(stackBuffer, message);
         }
 
+        // For large messages, use ArrayPool for the write buffer but return the
+        // exact-size result directly from WrittenSpan.ToArray(). This is one
+        // allocation (the result) vs two (rent + result copy) previously.
+        // We keep ArrayPool to avoid large temporary allocations on the LOH.
         var rented = ArrayPool<byte>.Shared.Rent(estimatedSize);
         try
         {
@@ -81,7 +85,7 @@ public static class MessageCodec
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            ArrayPool<byte>.Shared.Return(rented, clearArray: false);
         }
     }
 

@@ -26,15 +26,25 @@ public sealed class TransactionValidator
     /// Validate a transaction against the current state with EIP-1559 base fee.
     /// </summary>
     public BasaltResult Validate(Transaction tx, IStateDatabase stateDb, UInt256 baseFee)
-    {
-        // Step 1: Verify signature
-        if (!tx.VerifySignature())
-            return BasaltResult.Error(BasaltErrorCode.InvalidSignature, "Transaction signature verification failed.");
+        => Validate(tx, stateDb, baseFee, skipSignature: false);
 
-        // Step 2: Verify sender matches public key
-        var derivedAddress = Ed25519Signer.DeriveAddress(tx.SenderPublicKey);
-        if (derivedAddress != tx.Sender)
-            return BasaltResult.Error(BasaltErrorCode.InvalidSignature, "Sender address does not match public key.");
+    /// <summary>
+    /// Validate a transaction, optionally skipping signature verification
+    /// (for transactions already verified at mempool admission).
+    /// </summary>
+    public BasaltResult Validate(Transaction tx, IStateDatabase stateDb, UInt256 baseFee, bool skipSignature)
+    {
+        if (!skipSignature)
+        {
+            // Step 1: Verify signature
+            if (!tx.VerifySignature())
+                return BasaltResult.Error(BasaltErrorCode.InvalidSignature, "Transaction signature verification failed.");
+
+            // Step 2: Verify sender matches public key
+            var derivedAddress = Ed25519Signer.DeriveAddress(tx.SenderPublicKey);
+            if (derivedAddress != tx.Sender)
+                return BasaltResult.Error(BasaltErrorCode.InvalidSignature, "Sender address does not match public key.");
+        }
 
         // Step 3: Check chain ID
         if (tx.ChainId != _chainParams.ChainId)

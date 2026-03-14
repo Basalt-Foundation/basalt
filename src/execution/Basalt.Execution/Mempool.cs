@@ -216,8 +216,8 @@ public sealed class Mempool
                 }
             }
 
-            // M-4: Re-sort by fee between senders but maintain nonce order within each sender.
-            // Group by sender, pick the first (lowest nonce) tx from each sender, then interleave.
+            // M-4: Interleave senders by highest fee using a priority queue (O(n log m)).
+            // Group by sender into queues, then use a SortedSet as a max-heap.
             var senderQueues = new Dictionary<Address, Queue<Transaction>>();
             foreach (var tx in result)
             {
@@ -229,31 +229,30 @@ public sealed class Mempool
                 queue.Enqueue(tx); // Already sorted by nonce ascending per sender
             }
 
-            var final = new List<Transaction>();
-            while (final.Count < maxCount && senderQueues.Count > 0)
-            {
-                // Pick the sender whose next tx has the highest fee
-                Address bestSender = default;
-                UInt256 bestFee = UInt256.Zero;
-                bool found = false;
-                foreach (var (sender, queue) in senderQueues)
+            // Priority queue: sorted by fee descending, ties broken by sender address
+            var heap = new SortedSet<(UInt256 Fee, Address Sender)>(
+                Comparer<(UInt256 Fee, Address Sender)>.Create((a, b) =>
                 {
-                    var fee = queue.Peek().EffectiveMaxFee;
-                    if (!found || fee > bestFee)
-                    {
-                        bestSender = sender;
-                        bestFee = fee;
-                        found = true;
-                    }
-                }
+                    int cmp = b.Fee.CompareTo(a.Fee); // descending fee
+                    return cmp != 0 ? cmp : a.Sender.CompareTo(b.Sender);
+                }));
 
-                if (!found) break;
+            foreach (var (sender, queue) in senderQueues)
+                heap.Add((queue.Peek().EffectiveMaxFee, sender));
 
-                var nextTx = senderQueues[bestSender].Dequeue();
+            var final = new List<Transaction>();
+            while (final.Count < maxCount && heap.Count > 0)
+            {
+                var best = heap.Min!;
+                heap.Remove(best);
+
+                var nextTx = senderQueues[best.Sender].Dequeue();
                 final.Add(nextTx);
 
-                if (senderQueues[bestSender].Count == 0)
-                    senderQueues.Remove(bestSender);
+                if (senderQueues[best.Sender].Count > 0)
+                    heap.Add((senderQueues[best.Sender].Peek().EffectiveMaxFee, best.Sender));
+                else
+                    senderQueues.Remove(best.Sender);
             }
 
             return final;

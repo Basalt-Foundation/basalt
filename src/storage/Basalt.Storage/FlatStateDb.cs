@@ -20,6 +20,8 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly TrieStateDb _trie;
     private readonly Dictionary<Address, AccountState> _accountCache;
     private readonly Dictionary<(Address, Hash256), byte[]> _storageCache;
+    /// <summary>Per-address index of storage slots for O(1) deletion instead of O(n) scan.</summary>
+    private readonly Dictionary<Address, HashSet<Hash256>> _storageSlotsIndex;
     private readonly HashSet<Address> _deletedAccounts;
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
@@ -44,6 +46,7 @@ public sealed class FlatStateDb : IStateDatabase
         _trie = trie;
         _accountCache = new Dictionary<Address, AccountState>();
         _storageCache = new Dictionary<(Address, Hash256), byte[]>();
+        _storageSlotsIndex = new Dictionary<Address, HashSet<Hash256>>();
         _deletedAccounts = new HashSet<Address>();
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
@@ -60,12 +63,14 @@ public sealed class FlatStateDb : IStateDatabase
         TrieStateDb trie,
         Dictionary<Address, AccountState> accountCache,
         Dictionary<(Address, Hash256), byte[]> storageCache,
+        Dictionary<Address, HashSet<Hash256>> storageSlotsIndex,
         HashSet<Address> deletedAccounts,
         HashSet<(Address, Hash256)> deletedStorage)
     {
         _trie = trie;
         _accountCache = accountCache;
         _storageCache = storageCache;
+        _storageSlotsIndex = storageSlotsIndex;
         _deletedAccounts = deletedAccounts;
         _deletedStorage = deletedStorage;
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
@@ -133,17 +138,16 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts.Add(address);
         _dirtyAccounts.Add(address);
 
-        // Remove storage entries for this address from cache
-        var keysToRemove = new List<(Address, Hash256)>();
-        foreach (var key in _storageCache.Keys)
+        // Remove storage entries for this address using O(1) index lookup
+        if (_storageSlotsIndex.TryGetValue(address, out var slots))
         {
-            if (key.Item1 == address)
-                keysToRemove.Add(key);
-        }
-        foreach (var key in keysToRemove)
-        {
-            _storageCache.Remove(key);
-            _deletedStorage.Add(key);
+            foreach (var slot in slots)
+            {
+                var cacheKey = (address, slot);
+                _storageCache.Remove(cacheKey);
+                _deletedStorage.Add(cacheKey);
+            }
+            _storageSlotsIndex.Remove(address);
         }
 
         _trie.DeleteAccount(address);
@@ -181,6 +185,15 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache[cacheKey] = value;
         _deletedStorage.Remove(cacheKey);
         _dirtyStorageKeys.Add(cacheKey);
+
+        // Maintain per-address index
+        if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+        {
+            slots = new HashSet<Hash256>();
+            _storageSlotsIndex[contract] = slots;
+        }
+        slots.Add(key);
+
         _trie.SetStorage(contract, key, value);
         CheckCacheSize();
     }
@@ -194,6 +207,14 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache.Remove(cacheKey);
         _deletedStorage.Add(cacheKey);
         _dirtyStorageKeys.Add(cacheKey);
+
+        // Maintain per-address index
+        if (_storageSlotsIndex.TryGetValue(contract, out var slots))
+        {
+            slots.Remove(key);
+            if (slots.Count == 0) _storageSlotsIndex.Remove(contract);
+        }
+
         _trie.DeleteStorage(contract, key);
     }
 
@@ -227,7 +248,9 @@ public sealed class FlatStateDb : IStateDatabase
     /// so writes to the fork do not affect the parent.
     /// </summary>
     /// <remarks>
-    /// <para>Storage byte[] values are deep-copied to prevent cross-fork mutation.</para>
+    /// <para>Storage byte[] values are shared by reference (copy-on-write semantics).
+    /// This is safe because SetStorage always replaces the entire reference rather
+    /// than mutating byte[] contents in place, so parent and fork cannot interfere.</para>
     /// <para>The forked instance does not have a persistence layer (forks never persist).</para>
     /// <para>Note: in-progress storage tries in the underlying TrieStateDb are not carried
     /// over to the fork — this is an accepted design trade-off (S-10).</para>
@@ -237,15 +260,20 @@ public sealed class FlatStateDb : IStateDatabase
         // Fork the inner trie (creates OverlayTrieNodeStore)
         var forkedTrie = (TrieStateDb)_trie.Fork();
 
-        // Deep-copy the storage cache to prevent cross-fork byte[] mutation
-        var storageClone = new Dictionary<(Address, Hash256), byte[]>(_storageCache.Count);
-        foreach (var (key, value) in _storageCache)
-            storageClone[key] = (byte[])value.Clone();
+        // Shallow-copy storage cache (share byte[] references — COW safe since
+        // SetStorage always replaces the reference, never mutates in-place)
+        var storageClone = new Dictionary<(Address, Hash256), byte[]>(_storageCache);
+
+        // Shallow-copy the per-address index (each HashSet is independent after clone)
+        var indexClone = new Dictionary<Address, HashSet<Hash256>>(_storageSlotsIndex.Count);
+        foreach (var (addr, slots) in _storageSlotsIndex)
+            indexClone[addr] = new HashSet<Hash256>(slots);
 
         return new FlatStateDb(
             forkedTrie,
             new Dictionary<Address, AccountState>(_accountCache),
             storageClone,
+            indexClone,
             new HashSet<Address>(_deletedAccounts),
             new HashSet<(Address, Hash256)>(_deletedStorage));
     }

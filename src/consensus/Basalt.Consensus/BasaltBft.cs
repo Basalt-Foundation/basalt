@@ -35,7 +35,7 @@ public sealed class BasaltBft
 
     // Vote tracking
     private readonly ConcurrentDictionary<(ulong View, VotePhase Phase), HashSet<PeerId>> _votes = new();
-    private readonly ConcurrentDictionary<(ulong View, VotePhase Phase), List<(byte[] Signature, byte[] PublicKey)>> _voteSignatures = new();
+    private readonly ConcurrentDictionary<(ulong View, VotePhase Phase), VoteSignatureSet> _voteSignatures = new();
 
     // Timing
     private DateTimeOffset _viewStartTime;
@@ -206,7 +206,7 @@ public sealed class BasaltBft
                 // Verify signature before fast-forwarding (domain-separated)
                 Span<byte> ffPayload = stackalloc byte[ConsensusPayloadSize];
                 WriteConsensusSigningPayload(ffPayload, _chainId, VotePhase.Prepare, proposal.ViewNumber, proposal.BlockNumber, proposal.BlockHash);
-                if (!_blsSigner.Verify(futureLeader.BlsPublicKey.ToArray(), ffPayload, proposal.ProposerSignature.ToArray()))
+                if (!_blsSigner.Verify(futureLeader.BlsPublicKeyBytes, ffPayload, proposal.ProposerSignature.ToArray()))
                 {
                     _logger.LogWarning("Invalid proposal signature for future view {View}", proposal.ViewNumber);
                     return null;
@@ -267,7 +267,7 @@ public sealed class BasaltBft
         // proposals, but the cost is negligible and keeps the code straightforward)
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
         WriteConsensusSigningPayload(sigPayload, _chainId, VotePhase.Prepare, _currentView, _currentBlockNumber, proposal.BlockHash);
-        if (!_blsSigner.Verify(leader.BlsPublicKey.ToArray(), sigPayload, proposal.ProposerSignature.ToArray()))
+        if (!_blsSigner.Verify(leader.BlsPublicKeyBytes, sigPayload, proposal.ProposerSignature.ToArray()))
         {
             _logger.LogWarning("Invalid proposal signature from {Sender}", proposal.SenderId);
             return null;
@@ -313,7 +313,7 @@ public sealed class BasaltBft
         // Without this, an attacker can submit votes with their own BLS key but another
         // validator's SenderId, causing aggregate QC verification to fail and stalling finalization.
         var voteVInfo = _validatorSet.GetByPeerId(vote.SenderId);
-        if (voteVInfo == null || !voteVInfo.BlsPublicKey.ToArray().AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()))
+        if (voteVInfo == null || !voteVInfo.BlsPublicKeyBytes.AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()))
             return null;
 
         // F-CON-02: Verify vote is for the correct block hash
@@ -332,15 +332,14 @@ public sealed class BasaltBft
             return null;
         }
 
-        // L-02: Track vote signature for aggregation, deduplicating by public key
+        // L-02: Track vote signature for aggregation, deduplicating by public key (O(1))
         var sigKey = (vote.ViewNumber, vote.Phase);
-        var sigList = _voteSignatures.GetOrAdd(sigKey, _ => new List<(byte[], byte[])>());
+        var sigSet = _voteSignatures.GetOrAdd(sigKey, _ => new VoteSignatureSet());
         var voterSigBytes = vote.VoterSignature.ToArray();
         var voterPkBytes = vote.VoterPublicKey.ToArray();
-        lock (sigList)
+        lock (sigSet)
         {
-            if (!sigList.Exists(s => s.Item2.AsSpan().SequenceEqual(voterPkBytes)))
-                sigList.Add((voterSigBytes, voterPkBytes));
+            sigSet.TryAdd(voterSigBytes, voterPkBytes);
         }
 
         return vote.Phase switch
@@ -395,7 +394,7 @@ public sealed class BasaltBft
         // Without this, a Byzantine validator can impersonate another by sending a view change with
         // SenderId=PeerId_B but their own BlsKey_A, casting 2 votes and reaching false quorum.
         var vcValidator = _validatorSet.GetByPeerId(viewChange.SenderId);
-        if (vcValidator == null || !vcValidator.BlsPublicKey.ToArray().AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
+        if (vcValidator == null || !vcValidator.BlsPublicKeyBytes.AsSpan().SequenceEqual(viewChange.VoterPublicKey.ToArray()))
             return null;
 
         // H-01: Verify view change signature (domain-separated)
@@ -573,14 +572,13 @@ public sealed class BasaltBft
         var signature = new BlsSignature(signatureBytes);
         var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
 
-        // Track signature for aggregation (dedup by public key)
+        // Track signature for aggregation (dedup by public key, O(1))
         var sigKey = (_currentView, phase);
-        var sigList = _voteSignatures.GetOrAdd(sigKey, _ => new List<(byte[], byte[])>());
+        var sigSet = _voteSignatures.GetOrAdd(sigKey, _ => new VoteSignatureSet());
         var selfPkBytes = publicKey.ToArray();
-        lock (sigList)
+        lock (sigSet)
         {
-            if (!sigList.Exists(s => s.Item2.AsSpan().SequenceEqual(selfPkBytes)))
-                sigList.Add((signatureBytes, selfPkBytes));
+            sigSet.TryAdd(signatureBytes, selfPkBytes);
         }
 
         return new ConsensusVoteMessage
@@ -599,20 +597,20 @@ public sealed class BasaltBft
     private AggregateVoteMessage? BuildAggregateVote(ulong view, Hash256 blockHash, VotePhase phase)
     {
         var sigKey = (view, phase);
-        if (!_voteSignatures.TryGetValue(sigKey, out var sigList))
+        if (!_voteSignatures.TryGetValue(sigKey, out var sigSet))
             return null;
 
         byte[][] sigs;
         ulong bitmap = 0;
-        lock (sigList)
+        lock (sigSet)
         {
-            sigs = sigList.Select(s => s.Signature).ToArray();
-            foreach (var (sig, pubKey) in sigList)
+            sigs = sigSet.GetSignatures();
+            foreach (var (sig, pubKey) in sigSet.Entries)
             {
                 // Find validator index by matching BLS public key
                 foreach (var v in _validatorSet.Validators)
                 {
-                    if (v.BlsPublicKey.ToArray().AsSpan().SequenceEqual(pubKey))
+                    if (v.BlsPublicKeyBytes.AsSpan().SequenceEqual(pubKey))
                     {
                         bitmap |= 1UL << v.Index;
                         break;
@@ -672,7 +670,7 @@ public sealed class BasaltBft
 
         // Collect public keys from bitmap and verify aggregate BLS signature
         var voters = _validatorSet.GetValidatorsFromBitmap(aggregate.VoterBitmap).ToArray();
-        var publicKeys = voters.Select(v => v.BlsPublicKey.ToArray()).ToArray();
+        var publicKeys = voters.Select(v => v.BlsPublicKeyBytes).ToArray();
 
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
         WriteConsensusSigningPayload(sigPayload, _chainId, aggregate.Phase, aggregate.ViewNumber, aggregate.BlockNumber, aggregate.BlockHash);
@@ -792,4 +790,60 @@ public enum ConsensusState
     PreCommitting,
     Committing,
     Finalized,
+}
+
+/// <summary>
+/// Thread-safe vote signature collection with O(1) deduplication by public key.
+/// </summary>
+internal sealed class VoteSignatureSet
+{
+    private readonly List<(byte[] Signature, byte[] PublicKey)> _entries = new();
+    private readonly HashSet<ByteArrayKey> _seenKeys = new();
+
+    /// <summary>Ordered list of (signature, publicKey) pairs.</summary>
+    public IReadOnlyList<(byte[] Signature, byte[] PublicKey)> Entries => _entries;
+
+    /// <summary>Add a vote if the public key hasn't been seen. Returns true if added.</summary>
+    public bool TryAdd(byte[] signature, byte[] publicKey)
+    {
+        var key = new ByteArrayKey(publicKey);
+        if (!_seenKeys.Add(key))
+            return false;
+        _entries.Add((signature, publicKey));
+        return true;
+    }
+
+    /// <summary>Extract all signatures as an array (for aggregation).</summary>
+    public byte[][] GetSignatures()
+    {
+        var result = new byte[_entries.Count][];
+        for (int i = 0; i < _entries.Count; i++)
+            result[i] = _entries[i].Signature;
+        return result;
+    }
+
+    /// <summary>Equality-by-content wrapper for byte[] to use in HashSet.</summary>
+    private readonly struct ByteArrayKey : IEquatable<ByteArrayKey>
+    {
+        private readonly byte[] _data;
+        private readonly int _hash;
+
+        public ByteArrayKey(byte[] data)
+        {
+            _data = data;
+            // FNV-1a hash for fast comparison
+            uint h = 2166136261;
+            foreach (var b in data)
+                h = (h ^ b) * 16777619;
+            _hash = (int)h;
+        }
+
+        public bool Equals(ByteArrayKey other)
+            => _data.AsSpan().SequenceEqual(other._data);
+
+        public override bool Equals(object? obj)
+            => obj is ByteArrayKey other && Equals(other);
+
+        public override int GetHashCode() => _hash;
+    }
 }
