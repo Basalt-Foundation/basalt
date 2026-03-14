@@ -47,7 +47,9 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
         var storageWrites = new List<(SyntaxNode Node, int Position, string MethodName)>();
         int firstEnforcePosition = int.MaxValue;
 
-        foreach (var node in bodyNode.DescendantNodes())
+        // Only walk top-level statements — skip nested lambdas and local functions
+        // to avoid false positives from .Set()/.Delete() inside deferred callbacks.
+        foreach (var node in GetTopLevelDescendants(bodyNode))
         {
             if (node is InvocationExpressionSyntax invocation &&
                 invocation.Expression is MemberAccessExpressionSyntax memberAccess)
@@ -98,5 +100,26 @@ public sealed class PolicyOrderingAnalyzer : DiagnosticAnalyzer
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Yields descendant nodes of the body but skips into nested lambdas,
+    /// anonymous functions, and local function bodies to avoid false positives.
+    /// </summary>
+    private static IEnumerable<SyntaxNode> GetTopLevelDescendants(SyntaxNode root)
+    {
+        foreach (var node in root.ChildNodes())
+        {
+            // Skip lambda/anonymous function/local function bodies
+            if (node is LambdaExpressionSyntax or
+                AnonymousFunctionExpressionSyntax or
+                LocalFunctionStatementSyntax)
+                continue;
+
+            yield return node;
+
+            foreach (var descendant in GetTopLevelDescendants(node))
+                yield return descendant;
+        }
     }
 }

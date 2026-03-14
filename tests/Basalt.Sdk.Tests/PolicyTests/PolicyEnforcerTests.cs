@@ -205,11 +205,13 @@ public class PolicyEnforcerTests : IDisposable
         _enforcer.AddPolicy(sanctions1Addr);
         _enforcer.AddPolicy(sanctions2Addr);
 
-        // First policy passes (nobody sanctioned), second denies (Bob sanctioned)
-        // Note: BasaltTestHost uses global storage, so both SanctionsPolicy instances
-        // share storage prefixes. The revert message identifies the denying policy address.
+        // Both policies see Bob as sanctioned (BasaltTestHost uses global storage,
+        // so both SanctionsPolicy instances share the same sanctions list).
+        // The first policy in registration order denies the transfer.
         var msg = _host.ExpectRevert(() => _enforcer.EnforceTransfer(_alice, _bob, new UInt256(100)));
         msg.Should().Contain("transfer denied by");
+        // Verify the revert message identifies the denying policy address
+        msg.Should().Contain(Convert.ToHexString(sanctions1Addr));
     }
 
     [Fact]
