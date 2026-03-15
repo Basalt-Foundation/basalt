@@ -14,6 +14,8 @@ namespace Basalt.Execution;
 /// </summary>
 public sealed class TransactionExecutor
 {
+    private static readonly byte[] AddressZeroBytes = Address.Zero.ToArray();
+
     private readonly ChainParameters _chainParams;
     private readonly IContractRuntime _contractRuntime;
     private readonly IStakingState? _stakingState;
@@ -106,7 +108,7 @@ public sealed class TransactionExecutor
             // Previously tx.To (recipient) was passed as tokenAddress, which would look up
             // the recipient's compliance policy instead of the native token policy.
             var outcome = _complianceVerifier.CheckTransferCompliance(
-                Address.Zero.ToArray(), tx.Sender.ToArray(), tx.To.ToArray(),
+                AddressZeroBytes, tx.Sender.ToArray(), tx.To.ToArray(),
                 txAmountForCompliance, blockHeader.Timestamp, amountForCompliance);
             if (!outcome.Allowed)
                 return CreateReceipt(tx, blockHeader, txIndex, gasUsed, false, outcome.ErrorCode, stateDb);

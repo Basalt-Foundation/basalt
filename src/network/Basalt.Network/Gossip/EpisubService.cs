@@ -253,14 +253,20 @@ public sealed class EpisubService
         // Promote lazy peers to eager if we're under target
         while (_eagerPeers.Count < TargetEagerPeers && _lazyPeers.Count > 0)
         {
-            var bestLazy = _lazyPeers.Keys
-                .Select(id => _peerManager.GetPeer(id))
-                .Where(p => p != null)
-                .OrderByDescending(p => p!.ReputationScore)
-                .FirstOrDefault();
+            PeerId bestId = default;
+            double bestScore = double.MinValue;
+            foreach (var id in _lazyPeers.Keys)
+            {
+                var p = _peerManager.GetPeer(id);
+                if (p != null && p.ReputationScore > bestScore)
+                {
+                    bestScore = p.ReputationScore;
+                    bestId = p.Id;
+                }
+            }
 
-            if (bestLazy != null)
-                GraftPeer(bestLazy.Id);
+            if (bestScore > double.MinValue)
+                GraftPeer(bestId);
             else
                 break;
         }
@@ -268,14 +274,20 @@ public sealed class EpisubService
         // Prune eager peers to lazy if we're over target
         while (_eagerPeers.Count > TargetEagerPeers * 2)
         {
-            var worstEager = _eagerPeers.Keys
-                .Select(id => _peerManager.GetPeer(id))
-                .Where(p => p != null)
-                .OrderBy(p => p!.ReputationScore)
-                .FirstOrDefault();
+            PeerId worstId = default;
+            double worstScore = double.MaxValue;
+            foreach (var id in _eagerPeers.Keys)
+            {
+                var p = _peerManager.GetPeer(id);
+                if (p != null && p.ReputationScore < worstScore)
+                {
+                    worstScore = p.ReputationScore;
+                    worstId = p.Id;
+                }
+            }
 
-            if (worstEager != null)
-                PrunePeer(worstEager.Id);
+            if (worstScore < double.MaxValue)
+                PrunePeer(worstId);
             else
                 break;
         }

@@ -53,8 +53,8 @@ public static class ContractBridge
         scope.PreviousProvider = ContractStorage.Provider;
 
         // Wire context from VmExecutionContext
-        Context.Caller = ctx.Caller.ToArray();
-        Context.Self = ctx.ContractAddress.ToArray();
+        Context.Caller = ctx.CallerBytes;
+        Context.Self = ctx.ContractAddressBytes;
         Context.TxValue = ctx.Value;
         Context.BlockTimestamp = (long)ctx.BlockTimestamp;
         Context.BlockHeight = ctx.BlockNumber;

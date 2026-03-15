@@ -109,8 +109,11 @@ public sealed class TrieNode
     /// </remarks>
     public byte[] Encode()
     {
-        using var ms = new MemoryStream();
-        ms.WriteByte((byte)NodeType);
+        // Pre-compute exact size to avoid MemoryStream overhead
+        int size = 1; // NodeType byte
+        byte[]? encodedPath = null;
+        ushort bitmap = 0;
+        int childCount = 0;
 
         switch (NodeType)
         {
@@ -118,65 +121,99 @@ public sealed class TrieNode
                 break;
 
             case TrieNodeType.Leaf:
-            {
-                var encodedPath = Path.ToCompactEncoding(isLeaf: true);
-                WriteLength(ms, encodedPath.Length);
-                ms.Write(encodedPath);
-                WriteLength(ms, Value!.Length);
-                ms.Write(Value);
+                encodedPath = Path.ToCompactEncoding(isLeaf: true);
+                size += VarIntSize(encodedPath.Length) + encodedPath.Length
+                      + VarIntSize(Value!.Length) + Value.Length;
                 break;
-            }
 
             case TrieNodeType.Extension:
-            {
-                var encodedPath = Path.ToCompactEncoding(isLeaf: false);
-                WriteLength(ms, encodedPath.Length);
-                ms.Write(encodedPath);
-                Span<byte> hashBytes = stackalloc byte[Hash256.Size];
-                ChildHash!.Value.WriteTo(hashBytes);
-                ms.Write(hashBytes);
+                encodedPath = Path.ToCompactEncoding(isLeaf: false);
+                size += VarIntSize(encodedPath.Length) + encodedPath.Length + Hash256.Size;
                 break;
-            }
 
             case TrieNodeType.Branch:
-            {
-                // Bitmap: which children are present (2 bytes for 16 bits)
-                ushort bitmap = 0;
-                for (int i = 0; i < 16; i++)
-                {
-                    if (Children[i].HasValue)
-                        bitmap |= (ushort)(1 << i);
-                }
-                ms.WriteByte((byte)(bitmap >> 8));
-                ms.WriteByte((byte)(bitmap & 0xFF));
-
-                // Write present children
-                Span<byte> hashBuf = stackalloc byte[Hash256.Size];
                 for (int i = 0; i < 16; i++)
                 {
                     if (Children[i].HasValue)
                     {
-                        Children[i]!.Value.WriteTo(hashBuf);
-                        ms.Write(hashBuf);
+                        bitmap |= (ushort)(1 << i);
+                        childCount++;
                     }
                 }
+                size += 2 + childCount * Hash256.Size + 1; // bitmap + children + hasValue
+                if (BranchValue != null)
+                    size += VarIntSize(BranchValue.Length) + BranchValue.Length;
+                break;
+        }
 
-                // Branch value
+        // Write directly to exact-size array
+        var buffer = new byte[size];
+        int pos = 0;
+        buffer[pos++] = (byte)NodeType;
+
+        switch (NodeType)
+        {
+            case TrieNodeType.Leaf:
+                WriteVarInt(buffer, ref pos, encodedPath!.Length);
+                encodedPath.CopyTo(buffer.AsSpan(pos));
+                pos += encodedPath.Length;
+                WriteVarInt(buffer, ref pos, Value!.Length);
+                Value.CopyTo(buffer.AsSpan(pos));
+                pos += Value.Length;
+                break;
+
+            case TrieNodeType.Extension:
+                WriteVarInt(buffer, ref pos, encodedPath!.Length);
+                encodedPath.CopyTo(buffer.AsSpan(pos));
+                pos += encodedPath.Length;
+                ChildHash!.Value.WriteTo(buffer.AsSpan(pos, Hash256.Size));
+                pos += Hash256.Size;
+                break;
+
+            case TrieNodeType.Branch:
+                buffer[pos++] = (byte)(bitmap >> 8);
+                buffer[pos++] = (byte)(bitmap & 0xFF);
+                for (int i = 0; i < 16; i++)
+                {
+                    if (Children[i].HasValue)
+                    {
+                        Children[i]!.Value.WriteTo(buffer.AsSpan(pos, Hash256.Size));
+                        pos += Hash256.Size;
+                    }
+                }
                 if (BranchValue != null)
                 {
-                    ms.WriteByte(1);
-                    WriteLength(ms, BranchValue.Length);
-                    ms.Write(BranchValue);
+                    buffer[pos++] = 1;
+                    WriteVarInt(buffer, ref pos, BranchValue.Length);
+                    BranchValue.CopyTo(buffer.AsSpan(pos));
                 }
                 else
                 {
-                    ms.WriteByte(0);
+                    buffer[pos++] = 0;
                 }
                 break;
-            }
         }
 
-        return ms.ToArray();
+        return buffer;
+    }
+
+    private static int VarIntSize(int length)
+    {
+        var value = (uint)length;
+        int size = 1;
+        while (value >= 0x80) { size++; value >>= 7; }
+        return size;
+    }
+
+    private static void WriteVarInt(byte[] buffer, ref int pos, int length)
+    {
+        var value = (uint)length;
+        while (value >= 0x80)
+        {
+            buffer[pos++] = (byte)(value | 0x80);
+            value >>= 7;
+        }
+        buffer[pos++] = (byte)value;
     }
 
     /// <summary>
@@ -199,13 +236,12 @@ public sealed class TrieNode
             {
                 int pathLen = ReadLength(data, ref pos);
                 EnsureBounds(data, pos, pathLen, "leaf path");
-                var encodedPath = data.AsSpan(pos, pathLen).ToArray();
+                var (path, _) = NibblePath.FromCompactEncoding(data.AsSpan(pos, pathLen));
                 pos += pathLen;
-                var (path, _) = NibblePath.FromCompactEncoding(encodedPath);
 
                 int valueLen = ReadLength(data, ref pos);
                 EnsureBounds(data, pos, valueLen, "leaf value");
-                var value = data.AsSpan(pos, valueLen).ToArray();
+                var value = data.AsSpan(pos, valueLen).ToArray(); // value must be owned
                 pos += valueLen;
 
                 return new TrieNode
@@ -221,9 +257,8 @@ public sealed class TrieNode
             {
                 int pathLen = ReadLength(data, ref pos);
                 EnsureBounds(data, pos, pathLen, "extension path");
-                var encodedPath = data.AsSpan(pos, pathLen).ToArray();
+                var (path, _) = NibblePath.FromCompactEncoding(data.AsSpan(pos, pathLen));
                 pos += pathLen;
-                var (path, _) = NibblePath.FromCompactEncoding(encodedPath);
 
                 EnsureBounds(data, pos, Hash256.Size, "extension child hash");
                 var hash = new Hash256(data.AsSpan(pos, Hash256.Size));

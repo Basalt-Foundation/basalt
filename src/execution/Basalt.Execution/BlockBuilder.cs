@@ -642,7 +642,9 @@ public sealed class BlockBuilder
         if (transactions.Count == 0)
             return Hash256.Zero;
 
-        var hashes = transactions.Select(tx => tx.Hash).ToList();
+        var hashes = new List<Hash256>(transactions.Count);
+        foreach (var tx in transactions)
+            hashes.Add(tx.Hash);
         return ComputeMerkleRoot(hashes);
     }
 
@@ -656,7 +658,9 @@ public sealed class BlockBuilder
         if (receipts.Count == 0)
             return Hash256.Zero;
 
-        var hashes = receipts.Select(ComputeReceiptHash).ToList();
+        var hashes = new List<Hash256>(receipts.Count);
+        foreach (var receipt in receipts)
+            hashes.Add(ComputeReceiptHash(receipt));
         return ComputeMerkleRoot(hashes);
     }
 

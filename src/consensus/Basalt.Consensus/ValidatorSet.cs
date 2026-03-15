@@ -141,11 +141,13 @@ public sealed class ValidatorSet
     {
         lock (_lock)
         {
-            var result = new List<ValidatorInfo>();
+            int count = System.Numerics.BitOperations.PopCount(bitmap);
+            var result = new ValidatorInfo[count];
+            int idx = 0;
             for (int i = 0; i < _validators.Count && i < 64; i++)
             {
                 if ((bitmap & (1UL << i)) != 0)
-                    result.Add(_validators[i]);
+                    result[idx++] = _validators[i];
             }
             return result;
         }

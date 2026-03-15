@@ -179,7 +179,15 @@ public sealed class Mempool
         lock (_lock)
         {
             if (stateDb == null)
-                return _orderedEntries.Take(maxCount).Select(e => e.Transaction).ToList();
+            {
+                var fast = new List<Transaction>(Math.Min(maxCount, _orderedEntries.Count));
+                foreach (var entry in _orderedEntries)
+                {
+                    if (fast.Count >= maxCount) break;
+                    fast.Add(entry.Transaction);
+                }
+                return fast;
+            }
 
             // Group by sender, filter to contiguous nonces starting from on-chain nonce
             var bySender = new Dictionary<Address, List<Transaction>>();

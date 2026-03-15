@@ -16,11 +16,14 @@ namespace Basalt.Execution.VM;
 public sealed class ManagedContractRuntime : IContractRuntime
 {
     private readonly ContractRegistry _registry;
-    // Pre-computed BLAKE3-based method selectors (first 4 bytes of BLAKE3(method_name))
-    private static readonly string SelectorStorageSet = Convert.ToHexString(ComputeSelector("storage_set")).ToLowerInvariant();
-    private static readonly string SelectorStorageGet = Convert.ToHexString(ComputeSelector("storage_get")).ToLowerInvariant();
-    private static readonly string SelectorStorageDel = Convert.ToHexString(ComputeSelector("storage_del")).ToLowerInvariant();
-    private static readonly string SelectorEmitEvent = Convert.ToHexString(ComputeSelector("emit_event")).ToLowerInvariant();
+    // Pre-computed BLAKE3-based method selectors as uint32 (LE) for zero-alloc comparison
+    private static readonly uint SelectorStorageSet = SelectorToUInt32(ComputeSelector("storage_set"));
+    private static readonly uint SelectorStorageGet = SelectorToUInt32(ComputeSelector("storage_get"));
+    private static readonly uint SelectorStorageDel = SelectorToUInt32(ComputeSelector("storage_del"));
+    private static readonly uint SelectorEmitEvent = SelectorToUInt32(ComputeSelector("emit_event"));
+
+    private static uint SelectorToUInt32(byte[] selector)
+        => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(selector);
 
     public ManagedContractRuntime()
     {
@@ -207,22 +210,25 @@ public sealed class ManagedContractRuntime : IContractRuntime
 
     private static ContractCallResult DispatchCall(HostInterface host, VmExecutionContext ctx, byte[] selector, byte[] args)
     {
-        // Method selectors are BLAKE3(method_name)[0:4], matching AbiEncoder.ComputeSelector
-        var selectorHex = Convert.ToHexString(selector).ToLowerInvariant();
+        // Method selectors are BLAKE3(method_name)[0:4], compared as uint32 (zero-alloc)
+        if (selector.Length < 4)
+            return new ContractCallResult { Success = false, ErrorMessage = "Invalid selector length" };
 
-        if (selectorHex == SelectorStorageSet)
+        var sel = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(selector);
+
+        if (sel == SelectorStorageSet)
             return ExecuteStorageSet(host, ctx, args);
-        if (selectorHex == SelectorStorageGet)
+        if (sel == SelectorStorageGet)
             return ExecuteStorageGet(host, ctx, args);
-        if (selectorHex == SelectorStorageDel)
+        if (sel == SelectorStorageDel)
             return ExecuteStorageDelete(host, ctx, args);
-        if (selectorHex == SelectorEmitEvent)
+        if (sel == SelectorEmitEvent)
             return ExecuteEmitEvent(host, ctx, args);
 
         return new ContractCallResult
         {
             Success = false,
-            ErrorMessage = $"Unknown method selector: 0x{selectorHex}",
+            ErrorMessage = $"Unknown method selector: 0x{Convert.ToHexString(selector).ToLowerInvariant()}",
         };
     }
 
