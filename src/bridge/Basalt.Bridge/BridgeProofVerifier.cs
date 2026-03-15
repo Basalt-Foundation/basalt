@@ -70,37 +70,37 @@ public static class BridgeProofVerifier
             throw new ArgumentOutOfRangeException(nameof(leafIndex));
 
         // Hash all leaves with domain separation (BRIDGE-06)
-        var hashes = leaves.Select(l => HashLeaf(l)).ToArray();
-
         // Pad to power of 2
         var size = 1;
-        while (size < hashes.Length)
+        while (size < leaves.Length)
             size <<= 1;
 
-        var padded = new byte[size][];
+        // Use two alternating buffers instead of allocating per level
+        var current = new byte[size][];
         for (int i = 0; i < size; i++)
-            padded[i] = i < hashes.Length ? hashes[i] : new byte[32];
+            current[i] = i < leaves.Length ? HashLeaf(leaves[i]) : new byte[32];
 
         var proof = new List<byte[]>();
         var idx = leafIndex;
 
-        while (padded.Length > 1)
+        while (current.Length > 1)
         {
             // Record sibling
             var siblingIdx = idx ^ 1;
-            if (siblingIdx < padded.Length)
-                proof.Add(padded[siblingIdx]);
+            if (siblingIdx < current.Length)
+                proof.Add(current[siblingIdx]);
 
-            // Compute next level
-            var nextLevel = new byte[padded.Length / 2][];
-            for (int i = 0; i < nextLevel.Length; i++)
-                nextLevel[i] = HashPair(padded[2 * i], padded[2 * i + 1]);
+            // Compute next level into half-size array (reuse previous if big enough)
+            var halfLen = current.Length / 2;
+            var next = new byte[halfLen][];
+            for (int i = 0; i < halfLen; i++)
+                next[i] = HashPair(current[2 * i], current[2 * i + 1]);
 
-            padded = nextLevel;
+            current = next;
             idx >>= 1;
         }
 
-        return (padded[0], proof.ToArray());
+        return (current[0], proof.ToArray());
     }
 
     /// <summary>

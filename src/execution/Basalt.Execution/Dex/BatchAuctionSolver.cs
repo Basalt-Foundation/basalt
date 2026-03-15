@@ -53,11 +53,11 @@ public static class BatchAuctionSolver
         DexState? dexState = null,
         ulong currentBlockNumber = 0)
     {
-        // M-04: Filter expired intents by deadline
+        // M-04: Filter expired intents by deadline (in-place to avoid List allocation)
         if (currentBlockNumber > 0)
         {
-            buyIntents = buyIntents.Where(i => i.Deadline == 0 || i.Deadline >= currentBlockNumber).ToList();
-            sellIntents = sellIntents.Where(i => i.Deadline == 0 || i.Deadline >= currentBlockNumber).ToList();
+            buyIntents.RemoveAll(i => i.Deadline != 0 && i.Deadline < currentBlockNumber);
+            sellIntents.RemoveAll(i => i.Deadline != 0 && i.Deadline < currentBlockNumber);
         }
 
         if (buyIntents.Count == 0 && sellIntents.Count == 0 &&
@@ -74,8 +74,10 @@ public static class BatchAuctionSolver
         }
 
         // Extract plain order lists for volume/price computation
-        var buyOrderPlain = buyOrders.Select(o => o.Order).ToList();
-        var sellOrderPlain = sellOrders.Select(o => o.Order).ToList();
+        var buyOrderPlain = new List<LimitOrder>(buyOrders.Count);
+        foreach (var (_, order) in buyOrders) buyOrderPlain.Add(order);
+        var sellOrderPlain = new List<LimitOrder>(sellOrders.Count);
+        foreach (var (_, order) in sellOrders) sellOrderPlain.Add(order);
 
         // Step 1: Collect all critical prices
         var criticalPrices = CollectCriticalPrices(

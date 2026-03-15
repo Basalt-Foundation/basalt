@@ -13,6 +13,7 @@ public sealed class MultisigRelayer
     private readonly Dictionary<string, byte[]> _relayers = new(); // pubKeyHex -> pubKey bytes
     private readonly int _threshold;
     private readonly object _lock = new();
+    private IReadOnlyList<byte[]>? _cachedRelayerList;
 
     /// <summary>
     /// Create a multisig relayer with the specified threshold.
@@ -38,7 +39,10 @@ public sealed class MultisigRelayer
     public void AddRelayer(byte[] publicKey)
     {
         lock (_lock)
+        {
             _relayers[Convert.ToHexString(publicKey)] = publicKey;
+            _cachedRelayerList = null;
+        }
     }
 
     /// <summary>
@@ -64,6 +68,7 @@ public sealed class MultisigRelayer
                     $"Cannot remove relayer: would leave {_relayers.Count - 1} relayers, below threshold {_threshold}.");
 
             _relayers.Remove(key);
+            _cachedRelayerList = null;
         }
     }
 
@@ -135,6 +140,6 @@ public sealed class MultisigRelayer
     public IReadOnlyList<byte[]> GetRelayers()
     {
         lock (_lock)
-            return _relayers.Values.ToList();
+            return _cachedRelayerList ??= _relayers.Values.ToList();
     }
 }
