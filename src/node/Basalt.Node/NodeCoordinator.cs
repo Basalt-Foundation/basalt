@@ -564,9 +564,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
-                    var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff);
-                    foreach (var key in oldKeys)
-                        _proposalsByView.TryRemove(key, out _);
+                    foreach (var key in _proposalsByView.Keys)
+                    {
+                        if (key.View < cutoff)
+                            _proposalsByView.TryRemove(key, out _);
+                    }
                 }
 
                 // Announce finalized block to peers
@@ -674,9 +676,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // N-10: Sliding window — retain evidence for last 10 views on epoch transition
             var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            var oldKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < cutoff).ToList();
-            foreach (var key in oldKeys)
-                _proposalsByView.TryRemove(key, out _);
+            foreach (var key in _proposalsByView.Keys)
+            {
+                if (key.View < cutoff)
+                    _proposalsByView.TryRemove(key, out _);
+            }
         };
 
         if (_config.UseSandbox)

@@ -82,7 +82,7 @@ public sealed class WeightedLeaderSelector
     /// </summary>
     private static ulong StakeToWeight(UInt256 stake)
     {
-        var bytes = new byte[32];
+        Span<byte> bytes = stackalloc byte[32];
         stake.WriteTo(bytes);
 
         // Read from the most significant 8-byte word down; return the first non-zero chunk.
@@ -91,7 +91,7 @@ public sealed class WeightedLeaderSelector
         for (int offset = 24; offset >= 0; offset -= 8)
         {
             ulong chunk = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(
-                bytes.AsSpan(offset, 8));
+                bytes.Slice(offset, 8));
             if (chunk != 0)
                 return chunk;
         }

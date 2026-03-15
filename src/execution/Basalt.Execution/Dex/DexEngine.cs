@@ -32,6 +32,9 @@ public sealed class DexEngine
     private readonly DexState _state;
     private readonly IContractRuntime? _runtime;
 
+    /// <summary>Cached BLAKE3 hashes of DEX event signatures to avoid per-operation recomputation.</summary>
+    private static readonly Dictionary<string, Hash256> EventSigCache = new();
+
     /// <summary>
     /// Creates a new DEX engine backed by the given state.
     /// </summary>
@@ -783,10 +786,19 @@ public sealed class DexEngine
     /// Create an event log for DEX operations.
     /// Event signature is BLAKE3("Dex." + eventName).
     /// </summary>
+    private static Hash256 GetEventSignature(string eventName)
+    {
+        if (!EventSigCache.TryGetValue(eventName, out var sig))
+        {
+            sig = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes("Dex." + eventName));
+            EventSigCache[eventName] = sig;
+        }
+        return sig;
+    }
+
     private static EventLog MakeEventLog(string eventName, params object[] args)
     {
-        var sigBytes = System.Text.Encoding.UTF8.GetBytes("Dex." + eventName);
-        var eventSig = Blake3Hasher.Hash(sigBytes);
+        var eventSig = GetEventSignature(eventName);
 
         // Serialize args to data payload
         var data = SerializeEventArgs(args);
@@ -804,8 +816,7 @@ public sealed class DexEngine
         ulong poolId, Address sender, Address tokenIn,
         UInt256 amountIn, Address tokenOut, UInt256 amountOut)
     {
-        var sigBytes = System.Text.Encoding.UTF8.GetBytes("Dex.Swap");
-        var eventSig = Blake3Hasher.Hash(sigBytes);
+        var eventSig = GetEventSignature("Swap");
 
         // Pack: [8B poolId][20B sender][20B tokenIn][32B amountIn][20B tokenOut][32B amountOut]
         var data = new byte[8 + 20 + 20 + 32 + 20 + 32];
