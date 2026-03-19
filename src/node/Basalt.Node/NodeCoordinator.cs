@@ -510,6 +510,39 @@ public sealed class NodeCoordinator : IAsyncDisposable
         {
             var block = BlockCodec.DeserializeBlock(blockData);
 
+            // ── Race guard: if sync already applied this block, skip re-execution ──
+            // Sync (P2P or RPC) and consensus can finalize the same block concurrently.
+            // Without this check, we would re-execute transactions on already-mutated
+            // state (risking double balance changes) and trip the circuit breaker.
+            var currentTip = _chainManager.LatestBlockNumber;
+            if (block.Number <= currentTip)
+            {
+                var existing = _chainManager.GetBlockByNumber(block.Number);
+                if (existing != null && existing.Hash == block.Hash)
+                {
+                    // Block already applied (by sync) — treat as successful finalization
+                    Interlocked.Exchange(ref _consecutiveFinalizationFailures, 0);
+                    if (_circuitBreakerTripped)
+                    {
+                        _circuitBreakerTripped = false;
+                        _logger.LogWarning("Circuit breaker reset after block #{Number} found already applied", block.Number);
+                    }
+
+                    _gossip!.BroadcastBlock(block.Number, block.Hash, block.Header.ParentHash);
+                    _logger.LogInformation(
+                        "Block #{Number} finalized via consensus. Hash: {Hash}, Txs: {TxCount} (already applied by sync)",
+                        block.Number, hash.ToHexString()[..18] + "...", block.Transactions.Count);
+
+                    if (!_config.UsePipelining)
+                        _consensus!.StartRound(block.Number + 1);
+                    _pipelinedConsensus?.CleanupFinalizedRounds();
+
+                    return true;
+                }
+                // Hash mismatch at same height — fall through to normal path which will
+                // detect the divergence and handle it appropriately.
+            }
+
             // COMPL-07: Windowed nullifier reset — prunes nullifiers outside the retention window
             // while keeping recent ones to prevent cross-block replay attacks.
             // LOW-03 R3: This runs before executing the finalized block's transactions. Safe because
