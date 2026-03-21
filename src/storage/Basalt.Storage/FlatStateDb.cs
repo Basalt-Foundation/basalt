@@ -58,19 +58,24 @@ public sealed class FlatStateDb : IStateDatabase
     /// <summary>
     /// Internal constructor for Fork() -- copies cache dictionaries.
     /// Forked instances never persist (no IFlatStatePersistence).
+    /// The storage slots index starts empty — it is rebuilt lazily on
+    /// <see cref="SetStorage"/> calls within the fork, and
+    /// <see cref="DeleteAccount"/> falls back to an O(n) scan if the
+    /// index is incomplete. This avoids the O(total_storage_slots)
+    /// deep copy that otherwise dominates Fork() cost at scale
+    /// (e.g., 400K+ TWAP snapshot entries after 24h of operation).
     /// </summary>
     private FlatStateDb(
         TrieStateDb trie,
         Dictionary<Address, AccountState> accountCache,
         Dictionary<(Address, Hash256), byte[]> storageCache,
-        Dictionary<Address, HashSet<Hash256>> storageSlotsIndex,
         HashSet<Address> deletedAccounts,
         HashSet<(Address, Hash256)> deletedStorage)
     {
         _trie = trie;
         _accountCache = accountCache;
         _storageCache = storageCache;
-        _storageSlotsIndex = storageSlotsIndex;
+        _storageSlotsIndex = new Dictionary<Address, HashSet<Hash256>>();
         _deletedAccounts = deletedAccounts;
         _deletedStorage = deletedStorage;
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
@@ -138,7 +143,10 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts.Add(address);
         _dirtyAccounts.Add(address);
 
-        // Remove storage entries for this address using O(1) index lookup
+        // Remove storage entries for this address.
+        // Prefer the O(1) per-address index when available; fall back to O(n) scan
+        // for forked instances that start with an empty index to avoid the expensive
+        // deep copy during Fork().
         if (_storageSlotsIndex.TryGetValue(address, out var slots))
         {
             foreach (var slot in slots)
@@ -148,6 +156,21 @@ public sealed class FlatStateDb : IStateDatabase
                 _deletedStorage.Add(cacheKey);
             }
             _storageSlotsIndex.Remove(address);
+        }
+        else
+        {
+            // Fallback: scan _storageCache keys (O(n), but DeleteAccount is rare on forks)
+            var keysToRemove = new List<(Address, Hash256)>();
+            foreach (var key in _storageCache.Keys)
+            {
+                if (key.Item1 == address)
+                    keysToRemove.Add(key);
+            }
+            foreach (var key in keysToRemove)
+            {
+                _storageCache.Remove(key);
+                _deletedStorage.Add(key);
+            }
         }
 
         _trie.DeleteAccount(address);
@@ -264,16 +287,16 @@ public sealed class FlatStateDb : IStateDatabase
         // SetStorage always replaces the reference, never mutates in-place)
         var storageClone = new Dictionary<(Address, Hash256), byte[]>(_storageCache);
 
-        // Shallow-copy the per-address index (each HashSet is independent after clone)
-        var indexClone = new Dictionary<Address, HashSet<Hash256>>(_storageSlotsIndex.Count);
-        foreach (var (addr, slots) in _storageSlotsIndex)
-            indexClone[addr] = new HashSet<Hash256>(slots);
+        // The per-address storage slots index is NOT copied — it starts empty on the
+        // fork and is rebuilt lazily via SetStorage. This avoids the O(total_slots)
+        // deep-copy of every per-address HashSet, which dominates Fork() cost when
+        // contracts accumulate many unique storage keys (e.g., TWAP per-block snapshots).
+        // DeleteAccount on a fork falls back to an O(n) scan of _storageCache keys.
 
         return new FlatStateDb(
             forkedTrie,
             new Dictionary<Address, AccountState>(_accountCache),
             storageClone,
-            indexClone,
             new HashSet<Address>(_deletedAccounts),
             new HashSet<(Address, Hash256)>(_deletedStorage));
     }

@@ -597,7 +597,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
-                    foreach (var key in _proposalsByView.Keys)
+                    foreach (var key in _proposalsByView.Keys.ToArray())
                     {
                         if (key.View < cutoff)
                             _proposalsByView.TryRemove(key, out _);
@@ -709,7 +709,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // N-10: Sliding window — retain evidence for last 10 views on epoch transition
             var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            foreach (var key in _proposalsByView.Keys)
+            foreach (var key in _proposalsByView.Keys.ToArray())
             {
                 if (key.View < cutoff)
                     _proposalsByView.TryRemove(key, out _);

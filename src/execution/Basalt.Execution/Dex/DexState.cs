@@ -311,6 +311,44 @@ public sealed class DexState
         _stateDb.SetStorage(DexAddress, key, cumulativePrice.ToArray());
     }
 
+    /// <summary>
+    /// Maximum number of blocks to retain TWAP snapshots for.
+    /// Older snapshots are pruned to prevent unbounded growth of the storage cache
+    /// (each pool creates one unique storage key per block).
+    /// 3600 blocks ≈ 2 hours at 2-second block time — sufficient for any practical
+    /// windowed TWAP query.
+    /// </summary>
+    public const ulong TwapSnapshotRetentionBlocks = 3600;
+
+    /// <summary>
+    /// Delete TWAP snapshot entries older than <see cref="TwapSnapshotRetentionBlocks"/>
+    /// for all pools. Called periodically to prevent the storage cache from growing
+    /// unboundedly with per-block snapshot entries.
+    /// </summary>
+    public void PruneTwapSnapshots(ulong currentBlock)
+    {
+        if (currentBlock <= TwapSnapshotRetentionBlocks)
+            return;
+
+        var cutoff = currentBlock - TwapSnapshotRetentionBlocks;
+        var poolCount = GetPoolCount();
+
+        // Only prune a bounded window per call to avoid long pauses.
+        // Prune from (cutoff - poolCount*2) to cutoff to handle missed prune cycles.
+        var pruneFrom = cutoff > TwapSnapshotRetentionBlocks
+            ? cutoff - (ulong)System.Math.Min((long)poolCount * 2, (long)TwapSnapshotRetentionBlocks)
+            : 1;
+
+        for (ulong block = pruneFrom; block <= cutoff; block++)
+        {
+            for (ulong pid = 0; pid < poolCount; pid++)
+            {
+                var key = MakeTwapSnapshotKey(pid, block);
+                _stateDb.DeleteStorage(DexAddress, key);
+            }
+        }
+    }
+
     // ────────── Concentrated Liquidity (Phase E2) ──────────
 
     /// <summary>Get the tick info for a specific tick in a pool. Returns default if not initialized.</summary>

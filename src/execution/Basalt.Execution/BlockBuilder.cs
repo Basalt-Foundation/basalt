@@ -567,6 +567,13 @@ public sealed class BlockBuilder
 
         RunTwapCarryForward(stateDb, blockHeader.Number);
 
+        // Prune old TWAP snapshots to prevent unbounded storage cache growth.
+        // Each pool creates one unique storage key per block; without pruning,
+        // the flat state cache grows by (pool_count) entries every block, causing
+        // Fork() to become progressively more expensive and eventually saturate CPU.
+        var dexStateForPrune = new DexState(stateDb);
+        dexStateForPrune.PruneTwapSnapshots(blockHeader.Number);
+
         var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
         if (batchResults.Count == 0)
             return allReceipts;
