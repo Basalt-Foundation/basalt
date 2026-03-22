@@ -33,7 +33,7 @@ public sealed class DexEngine
     private readonly IContractRuntime? _runtime;
 
     /// <summary>Cached BLAKE3 hashes of DEX event signatures to avoid per-operation recomputation.</summary>
-    private static readonly Dictionary<string, Hash256> EventSigCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Hash256> EventSigCache = new();
 
     /// <summary>
     /// Creates a new DEX engine backed by the given state.
@@ -788,12 +788,8 @@ public sealed class DexEngine
     /// </summary>
     private static Hash256 GetEventSignature(string eventName)
     {
-        if (!EventSigCache.TryGetValue(eventName, out var sig))
-        {
-            sig = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes("Dex." + eventName));
-            EventSigCache[eventName] = sig;
-        }
-        return sig;
+        return EventSigCache.GetOrAdd(eventName, static name =>
+            Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes("Dex." + name)));
     }
 
     private static EventLog MakeEventLog(string eventName, params object[] args)

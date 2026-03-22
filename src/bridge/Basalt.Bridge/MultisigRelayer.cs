@@ -140,6 +140,6 @@ public sealed class MultisigRelayer
     public IReadOnlyList<byte[]> GetRelayers()
     {
         lock (_lock)
-            return _cachedRelayerList ??= _relayers.Values.ToList();
+            return _cachedRelayerList ??= Array.AsReadOnly(_relayers.Values.ToArray());
     }
 }

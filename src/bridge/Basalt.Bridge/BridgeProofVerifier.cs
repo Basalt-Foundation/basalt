@@ -75,7 +75,7 @@ public static class BridgeProofVerifier
         while (size < leaves.Length)
             size <<= 1;
 
-        // Use two alternating buffers instead of allocating per level
+        // Build the tree bottom-up, collecting sibling hashes for the proof
         var current = new byte[size][];
         for (int i = 0; i < size; i++)
             current[i] = i < leaves.Length ? HashLeaf(leaves[i]) : new byte[32];
@@ -90,7 +90,7 @@ public static class BridgeProofVerifier
             if (siblingIdx < current.Length)
                 proof.Add(current[siblingIdx]);
 
-            // Compute next level into half-size array (reuse previous if big enough)
+            // Compute next level into half-size array
             var halfLen = current.Length / 2;
             var next = new byte[halfLen][];
             for (int i = 0; i < halfLen; i++)

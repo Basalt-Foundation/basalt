@@ -27,39 +27,35 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
     {
         using var batch = _store.CreateWriteBatch();
 
-        // Pre-allocate reusable key buffers to avoid per-iteration allocations
-        var accountKey = new byte[1 + Address.Size];
-        accountKey[0] = AccountPrefix;
-        var storageKey = new byte[1 + Address.Size + Hash256.Size];
-        storageKey[0] = StoragePrefix;
-        var stateBuffer = new byte[137]; // nonce(8)+balance(32)+storageRoot(32)+codeHash(32)+type(1)+compliance(32)
+        // Allocate fresh key/value arrays per Put call — RocksDbSharp's WriteBatch
+        // may store references until Commit(), so reusing buffers risks overwriting
+        // earlier entries in the batch.
 
         // Write (upsert) live account and storage entries
         foreach (var (address, state) in accounts)
         {
-            address.WriteTo(accountKey.AsSpan(1));
+            var accountKey = MakeAccountKey(address);
+            var stateBuffer = new byte[137];
             EncodeAccountStateInto(state, stateBuffer);
             batch.Put(RocksDbStore.CF.State, accountKey, stateBuffer);
         }
 
         foreach (var ((contract, slot), value) in storage)
         {
-            contract.WriteTo(storageKey.AsSpan(1));
-            slot.WriteTo(storageKey.AsSpan(1 + Address.Size));
+            var storageKey = MakeStorageKey(contract, slot);
             batch.Put(RocksDbStore.CF.State, storageKey, value);
         }
 
         // Delete entries that were removed from state
         foreach (var address in deletedAccounts)
         {
-            address.WriteTo(accountKey.AsSpan(1));
+            var accountKey = MakeAccountKey(address);
             batch.Delete(RocksDbStore.CF.State, accountKey);
         }
 
         foreach (var (contract, slot) in deletedStorage)
         {
-            contract.WriteTo(storageKey.AsSpan(1));
-            slot.WriteTo(storageKey.AsSpan(1 + Address.Size));
+            var storageKey = MakeStorageKey(contract, slot);
             batch.Delete(RocksDbStore.CF.State, storageKey);
         }
 

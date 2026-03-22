@@ -186,6 +186,7 @@ public sealed class TrieNode
                     buffer[pos++] = 1;
                     WriteVarInt(buffer, ref pos, BranchValue.Length);
                     BranchValue.CopyTo(buffer.AsSpan(pos));
+                    pos += BranchValue.Length;
                 }
                 else
                 {

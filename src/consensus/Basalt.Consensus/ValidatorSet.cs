@@ -141,12 +141,17 @@ public sealed class ValidatorSet
     {
         lock (_lock)
         {
-            int count = System.Numerics.BitOperations.PopCount(bitmap);
+            // Mask bitmap to valid validator indices to avoid counting
+            // stale bits beyond the current set size.
+            var validBits = _validators.Count >= 64
+                ? bitmap
+                : bitmap & ((1UL << _validators.Count) - 1);
+            int count = System.Numerics.BitOperations.PopCount(validBits);
             var result = new ValidatorInfo[count];
             int idx = 0;
             for (int i = 0; i < _validators.Count && i < 64; i++)
             {
-                if ((bitmap & (1UL << i)) != 0)
+                if ((validBits & (1UL << i)) != 0)
                     result[idx++] = _validators[i];
             }
             return result;

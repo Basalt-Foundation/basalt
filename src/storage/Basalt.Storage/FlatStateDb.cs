@@ -183,10 +183,19 @@ public sealed class FlatStateDb : IStateDatabase
         if (_storageCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        // Fall through to trie, cache on hit
+        // Fall through to trie, cache on hit and update per-address index
         var fromTrie = _trie.GetStorage(contract, key);
         if (fromTrie != null)
+        {
             _storageCache[cacheKey] = fromTrie;
+
+            if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+            {
+                slots = new HashSet<Hash256>();
+                _storageSlotsIndex[contract] = slots;
+            }
+            slots.Add(key);
+        }
 
         return fromTrie;
     }
@@ -346,7 +355,19 @@ public sealed class FlatStateDb : IStateDatabase
         foreach (var (addr, state) in accounts)
             _accountCache.TryAdd(addr, state);
         foreach (var (key, value) in storage)
-            _storageCache.TryAdd(key, value);
+        {
+            if (_storageCache.TryAdd(key, value))
+            {
+                // Maintain per-address index for DeleteAccount support
+                var (contract, slot) = key;
+                if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+                {
+                    slots = new HashSet<Hash256>();
+                    _storageSlotsIndex[contract] = slots;
+                }
+                slots.Add(slot);
+            }
+        }
     }
 
     /// <summary>
