@@ -20,6 +20,8 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly TrieStateDb _trie;
     private readonly Dictionary<Address, AccountState> _accountCache;
     private readonly Dictionary<(Address, Hash256), byte[]> _storageCache;
+    /// <summary>Per-address index of storage slots for O(1) deletion instead of O(n) scan.</summary>
+    private readonly Dictionary<Address, HashSet<Hash256>> _storageSlotsIndex;
     private readonly HashSet<Address> _deletedAccounts;
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
@@ -44,6 +46,7 @@ public sealed class FlatStateDb : IStateDatabase
         _trie = trie;
         _accountCache = new Dictionary<Address, AccountState>();
         _storageCache = new Dictionary<(Address, Hash256), byte[]>();
+        _storageSlotsIndex = new Dictionary<Address, HashSet<Hash256>>();
         _deletedAccounts = new HashSet<Address>();
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
@@ -53,21 +56,21 @@ public sealed class FlatStateDb : IStateDatabase
     }
 
     /// <summary>
-    /// Internal constructor for Fork() -- copies cache dictionaries.
+    /// Internal constructor for Fork() — zero-copy.
+    /// Caches start empty; reads fall through to the forked trie (which has all
+    /// data via write-through). This makes Fork() O(1) regardless of cache size,
+    /// eliminating the O(n) dictionary copy that saturated CPU when the storage
+    /// cache grew large (400K+ TWAP snapshot entries after 24h of operation).
     /// Forked instances never persist (no IFlatStatePersistence).
     /// </summary>
-    private FlatStateDb(
-        TrieStateDb trie,
-        Dictionary<Address, AccountState> accountCache,
-        Dictionary<(Address, Hash256), byte[]> storageCache,
-        HashSet<Address> deletedAccounts,
-        HashSet<(Address, Hash256)> deletedStorage)
+    private FlatStateDb(TrieStateDb trie, Dictionary<Address, AccountState>? accountCache = null)
     {
         _trie = trie;
-        _accountCache = accountCache;
-        _storageCache = storageCache;
-        _deletedAccounts = deletedAccounts;
-        _deletedStorage = deletedStorage;
+        _accountCache = accountCache ?? new Dictionary<Address, AccountState>();
+        _storageCache = new Dictionary<(Address, Hash256), byte[]>();
+        _storageSlotsIndex = new Dictionary<Address, HashSet<Hash256>>();
+        _deletedAccounts = new HashSet<Address>();
+        _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _dirtyAccounts = new HashSet<Address>();
         _persistence = null; // Forks never persist
@@ -133,17 +136,34 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedAccounts.Add(address);
         _dirtyAccounts.Add(address);
 
-        // Remove storage entries for this address from cache
-        var keysToRemove = new List<(Address, Hash256)>();
-        foreach (var key in _storageCache.Keys)
+        // Remove storage entries for this address.
+        // Prefer the O(1) per-address index when available; fall back to O(n) scan
+        // for forked instances that start with an empty index to avoid the expensive
+        // deep copy during Fork().
+        if (_storageSlotsIndex.TryGetValue(address, out var slots))
         {
-            if (key.Item1 == address)
-                keysToRemove.Add(key);
+            foreach (var slot in slots)
+            {
+                var cacheKey = (address, slot);
+                _storageCache.Remove(cacheKey);
+                _deletedStorage.Add(cacheKey);
+            }
+            _storageSlotsIndex.Remove(address);
         }
-        foreach (var key in keysToRemove)
+        else
         {
-            _storageCache.Remove(key);
-            _deletedStorage.Add(key);
+            // Fallback: scan _storageCache keys (O(n), but DeleteAccount is rare on forks)
+            var keysToRemove = new List<(Address, Hash256)>();
+            foreach (var key in _storageCache.Keys)
+            {
+                if (key.Item1 == address)
+                    keysToRemove.Add(key);
+            }
+            foreach (var key in keysToRemove)
+            {
+                _storageCache.Remove(key);
+                _deletedStorage.Add(key);
+            }
         }
 
         _trie.DeleteAccount(address);
@@ -163,10 +183,19 @@ public sealed class FlatStateDb : IStateDatabase
         if (_storageCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        // Fall through to trie, cache on hit
+        // Fall through to trie, cache on hit and update per-address index
         var fromTrie = _trie.GetStorage(contract, key);
         if (fromTrie != null)
+        {
             _storageCache[cacheKey] = fromTrie;
+
+            if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+            {
+                slots = new HashSet<Hash256>();
+                _storageSlotsIndex[contract] = slots;
+            }
+            slots.Add(key);
+        }
 
         return fromTrie;
     }
@@ -181,6 +210,15 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache[cacheKey] = value;
         _deletedStorage.Remove(cacheKey);
         _dirtyStorageKeys.Add(cacheKey);
+
+        // Maintain per-address index
+        if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+        {
+            slots = new HashSet<Hash256>();
+            _storageSlotsIndex[contract] = slots;
+        }
+        slots.Add(key);
+
         _trie.SetStorage(contract, key, value);
         CheckCacheSize();
     }
@@ -194,6 +232,14 @@ public sealed class FlatStateDb : IStateDatabase
         _storageCache.Remove(cacheKey);
         _deletedStorage.Add(cacheKey);
         _dirtyStorageKeys.Add(cacheKey);
+
+        // Maintain per-address index
+        if (_storageSlotsIndex.TryGetValue(contract, out var slots))
+        {
+            slots.Remove(key);
+            if (slots.Count == 0) _storageSlotsIndex.Remove(contract);
+        }
+
         _trie.DeleteStorage(contract, key);
     }
 
@@ -227,27 +273,26 @@ public sealed class FlatStateDb : IStateDatabase
     /// so writes to the fork do not affect the parent.
     /// </summary>
     /// <remarks>
-    /// <para>Storage byte[] values are deep-copied to prevent cross-fork mutation.</para>
+    /// <para>Storage byte[] values are shared by reference (copy-on-write semantics).
+    /// This is safe because SetStorage always replaces the entire reference rather
+    /// than mutating byte[] contents in place, so parent and fork cannot interfere.</para>
     /// <para>The forked instance does not have a persistence layer (forks never persist).</para>
     /// <para>Note: in-progress storage tries in the underlying TrieStateDb are not carried
     /// over to the fork — this is an accepted design trade-off (S-10).</para>
     /// </remarks>
     public IStateDatabase Fork()
     {
-        // Fork the inner trie (creates OverlayTrieNodeStore)
-        var forkedTrie = (TrieStateDb)_trie.Fork();
-
-        // Deep-copy the storage cache to prevent cross-fork byte[] mutation
-        var storageClone = new Dictionary<(Address, Hash256), byte[]>(_storageCache.Count);
-        foreach (var (key, value) in _storageCache)
-            storageClone[key] = (byte[])value.Clone();
-
+        // Fork the inner trie (creates OverlayTrieNodeStore).
+        // Storage cache is NOT copied — the forked trie has all data via write-through,
+        // so storage reads fall through to the trie and get cached on first access.
+        // This makes Fork() O(1) instead of O(storage_entries) — critical because
+        // per-block TWAP snapshots can accumulate 400K+ entries over 24h.
+        //
+        // Account cache IS copied — it's tiny (~50 entries for active accounts) and
+        // avoids hundreds of RocksDB trie reads during sync block execution.
         return new FlatStateDb(
-            forkedTrie,
-            new Dictionary<Address, AccountState>(_accountCache),
-            storageClone,
-            new HashSet<Address>(_deletedAccounts),
-            new HashSet<(Address, Hash256)>(_deletedStorage));
+            (TrieStateDb)_trie.Fork(),
+            new Dictionary<Address, AccountState>(_accountCache));
     }
 
     /// <summary>
@@ -310,7 +355,19 @@ public sealed class FlatStateDb : IStateDatabase
         foreach (var (addr, state) in accounts)
             _accountCache.TryAdd(addr, state);
         foreach (var (key, value) in storage)
-            _storageCache.TryAdd(key, value);
+        {
+            if (_storageCache.TryAdd(key, value))
+            {
+                // Maintain per-address index for DeleteAccount support
+                var (contract, slot) = key;
+                if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
+                {
+                    slots = new HashSet<Hash256>();
+                    _storageSlotsIndex[contract] = slots;
+                }
+                slots.Add(slot);
+            }
+        }
     }
 
     /// <summary>

@@ -33,6 +33,7 @@ public sealed class ReceiptStore
         using var batch = _store.CreateWriteBatch();
         foreach (var receipt in receipts)
         {
+            // Allocate fresh key per Put — WriteBatch may store references until Commit()
             var key = new byte[Hash256.Size];
             receipt.TransactionHash.WriteTo(key);
             batch.Put(RocksDbStore.CF.Receipts, key, receipt.Encode());

@@ -205,6 +205,7 @@ public sealed class BlockApplier
         }
 
         // Phase 2: Add executed blocks to chain and persist
+        var skippedAsAlreadyApplied = 0;
         foreach (var (block, raw, bitmap) in blocks)
         {
             if (block.Receipts == null && block.Transactions.Count > 0)
@@ -213,6 +214,22 @@ public sealed class BlockApplier
             var result = _chainManager.AddBlock(block);
             if (!result.IsSuccess)
             {
+                // Race tolerance: if consensus applied this block concurrently,
+                // it will already be in the chain with the same hash. Treat as
+                // progress so the sync loop doesn't stall.
+                var existing = _chainManager.GetBlockByNumber(block.Number);
+                if (existing != null && existing.Hash == block.Hash)
+                {
+                    applied++;
+                    skippedAsAlreadyApplied++;
+                    // Still process epoch transitions for this block
+                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
+                    var newSet2 = _epochManager?.OnBlockFinalized(block.Number);
+                    if (newSet2 != null)
+                        ApplyEpochTransition(newSet2, block.Number);
+                    continue;
+                }
+
                 _logger.LogWarning("Failed to apply synced block #{Number}: {Error}",
                     block.Number, result.Message);
                 break;
@@ -230,12 +247,20 @@ public sealed class BlockApplier
                 ApplyEpochTransition(newSet, block.Number);
         }
 
-        // Phase 3: Atomically swap state only if ALL blocks succeeded
-        if (applied == blocks.Count && applied > 0)
+        // Phase 3: Atomically swap state only if ALL blocks succeeded and at least
+        // one was genuinely new (not already applied by consensus). If every block
+        // was skipped as already-applied, the canonical state is already correct and
+        // swapping our fork (based on a potentially stale snapshot) could regress it.
+        var newlyApplied = applied - skippedAsAlreadyApplied;
+        if (applied == blocks.Count && newlyApplied > 0)
         {
             stateDbRef.Swap(forkedState);
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}",
-                applied, _chainManager.LatestBlockNumber);
+                newlyApplied, _chainManager.LatestBlockNumber);
+        }
+        else if (applied == blocks.Count && skippedAsAlreadyApplied > 0)
+        {
+            _logger.LogDebug("All {Count} synced blocks already applied by consensus", skippedAsAlreadyApplied);
         }
         else if (applied > 0)
         {

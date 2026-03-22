@@ -16,6 +16,11 @@ public sealed class ChainManager
     // H-9: Maximum number of blocks to keep in memory
     private const int MaxInMemoryBlocks = 10_000;
 
+    // Watermark for O(1) eviction: tracks the lowest non-genesis block still retained.
+    // When evicting, we only need to remove blocks from _oldestRetainedBlock to the new cutoff
+    // instead of scanning all keys.
+    private ulong _oldestRetainedBlock = 1;
+
     public ChainManager() { }
 
     public ChainManager(ChainParameters chainParams)
@@ -132,6 +137,9 @@ public sealed class ChainManager
             }
 
             _latestBlock = latestBlock;
+
+            // Set watermark so eviction doesn't try to remove non-existent blocks
+            _oldestRetainedBlock = latestBlock.Number > 0 ? latestBlock.Number : 1;
         }
     }
 
@@ -213,29 +221,28 @@ public sealed class ChainManager
     /// <summary>
     /// H-9: Evict old blocks beyond the retention window to prevent unbounded memory growth.
     /// Retains genesis (block 0) and the most recent MaxInMemoryBlocks blocks.
+    /// Uses a watermark (_oldestRetainedBlock) so each call only removes the newly expired
+    /// blocks — O(evicted) instead of O(total_blocks).
     /// Must be called under _lock.
     /// </summary>
     private void EvictOldBlocks()
     {
-        if (_latestBlock == null || _blocksByNumber.Count <= MaxInMemoryBlocks)
+        if (_latestBlock == null || _latestBlock.Number <= (ulong)MaxInMemoryBlocks)
             return;
 
-        var cutoff = _latestBlock.Number > (ulong)MaxInMemoryBlocks
-            ? _latestBlock.Number - (ulong)MaxInMemoryBlocks
-            : 0;
+        var cutoff = _latestBlock.Number - (ulong)MaxInMemoryBlocks;
+        if (_oldestRetainedBlock >= cutoff)
+            return; // Nothing to evict
 
-        var toRemove = new List<ulong>();
-        foreach (var number in _blocksByNumber.Keys)
+        // Remove blocks from the old watermark up to (but not including) the cutoff.
+        // Skip block 0 (genesis) — always retained.
+        for (var n = _oldestRetainedBlock; n < cutoff; n++)
         {
-            // Keep genesis and blocks within the retention window
-            if (number > 0 && number < cutoff)
-                toRemove.Add(number);
-        }
-
-        foreach (var number in toRemove)
-        {
-            if (_blocksByNumber.Remove(number, out var block))
+            if (n == 0) continue;
+            if (_blocksByNumber.Remove(n, out var block))
                 _blocksByHash.Remove(block.Hash);
         }
+
+        _oldestRetainedBlock = cutoff;
     }
 }

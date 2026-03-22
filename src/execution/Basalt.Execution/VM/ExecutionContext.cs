@@ -11,6 +11,14 @@ public sealed class VmExecutionContext
 {
     public Address Caller { get; init; }
     public Address ContractAddress { get; init; }
+
+    /// <summary>Cached byte[] of Caller address to avoid per-call ToArray() in ContractBridge.</summary>
+    public byte[] CallerBytes => _callerBytes ??= Caller.ToArray();
+    private byte[]? _callerBytes;
+
+    /// <summary>Cached byte[] of ContractAddress to avoid per-call ToArray() in ContractBridge.</summary>
+    public byte[] ContractAddressBytes => _contractAddressBytes ??= ContractAddress.ToArray();
+    private byte[]? _contractAddressBytes;
     public UInt256 Value { get; init; }
     public ulong BlockTimestamp { get; init; }
     public ulong BlockNumber { get; init; }

@@ -51,6 +51,12 @@ public sealed class EpisubService
     // NET-M18: Maximum IHAVE sources tracked per message ID
     private const int MaxIHaveSources = 3;
 
+    // Periodic cleanup: avoid O(n) scans on every insert by rate-limiting cleanup
+    // to at most once per CleanupCooldownMs, run on a background thread.
+    private long _lastCleanupMs;
+    private int _cleanupRunning;
+    private const long CleanupCooldownMs = 10_000; // 10 seconds
+
     public event Action<PeerId, byte[]>? OnSendMessage;
     public event Action<PeerId, NetworkMessage>? OnMessageReceived;
 
@@ -253,14 +259,20 @@ public sealed class EpisubService
         // Promote lazy peers to eager if we're under target
         while (_eagerPeers.Count < TargetEagerPeers && _lazyPeers.Count > 0)
         {
-            var bestLazy = _lazyPeers.Keys
-                .Select(id => _peerManager.GetPeer(id))
-                .Where(p => p != null)
-                .OrderByDescending(p => p!.ReputationScore)
-                .FirstOrDefault();
+            PeerId bestId = default;
+            double bestScore = double.MinValue;
+            foreach (var id in _lazyPeers.Keys)
+            {
+                var p = _peerManager.GetPeer(id);
+                if (p != null && p.ReputationScore > bestScore)
+                {
+                    bestScore = p.ReputationScore;
+                    bestId = p.Id;
+                }
+            }
 
-            if (bestLazy != null)
-                GraftPeer(bestLazy.Id);
+            if (bestScore > double.MinValue)
+                GraftPeer(bestId);
             else
                 break;
         }
@@ -268,14 +280,20 @@ public sealed class EpisubService
         // Prune eager peers to lazy if we're over target
         while (_eagerPeers.Count > TargetEagerPeers * 2)
         {
-            var worstEager = _eagerPeers.Keys
-                .Select(id => _peerManager.GetPeer(id))
-                .Where(p => p != null)
-                .OrderBy(p => p!.ReputationScore)
-                .FirstOrDefault();
+            PeerId worstId = default;
+            double worstScore = double.MaxValue;
+            foreach (var id in _eagerPeers.Keys)
+            {
+                var p = _peerManager.GetPeer(id);
+                if (p != null && p.ReputationScore < worstScore)
+                {
+                    worstScore = p.ReputationScore;
+                    worstId = p.Id;
+                }
+            }
 
-            if (worstEager != null)
-                PrunePeer(worstEager.Id);
+            if (worstScore < double.MaxValue)
+                PrunePeer(worstId);
             else
                 break;
         }
@@ -287,8 +305,7 @@ public sealed class EpisubService
     public void CacheMessage(Hash256 messageId, byte[] serializedMessage)
     {
         _messageCache.TryAdd(messageId, serializedMessage);
-        if (_messageCache.Count > MaxCachedMessages)
-            CleanupMessageCache();
+        TryScheduleCleanup();
     }
 
     /// <summary>
@@ -423,8 +440,33 @@ public sealed class EpisubService
     private void MarkMessageSeen(Hash256 msgId)
     {
         _seenMessages.TryAdd(msgId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        if (_seenMessages.Count > MaxSeenMessages)
-            CleanupSeenMessages();
+        TryScheduleCleanup();
+    }
+
+    /// <summary>
+    /// Schedule a background cleanup if any collection exceeds its limit and the cooldown
+    /// has elapsed. Uses CAS to prevent concurrent cleanup runs. The cleanup runs on the
+    /// thread pool so the calling gossip path is never blocked by O(n) scans.
+    /// </summary>
+    private void TryScheduleCleanup()
+    {
+        if (_seenMessages.Count <= MaxSeenMessages && _messageCache.Count <= MaxCachedMessages)
+            return;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now - Volatile.Read(ref _lastCleanupMs) < CleanupCooldownMs)
+            return;
+
+        // CAS guard: only one cleanup at a time
+        if (Interlocked.CompareExchange(ref _cleanupRunning, 1, 0) != 0)
+            return;
+
+        Volatile.Write(ref _lastCleanupMs, now);
+        ThreadPool.UnsafeQueueUserWorkItem(_ =>
+        {
+            try { CleanupSeenMessages(); }
+            finally { Interlocked.Exchange(ref _cleanupRunning, 0); }
+        }, null);
     }
 
     private void SendFullMessage(PeerId peerId, NetworkMessage message)

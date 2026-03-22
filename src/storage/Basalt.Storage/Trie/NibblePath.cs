@@ -133,7 +133,7 @@ public readonly struct NibblePath : IEquatable<NibblePath>
     /// <summary>
     /// Decode a compact (hex-prefix) encoded path.
     /// </summary>
-    public static (NibblePath Path, bool IsLeaf) FromCompactEncoding(byte[] encoded)
+    public static (NibblePath Path, bool IsLeaf) FromCompactEncoding(ReadOnlySpan<byte> encoded)
     {
         if (encoded.Length == 0)
             return (new NibblePath([], 0, 0), false);

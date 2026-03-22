@@ -27,31 +27,36 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
     {
         using var batch = _store.CreateWriteBatch();
 
+        // Allocate fresh key/value arrays per Put call — RocksDbSharp's WriteBatch
+        // may store references until Commit(), so reusing buffers risks overwriting
+        // earlier entries in the batch.
+
         // Write (upsert) live account and storage entries
         foreach (var (address, state) in accounts)
         {
-            var key = MakeAccountKey(address);
-            var value = EncodeAccountState(state);
-            batch.Put(RocksDbStore.CF.State, key, value);
+            var accountKey = MakeAccountKey(address);
+            var stateBuffer = new byte[137];
+            EncodeAccountStateInto(state, stateBuffer);
+            batch.Put(RocksDbStore.CF.State, accountKey, stateBuffer);
         }
 
         foreach (var ((contract, slot), value) in storage)
         {
-            var key = MakeStorageKey(contract, slot);
-            batch.Put(RocksDbStore.CF.State, key, value);
+            var storageKey = MakeStorageKey(contract, slot);
+            batch.Put(RocksDbStore.CF.State, storageKey, value);
         }
 
         // Delete entries that were removed from state
         foreach (var address in deletedAccounts)
         {
-            var key = MakeAccountKey(address);
-            batch.Delete(RocksDbStore.CF.State, key);
+            var accountKey = MakeAccountKey(address);
+            batch.Delete(RocksDbStore.CF.State, accountKey);
         }
 
         foreach (var (contract, slot) in deletedStorage)
         {
-            var key = MakeStorageKey(contract, slot);
-            batch.Delete(RocksDbStore.CF.State, key);
+            var storageKey = MakeStorageKey(contract, slot);
+            batch.Delete(RocksDbStore.CF.State, storageKey);
         }
 
         batch.Commit();
@@ -101,10 +106,8 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         return key;
     }
 
-    private static byte[] EncodeAccountState(AccountState state)
+    private static void EncodeAccountStateInto(AccountState state, byte[] buffer)
     {
-        // nonce(8) + balance(32) + storageRoot(32) + codeHash(32) + accountType(1) + complianceHash(32) = 137
-        var buffer = new byte[137];
         var writer = new BasaltWriter(buffer);
         writer.WriteUInt64(state.Nonce);
         writer.WriteUInt256(state.Balance);
@@ -112,7 +115,6 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         writer.WriteHash256(state.CodeHash);
         writer.WriteByte((byte)state.AccountType);
         writer.WriteHash256(state.ComplianceHash);
-        return buffer;
     }
 
     private static AccountState DecodeAccountState(byte[] data)

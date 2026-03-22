@@ -118,6 +118,7 @@ public sealed class Transaction
     }
 
     private Hash256? _hash;
+    private Hash256? _complianceProofsHash;
 
     /// <summary>
     /// Compute the transaction hash (BLAKE3 of the serialized signing payload).
@@ -185,7 +186,8 @@ public sealed class Transaction
         writer.WriteUInt32(ChainId);
 
         // COMPL-02: Include hash of compliance proofs to prevent stripping/modification
-        writer.WriteHash256(ComputeComplianceProofsHash());
+        _complianceProofsHash ??= ComputeComplianceProofsHash();
+        writer.WriteHash256(_complianceProofsHash.Value);
 
         return writer.WrittenSpan;
     }

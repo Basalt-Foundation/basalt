@@ -106,9 +106,8 @@ public sealed class BlockBuilder
                 continue;
 
             // L-5: Signature was already verified at mempool admission (M-2).
-            // Validate() re-verifies here for defense-in-depth. If performance
-            // becomes an issue, consider caching verification results.
-            var validation = _validator.Validate(tx, stateDb, baseFee);
+            // Skip signature re-verification during block building for performance.
+            var validation = _validator.Validate(tx, stateDb, baseFee, skipSignature: true);
             if (!validation.IsSuccess)
             {
                 _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
@@ -235,7 +234,7 @@ public sealed class BlockBuilder
             if (totalGasUsed + tx.GasLimit > _chainParams.BlockGasLimit)
                 continue;
 
-            var validation = _validator.Validate(tx, stateDb, baseFee);
+            var validation = _validator.Validate(tx, stateDb, baseFee, skipSignature: true);
             if (!validation.IsSuccess)
             {
                 _logger?.LogWarning("BuildBlock skipped tx {Hash}: {Error}",
@@ -568,6 +567,13 @@ public sealed class BlockBuilder
 
         RunTwapCarryForward(stateDb, blockHeader.Number);
 
+        // Prune old TWAP snapshots to prevent unbounded storage cache growth.
+        // Each pool creates one unique storage key per block; without pruning,
+        // the flat state cache grows by (pool_count) entries every block, causing
+        // Fork() to become progressively more expensive and eventually saturate CPU.
+        var dexStateForPrune = new DexState(stateDb);
+        dexStateForPrune.PruneTwapSnapshots(blockHeader.Number);
+
         var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
         if (batchResults.Count == 0)
             return allReceipts;
@@ -643,7 +649,9 @@ public sealed class BlockBuilder
         if (transactions.Count == 0)
             return Hash256.Zero;
 
-        var hashes = transactions.Select(tx => tx.Hash).ToList();
+        var hashes = new List<Hash256>(transactions.Count);
+        foreach (var tx in transactions)
+            hashes.Add(tx.Hash);
         return ComputeMerkleRoot(hashes);
     }
 
@@ -657,7 +665,9 @@ public sealed class BlockBuilder
         if (receipts.Count == 0)
             return Hash256.Zero;
 
-        var hashes = receipts.Select(ComputeReceiptHash).ToList();
+        var hashes = new List<Hash256>(receipts.Count);
+        foreach (var receipt in receipts)
+            hashes.Add(ComputeReceiptHash(receipt));
         return ComputeMerkleRoot(hashes);
     }
 

@@ -10,7 +10,19 @@ public sealed class ValidatorInfo
 {
     public required PeerId PeerId { get; set; }
     public required PublicKey PublicKey { get; set; }
-    public required BlsPublicKey BlsPublicKey { get; set; }
+
+    private BlsPublicKey _blsPublicKey;
+    private byte[]? _cachedBlsPublicKeyBytes;
+
+    public required BlsPublicKey BlsPublicKey
+    {
+        get => _blsPublicKey;
+        set { _blsPublicKey = value; _cachedBlsPublicKeyBytes = null; }
+    }
+
+    /// <summary>Cached byte[] of BlsPublicKey to avoid allocation in consensus hot path.</summary>
+    public byte[] BlsPublicKeyBytes => _cachedBlsPublicKeyBytes ??= _blsPublicKey.ToArray();
+
     public required Address Address { get; init; }
     public UInt256 Stake { get; set; } = UInt256.Zero;
     public int Index { get; init; }
@@ -129,11 +141,18 @@ public sealed class ValidatorSet
     {
         lock (_lock)
         {
-            var result = new List<ValidatorInfo>();
+            // Mask bitmap to valid validator indices to avoid counting
+            // stale bits beyond the current set size.
+            var validBits = _validators.Count >= 64
+                ? bitmap
+                : bitmap & ((1UL << _validators.Count) - 1);
+            int count = System.Numerics.BitOperations.PopCount(validBits);
+            var result = new ValidatorInfo[count];
+            int idx = 0;
             for (int i = 0; i < _validators.Count && i < 64; i++)
             {
-                if ((bitmap & (1UL << i)) != 0)
-                    result.Add(_validators[i]);
+                if ((validBits & (1UL << i)) != 0)
+                    result[idx++] = _validators[i];
             }
             return result;
         }
