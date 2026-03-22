@@ -1335,7 +1335,7 @@ public static class RestApiEndpoints
             var tip = chainManager.LatestBlock!;
             var id = snapshots.Count;
             snapshots.Add((snapshot, tip));
-            return Microsoft.AspNetCore.Http.Results.Ok(new { id });
+            return Microsoft.AspNetCore.Http.Results.Ok(new DevSnapshotResponse { Id = id });
         });
 
         app.MapPost("/v1/dev/revert", (DevRevertRequest? request) =>
@@ -1346,41 +1346,29 @@ public static class RestApiEndpoints
                     new ErrorResponse { Code = 400, Message = $"Invalid snapshot id: {id}" });
 
             var (state, tip) = snapshots[id];
-            // Remove this and all later snapshots
             snapshots.RemoveRange(id, snapshots.Count - id);
 
             stateDbRef.Swap(state);
             chainManager.RollbackTo(tip);
 
-            return Microsoft.AspNetCore.Http.Results.Ok(new
-            {
-                reverted = true,
-                blockNumber = tip.Number,
-            });
+            return Microsoft.AspNetCore.Http.Results.Ok(
+                new DevRevertResponse { Reverted = true, BlockNumber = tip.Number });
         });
 
         app.MapPost("/v1/dev/reset", () =>
         {
-            // Revert to the earliest snapshot if available, otherwise advise restart
             if (snapshots.Count > 0)
             {
                 var (state, tip) = snapshots[0];
                 snapshots.Clear();
                 stateDbRef.Swap(state);
                 chainManager.RollbackTo(tip);
-                return Microsoft.AspNetCore.Http.Results.Ok(new
-                {
-                    reset = true,
-                    blockNumber = tip.Number,
-                });
+                return Microsoft.AspNetCore.Http.Results.Ok(
+                    new DevResetResponse { Reset = true, BlockNumber = tip.Number });
             }
 
-            return Microsoft.AspNetCore.Http.Results.Ok(new
-            {
-                reset = false,
-                blockNumber = chainManager.LatestBlockNumber,
-                message = "No snapshots available. Restart the node for a full reset.",
-            });
+            return Microsoft.AspNetCore.Http.Results.Ok(
+                new DevResetResponse { Reset = false, BlockNumber = chainManager.LatestBlockNumber, Message = "No snapshots available. Restart the node for a full reset." });
         });
 
         app.MapPost("/v1/dev/mine", (DevMineRequest? request) =>
@@ -1389,11 +1377,11 @@ public static class RestApiEndpoints
             for (int i = 0; i < count; i++)
                 blockProduction.ProduceBlockNow();
 
-            return Microsoft.AspNetCore.Http.Results.Ok(new
-            {
-                mined = count,
-                blockNumber = chainManager.LatestBlockNumber,
-            });
+            // Brief pause to let auto-mine process the signal
+            Thread.Sleep(100);
+
+            return Microsoft.AspNetCore.Http.Results.Ok(
+                new DevMineResponse { Mined = count, BlockNumber = chainManager.LatestBlockNumber });
         });
     }
 }
@@ -1843,6 +1831,30 @@ public sealed class DevMineRequest
     [JsonPropertyName("blocks")] public int Blocks { get; set; } = 1;
 }
 
+public sealed class DevSnapshotResponse
+{
+    [JsonPropertyName("id")] public int Id { get; set; }
+}
+
+public sealed class DevRevertResponse
+{
+    [JsonPropertyName("reverted")] public bool Reverted { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+}
+
+public sealed class DevResetResponse
+{
+    [JsonPropertyName("reset")] public bool Reset { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+    [JsonPropertyName("message")] public string? Message { get; set; }
+}
+
+public sealed class DevMineResponse
+{
+    [JsonPropertyName("mined")] public int Mined { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+}
+
 // ── Sync DTOs ──
 
 public sealed class SyncStatusResponse
@@ -1912,4 +1924,11 @@ public sealed class SyncBlocksResponse
 [JsonSerializable(typeof(DexPriceHistoryResponse))]
 [JsonSerializable(typeof(DevRevertRequest))]
 [JsonSerializable(typeof(DevMineRequest))]
+[JsonSerializable(typeof(DevSnapshotResponse))]
+[JsonSerializable(typeof(DevRevertResponse))]
+[JsonSerializable(typeof(DevResetResponse))]
+[JsonSerializable(typeof(DevMineResponse))]
+[JsonSerializable(typeof(SolverRegistrationRequest))]
+[JsonSerializable(typeof(SolverInfoResponse))]
+[JsonSerializable(typeof(SolverInfoResponse[]))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

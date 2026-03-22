@@ -458,4 +458,116 @@ testCommand.SetHandler(async (string path) =>
 
 rootCommand.AddCommand(testCommand);
 
+// ── basalt dev ──
+var devCommand = new Command("dev", "Start a local DevNet node (Hardhat-style)");
+var devPortOption = new Option<int>("--port", getDefaultValue: () => 8545, description: "HTTP port");
+var devAutoMineOption = new Option<bool>("--auto-mine", getDefaultValue: () => true, description: "Produce blocks on tx submission");
+var devBlockTimeOption = new Option<int>("--block-time", getDefaultValue: () => 2000, description: "Block interval in ms (when auto-mine is off)");
+var devAccountsOption = new Option<int>("--accounts", getDefaultValue: () => 10, description: "Number of pre-funded dev accounts");
+devCommand.AddOption(devPortOption);
+devCommand.AddOption(devAutoMineOption);
+devCommand.AddOption(devBlockTimeOption);
+devCommand.AddOption(devAccountsOption);
+
+devCommand.SetHandler(async (int port, bool autoMine, int blockTime, int accounts) =>
+{
+    using var launcher = new DevNodeLauncher();
+    var exitCode = await launcher.StartAsync(port, autoMine, blockTime, accounts);
+    Environment.ExitCode = exitCode;
+}, devPortOption, devAutoMineOption, devBlockTimeOption, devAccountsOption);
+
+// ── basalt dev mine ──
+var devMineCommand = new Command("mine", "Mine blocks on the DevNet node");
+var mineBlocksArg = new Argument<int>("blocks", getDefaultValue: () => 1, description: "Number of blocks to mine");
+devMineCommand.AddArgument(mineBlocksArg);
+devMineCommand.AddOption(nodeUrlOption);
+
+devMineCommand.SetHandler(async (int blocks, string nodeUrl) =>
+{
+    using var client = new NodeClient(nodeUrl);
+    var result = await client.DevMineAsync(blocks);
+    if (result != null)
+        Console.WriteLine($"Mined {blocks} block(s). Current block: #{result.BlockNumber}");
+    else
+        Console.Error.WriteLine("Failed to mine blocks. Is the DevNet node running?");
+}, mineBlocksArg, nodeUrlOption);
+
+devCommand.AddCommand(devMineCommand);
+
+// ── basalt dev snapshot ──
+var devSnapshotCommand = new Command("snapshot", "Create a state snapshot");
+devSnapshotCommand.AddOption(nodeUrlOption);
+
+devSnapshotCommand.SetHandler(async (string nodeUrl) =>
+{
+    using var client = new NodeClient(nodeUrl);
+    var result = await client.DevSnapshotAsync();
+    if (result != null)
+        Console.WriteLine($"Snapshot created with id: {result.Id}");
+    else
+        Console.Error.WriteLine("Failed to create snapshot. Is the DevNet node running?");
+}, nodeUrlOption);
+
+devCommand.AddCommand(devSnapshotCommand);
+
+// ── basalt dev revert ──
+var devRevertCommand = new Command("revert", "Revert to a state snapshot");
+var revertIdArg = new Argument<int>("id", description: "Snapshot id to revert to");
+devRevertCommand.AddArgument(revertIdArg);
+devRevertCommand.AddOption(nodeUrlOption);
+
+devRevertCommand.SetHandler(async (int id, string nodeUrl) =>
+{
+    using var client = new NodeClient(nodeUrl);
+    var result = await client.DevRevertAsync(id);
+    if (result != null)
+        Console.WriteLine($"Reverted to snapshot {id}. Block: #{result.BlockNumber}");
+    else
+        Console.Error.WriteLine("Failed to revert. Is the DevNet node running?");
+}, revertIdArg, nodeUrlOption);
+
+devCommand.AddCommand(devRevertCommand);
+
+rootCommand.AddCommand(devCommand);
+
+// ── basalt accounts ──
+var accountsCommand = new Command("accounts", "List DevNet pre-funded accounts with private keys");
+var accountsCountOption = new Option<int>("--count", getDefaultValue: () => 10, description: "Number of accounts");
+accountsCommand.AddOption(accountsCountOption);
+accountsCommand.AddOption(nodeUrlOption);
+
+accountsCommand.SetHandler(async (int count, string nodeUrl) =>
+{
+    Console.WriteLine();
+    Console.WriteLine("DevNet Accounts");
+    Console.WriteLine("===============");
+
+    for (int i = 0; i < count; i++)
+    {
+        var privateKey = new byte[32];
+        privateKey[31] = (byte)(i + 1);
+        var publicKey = Ed25519Signer.GetPublicKey(privateKey);
+        var address = Ed25519Signer.DeriveAddress(publicKey);
+        var privHex = Convert.ToHexString(privateKey).ToLowerInvariant();
+
+        // Try to fetch live balance
+        string balanceStr = "10000";
+        try
+        {
+            using var client = new NodeClient(nodeUrl);
+            var info = await client.GetAccountAsync(address.ToHexString());
+            if (info != null)
+                balanceStr = info.Balance;
+        }
+        catch { /* node not running, show default */ }
+
+        Console.WriteLine($"  ({i}) {address.ToHexString()}");
+        Console.WriteLine($"      Key:     0x{privHex}");
+        Console.WriteLine($"      Balance: {balanceStr}");
+    }
+    Console.WriteLine();
+}, accountsCountOption, nodeUrlOption);
+
+rootCommand.AddCommand(accountsCommand);
+
 return await rootCommand.InvokeAsync(args);

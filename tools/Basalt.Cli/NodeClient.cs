@@ -72,6 +72,31 @@ internal sealed class NodeClient : IDisposable
         return await response.Content.ReadFromJsonAsync(CliJsonContext.Default.FaucetResult);
     }
 
+    // ── DevNet endpoints ──
+
+    public async Task<DevMineResult?> DevMineAsync(int blocks = 1)
+    {
+        var response = await _http.PostAsJsonAsync("v1/dev/mine",
+            new DevMineRequest { Blocks = blocks }, CliJsonContext.Default.DevMineRequest);
+        if (!response.IsSuccessStatusCode) return null;
+        return await response.Content.ReadFromJsonAsync(CliJsonContext.Default.DevMineResult);
+    }
+
+    public async Task<DevSnapshotResult?> DevSnapshotAsync()
+    {
+        var response = await _http.PostAsync("v1/dev/snapshot", null);
+        if (!response.IsSuccessStatusCode) return null;
+        return await response.Content.ReadFromJsonAsync(CliJsonContext.Default.DevSnapshotResult);
+    }
+
+    public async Task<DevRevertResult?> DevRevertAsync(int id)
+    {
+        var response = await _http.PostAsJsonAsync("v1/dev/revert",
+            new DevRevertRequest { Id = id }, CliJsonContext.Default.DevRevertRequest);
+        if (!response.IsSuccessStatusCode) return null;
+        return await response.Content.ReadFromJsonAsync(CliJsonContext.Default.DevRevertResult);
+    }
+
     public void Dispose() => _http.Dispose();
 }
 
@@ -146,6 +171,35 @@ internal sealed class ApiError
     [JsonPropertyName("message")] public string Message { get; set; } = "";
 }
 
+// ── DevNet DTOs ──
+
+internal sealed class DevMineRequest
+{
+    [JsonPropertyName("blocks")] public int Blocks { get; set; } = 1;
+}
+
+internal sealed class DevMineResult
+{
+    [JsonPropertyName("mined")] public int Mined { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+}
+
+internal sealed class DevSnapshotResult
+{
+    [JsonPropertyName("id")] public int Id { get; set; }
+}
+
+internal sealed class DevRevertRequest
+{
+    [JsonPropertyName("id")] public int Id { get; set; }
+}
+
+internal sealed class DevRevertResult
+{
+    [JsonPropertyName("reverted")] public bool Reverted { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+}
+
 [JsonSerializable(typeof(NodeStatus))]
 [JsonSerializable(typeof(BlockInfo))]
 [JsonSerializable(typeof(AccountInfo))]
@@ -154,4 +208,9 @@ internal sealed class ApiError
 [JsonSerializable(typeof(FaucetRequest))]
 [JsonSerializable(typeof(FaucetResult))]
 [JsonSerializable(typeof(ApiError))]
+[JsonSerializable(typeof(DevMineRequest))]
+[JsonSerializable(typeof(DevMineResult))]
+[JsonSerializable(typeof(DevSnapshotResult))]
+[JsonSerializable(typeof(DevRevertRequest))]
+[JsonSerializable(typeof(DevRevertResult))]
 internal partial class CliJsonContext : JsonSerializerContext;
