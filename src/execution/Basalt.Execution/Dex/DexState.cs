@@ -322,9 +322,10 @@ public sealed class DexState
 
     /// <summary>
     /// Maximum number of blocks to prune in a single call to avoid stalling
-    /// block processing. Remaining blocks are pruned on subsequent calls.
+    /// block processing and overwhelming RocksDB with tombstones.
+    /// Remaining blocks are pruned on subsequent calls.
     /// </summary>
-    private const ulong MaxPrunePerCall = 200;
+    private const ulong MaxPrunePerCall = 50;
 
     /// <summary>
     /// Delete TWAP snapshot entries older than <see cref="TwapSnapshotRetentionBlocks"/>

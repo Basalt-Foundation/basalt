@@ -63,10 +63,10 @@ public sealed class FlatStateDb : IStateDatabase
     /// cache grew large (400K+ TWAP snapshot entries after 24h of operation).
     /// Forked instances never persist (no IFlatStatePersistence).
     /// </summary>
-    private FlatStateDb(TrieStateDb trie)
+    private FlatStateDb(TrieStateDb trie, Dictionary<Address, AccountState>? accountCache = null)
     {
         _trie = trie;
-        _accountCache = new Dictionary<Address, AccountState>();
+        _accountCache = accountCache ?? new Dictionary<Address, AccountState>();
         _storageCache = new Dictionary<(Address, Hash256), byte[]>();
         _storageSlotsIndex = new Dictionary<Address, HashSet<Hash256>>();
         _deletedAccounts = new HashSet<Address>();
@@ -274,11 +274,16 @@ public sealed class FlatStateDb : IStateDatabase
     public IStateDatabase Fork()
     {
         // Fork the inner trie (creates OverlayTrieNodeStore).
-        // Caches are NOT copied — the forked trie has all data via write-through,
-        // so reads on the fork fall through to the trie and get cached on first access.
+        // Storage cache is NOT copied — the forked trie has all data via write-through,
+        // so storage reads fall through to the trie and get cached on first access.
         // This makes Fork() O(1) instead of O(storage_entries) — critical because
         // per-block TWAP snapshots can accumulate 400K+ entries over 24h.
-        return new FlatStateDb((TrieStateDb)_trie.Fork());
+        //
+        // Account cache IS copied — it's tiny (~50 entries for active accounts) and
+        // avoids hundreds of RocksDB trie reads during sync block execution.
+        return new FlatStateDb(
+            (TrieStateDb)_trie.Fork(),
+            new Dictionary<Address, AccountState>(_accountCache));
     }
 
     /// <summary>
