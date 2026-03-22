@@ -321,9 +321,17 @@ public sealed class DexState
     public const ulong TwapSnapshotRetentionBlocks = 3600;
 
     /// <summary>
+    /// Maximum number of blocks to prune in a single call to avoid stalling
+    /// block processing. Remaining blocks are pruned on subsequent calls.
+    /// </summary>
+    private const ulong MaxPrunePerCall = 200;
+
+    /// <summary>
     /// Delete TWAP snapshot entries older than <see cref="TwapSnapshotRetentionBlocks"/>
-    /// for all pools. Called periodically to prevent the storage cache from growing
-    /// unboundedly with per-block snapshot entries.
+    /// for all pools. Uses a persisted watermark (storage key 0x0E00...01) so each call
+    /// only prunes newly expired blocks, bounded to <see cref="MaxPrunePerCall"/> to
+    /// avoid stalling. On first run after deployment, progressively catches up with
+    /// historical backlog over several blocks.
     /// </summary>
     public void PruneTwapSnapshots(ulong currentBlock)
     {
@@ -332,14 +340,23 @@ public sealed class DexState
 
         var cutoff = currentBlock - TwapSnapshotRetentionBlocks;
         var poolCount = GetPoolCount();
+        if (poolCount == 0)
+            return;
 
-        // Only prune a bounded window per call to avoid long pauses.
-        // Prune from (cutoff - poolCount*2) to cutoff to handle missed prune cycles.
-        var pruneFrom = cutoff > TwapSnapshotRetentionBlocks
-            ? cutoff - (ulong)System.Math.Min((long)poolCount * 2, (long)TwapSnapshotRetentionBlocks)
-            : 1;
+        // Read the last-pruned watermark from storage (persists across restarts)
+        var watermark = GetTwapPruneWatermark();
 
-        for (ulong block = pruneFrom; block <= cutoff; block++)
+        // First-time or very old watermark: start from block 1
+        if (watermark == 0)
+            watermark = 1;
+
+        if (watermark >= cutoff)
+            return; // Already caught up
+
+        // Prune at most MaxPrunePerCall blocks per invocation to avoid stalls
+        var pruneEnd = System.Math.Min(watermark + MaxPrunePerCall, cutoff);
+
+        for (var block = watermark; block < pruneEnd; block++)
         {
             for (ulong pid = 0; pid < poolCount; pid++)
             {
@@ -347,6 +364,33 @@ public sealed class DexState
                 _stateDb.DeleteStorage(DexAddress, key);
             }
         }
+
+        // Persist the new watermark
+        SetTwapPruneWatermark(pruneEnd);
+    }
+
+    /// <summary>Storage key for the TWAP prune watermark: <c>0x0E + 0x00(7B) + 0x00(8B) + 0x01(1B) + 0x00(15B)</c>.</summary>
+    private static Hash256 TwapPruneWatermarkKey()
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0x0E;
+        key[16] = 0x01; // Distinguishes from snapshot keys (which have poolId in bytes 1-8)
+        return new Hash256(key);
+    }
+
+    private ulong GetTwapPruneWatermark()
+    {
+        var data = _stateDb.GetStorage(DexAddress, TwapPruneWatermarkKey());
+        if (data == null || data.Length < 8) return 0;
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(data);
+    }
+
+    private void SetTwapPruneWatermark(ulong block)
+    {
+        var data = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(data, block);
+        _stateDb.SetStorage(DexAddress, TwapPruneWatermarkKey(), data);
     }
 
     // ────────── Concentrated Liquidity (Phase E2) ──────────
