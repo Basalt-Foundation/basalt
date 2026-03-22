@@ -5,6 +5,7 @@ public enum NodeMode
     Standalone,
     Validator,
     Rpc,
+    DevNet,
 }
 
 /// <summary>
@@ -57,11 +58,18 @@ public sealed class NodeConfiguration
     public string Mode { get; init; } = "auto";
     public string? SyncSource { get; init; }
 
+    // DevNet options
+    public bool AutoMine { get; init; }
+    public int DevAccounts { get; init; } = 10;
+
     // Tri-state mode detection
     public NodeMode ResolvedMode
     {
         get
         {
+            if (string.Equals(Mode, "dev", StringComparison.OrdinalIgnoreCase))
+                return NodeMode.DevNet;
+
             if (string.Equals(Mode, "rpc", StringComparison.OrdinalIgnoreCase))
             {
                 if (string.IsNullOrWhiteSpace(SyncSource))
@@ -119,6 +127,13 @@ public sealed class NodeConfiguration
         var mode = Environment.GetEnvironmentVariable("BASALT_MODE") ?? "auto";
         var syncSource = Environment.GetEnvironmentVariable("BASALT_SYNC_SOURCE");
 
+        var autoMine = string.Equals(
+            Environment.GetEnvironmentVariable("BASALT_AUTOMINE"), "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!int.TryParse(Environment.GetEnvironmentVariable("BASALT_DEV_ACCOUNTS"), out var devAccounts))
+            devAccounts = 10;
+
         return new NodeConfiguration
         {
             ValidatorIndex = validatorIndex,
@@ -134,6 +149,8 @@ public sealed class NodeConfiguration
             UseSandbox = useSandbox,
             Mode = mode,
             SyncSource = syncSource,
+            AutoMine = autoMine,
+            DevAccounts = devAccounts,
         };
     }
 

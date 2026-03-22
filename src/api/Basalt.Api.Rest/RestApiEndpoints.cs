@@ -1313,6 +1313,89 @@ public static class RestApiEndpoints
         // When txForwarder is set (RPC mode), fire-and-forget forward after mempool add.
         // The forwarding is wired inside the POST /v1/transactions handler via the txForwarder parameter.
     }
+
+    /// <summary>
+    /// Register DevNet-only REST endpoints for snapshot/revert/reset/mine.
+    /// Only called when <c>BASALT_MODE=dev</c>.
+    /// </summary>
+    public static void MapDevEndpoints(
+        Microsoft.AspNetCore.Routing.IEndpointRouteBuilder app,
+        ChainManager chainManager,
+        Mempool mempool,
+        Storage.StateDbRef stateDbRef,
+        Execution.BlockProductionLoop blockProduction,
+        ChainParameters chainParams)
+    {
+        // Snapshot stack: (forked state, chain tip block) pairs
+        var snapshots = new List<(Storage.IStateDatabase State, Block Tip)>();
+
+        app.MapPost("/v1/dev/snapshot", () =>
+        {
+            var snapshot = stateDbRef.Fork();
+            var tip = chainManager.LatestBlock!;
+            var id = snapshots.Count;
+            snapshots.Add((snapshot, tip));
+            return Microsoft.AspNetCore.Http.Results.Ok(new { id });
+        });
+
+        app.MapPost("/v1/dev/revert", (DevRevertRequest? request) =>
+        {
+            var id = request?.Id ?? (snapshots.Count - 1);
+            if (id < 0 || id >= snapshots.Count)
+                return Microsoft.AspNetCore.Http.Results.BadRequest(
+                    new ErrorResponse { Code = 400, Message = $"Invalid snapshot id: {id}" });
+
+            var (state, tip) = snapshots[id];
+            // Remove this and all later snapshots
+            snapshots.RemoveRange(id, snapshots.Count - id);
+
+            stateDbRef.Swap(state);
+            chainManager.RollbackTo(tip);
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new
+            {
+                reverted = true,
+                blockNumber = tip.Number,
+            });
+        });
+
+        app.MapPost("/v1/dev/reset", () =>
+        {
+            // Revert to the earliest snapshot if available, otherwise advise restart
+            if (snapshots.Count > 0)
+            {
+                var (state, tip) = snapshots[0];
+                snapshots.Clear();
+                stateDbRef.Swap(state);
+                chainManager.RollbackTo(tip);
+                return Microsoft.AspNetCore.Http.Results.Ok(new
+                {
+                    reset = true,
+                    blockNumber = tip.Number,
+                });
+            }
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new
+            {
+                reset = false,
+                blockNumber = chainManager.LatestBlockNumber,
+                message = "No snapshots available. Restart the node for a full reset.",
+            });
+        });
+
+        app.MapPost("/v1/dev/mine", (DevMineRequest? request) =>
+        {
+            var count = request?.Blocks ?? 1;
+            for (int i = 0; i < count; i++)
+                blockProduction.ProduceBlockNow();
+
+            return Microsoft.AspNetCore.Http.Results.Ok(new
+            {
+                mined = count,
+                blockNumber = chainManager.LatestBlockNumber,
+            });
+        });
+    }
 }
 
 /// <summary>
@@ -1748,6 +1831,18 @@ public sealed class DexPriceHistoryResponse
     [JsonPropertyName("blockTimeMs")] public uint BlockTimeMs { get; set; }
 }
 
+// ── DevNet DTOs ──
+
+public sealed class DevRevertRequest
+{
+    [JsonPropertyName("id")] public int Id { get; set; }
+}
+
+public sealed class DevMineRequest
+{
+    [JsonPropertyName("blocks")] public int Blocks { get; set; } = 1;
+}
+
 // ── Sync DTOs ──
 
 public sealed class SyncStatusResponse
@@ -1815,4 +1910,6 @@ public sealed class SyncBlocksResponse
 [JsonSerializable(typeof(DexPricePointResponse))]
 [JsonSerializable(typeof(DexPricePointResponse[]))]
 [JsonSerializable(typeof(DexPriceHistoryResponse))]
+[JsonSerializable(typeof(DevRevertRequest))]
+[JsonSerializable(typeof(DevMineRequest))]
 public partial class BasaltApiJsonContext : JsonSerializerContext;

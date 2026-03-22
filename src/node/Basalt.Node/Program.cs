@@ -122,6 +122,13 @@ try
         [faucetAddr] = UInt256.Parse("500000000000000000000000000"),
     };
 
+    // DevNet mode: add deterministic dev accounts to genesis
+    if (config.ResolvedMode == NodeMode.DevNet)
+    {
+        foreach (var (addr, bal) in DevAccounts.GetGenesisBalances(config.DevAccounts))
+            genesisBalances[addr] = bal;
+    }
+
     // Initialize staking state with genesis validators
     var stakingState = new StakingState();
     stakingStateForShutdown = stakingState;
@@ -548,6 +555,62 @@ try
                 Log.Information("Shutting down RPC sync service...");
                 txForwarder.Dispose();
                 rpcSyncService.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
+            });
+            break;
+        }
+
+        case NodeMode.DevNet:
+        {
+            // === DEVNET MODE ===
+            // Hardhat/Anvil-style local development node with auto-mine.
+            // Single-node, in-memory state, instant finality, pre-funded accounts.
+
+            var devAccountCount = config.DevAccounts;
+            var devProposer = DevAccounts.Generate(1)[0].Address;
+            var blockProduction = new BlockProductionLoop(
+                chainParams, chainManager, mempool, stateDbRef, devProposer,
+                app.Services.GetRequiredService<ILogger<BlockProductionLoop>>())
+            {
+                AutoMine = config.AutoMine
+            };
+
+            blockProduction.OnBlockProduced += block =>
+            {
+                MetricsEndpoint.RecordBlock(block.Transactions.Count, block.Header.Timestamp);
+                _ = wsHandler.BroadcastNewBlock(block);
+            };
+
+            // Auto-mine: produce a block when a transaction enters the mempool
+            if (config.AutoMine)
+            {
+                mempool.OnTransactionAdded += _ => blockProduction.ProduceBlockNow();
+            }
+
+            blockProduction.Start();
+
+            // Print Hardhat-style banner
+            Console.WriteLine("========================================");
+            Console.WriteLine("       Basalt DevNet Node v1.0");
+            Console.WriteLine("========================================");
+            Console.WriteLine();
+            Console.WriteLine($"  Chain ID:   {chainParams.ChainId}");
+            Console.WriteLine($"  RPC URL:    http://localhost:{config.HttpPort}");
+            Console.WriteLine($"  Block time: {(config.AutoMine ? "auto-mine (on tx)" : chainParams.BlockTimeMs + "ms")}");
+            Console.WriteLine($"  State:      in-memory");
+            DevAccounts.PrintAccountTable(devAccountCount);
+            Console.WriteLine("========================================");
+            Console.WriteLine("  Listening for transactions...");
+            Console.WriteLine("========================================");
+            Console.WriteLine();
+
+            // Register dev endpoints (snapshot, revert, reset, mine)
+            RestApiEndpoints.MapDevEndpoints(app, chainManager, mempool, stateDbRef, blockProduction, chainParams);
+
+            app.Lifetime.ApplicationStopping.Register(() =>
+            {
+                Log.Information("Shutting down DevNet node...");
+                if (!blockProduction.StopAsync().Wait(TimeSpan.FromSeconds(10)))
+                    Log.Warning("Block production did not stop within 10 seconds; forcing exit");
             });
             break;
         }

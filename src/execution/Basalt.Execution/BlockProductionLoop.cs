@@ -19,6 +19,10 @@ public sealed class BlockProductionLoop
     private readonly ILogger<BlockProductionLoop> _logger;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
+    private readonly ManualResetEventSlim _mineSignal = new(false);
+
+    /// <summary>Whether to produce blocks only when signalled (auto-mine mode).</summary>
+    public bool AutoMine { get; set; }
 
     public event Action<Block>? OnBlockProduced;
 
@@ -47,8 +51,20 @@ public sealed class BlockProductionLoop
     {
         _cts = new CancellationTokenSource();
         _loopTask = RunLoop(_cts.Token);
-        _logger.LogInformation("Block production started. Block time: {BlockTime}ms, Proposer: {Proposer}",
-            _chainParams.BlockTimeMs, _proposer);
+        if (AutoMine)
+            _logger.LogInformation("Block production started in auto-mine mode. Proposer: {Proposer}", _proposer);
+        else
+            _logger.LogInformation("Block production started. Block time: {BlockTime}ms, Proposer: {Proposer}",
+                _chainParams.BlockTimeMs, _proposer);
+    }
+
+    /// <summary>
+    /// Signal the production loop to produce a block immediately.
+    /// Used by auto-mine mode when a transaction arrives.
+    /// </summary>
+    public void ProduceBlockNow()
+    {
+        _mineSignal.Set();
     }
 
     public async Task StopAsync()
@@ -70,7 +86,18 @@ public sealed class BlockProductionLoop
         {
             try
             {
-                await Task.Delay((int)_chainParams.BlockTimeMs, ct);
+                if (AutoMine)
+                {
+                    // Wait for a signal (tx arrival or explicit mine request)
+                    await Task.Run(() => _mineSignal.Wait(ct), ct);
+                    _mineSignal.Reset();
+                    // Small delay to batch rapid tx submissions into one block
+                    await Task.Delay(50, ct);
+                }
+                else
+                {
+                    await Task.Delay((int)_chainParams.BlockTimeMs, ct);
+                }
                 ProduceBlock();
             }
             catch (OperationCanceledException)
