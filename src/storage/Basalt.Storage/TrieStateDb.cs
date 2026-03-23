@@ -58,11 +58,14 @@ public sealed class TrieStateDb : IStateDatabase
 
     public Hash256 ComputeStateRoot()
     {
-        // Flush any pending storage trie changes into account states
+        // Flush any pending storage trie changes into account states.
+        // Only write back accounts whose StorageRoot actually changed —
+        // avoids unnecessary BLAKE3 rehashing of the entire trie path
+        // when no storage mutations occurred (e.g. empty blocks).
         foreach (var (address, storageTrie) in _storageTries)
         {
             var account = GetAccount(address);
-            if (account.HasValue)
+            if (account.HasValue && account.Value.StorageRoot != storageTrie.RootHash)
             {
                 var updated = new AccountState
                 {

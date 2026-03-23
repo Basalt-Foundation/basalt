@@ -98,15 +98,18 @@ public sealed class PeerInfo
 
     /// <summary>
     /// NET-M23: Adjust reputation score atomically using Interlocked.CompareExchange loop.
+    /// SpinWait yields the thread on contention to avoid burning CPU.
     /// </summary>
     public void AdjustReputation(int delta)
     {
+        var spin = new SpinWait();
         while (true)
         {
             int current = Volatile.Read(ref _reputationScore);
             int desired = Math.Clamp(current + delta, 0, 200);
             if (Interlocked.CompareExchange(ref _reputationScore, desired, current) == current)
                 break;
+            spin.SpinOnce();
         }
     }
 }

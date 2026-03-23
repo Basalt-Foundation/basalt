@@ -35,13 +35,16 @@ public sealed class RocksDbStore : IDisposable
 
     public RocksDbStore(string path)
     {
-        // M12: Production-ready RocksDB options
+        // M12: Production-ready RocksDB options.
+        // Cap background threads at 2 compaction + 1 flush to prevent CPU saturation
+        // on small VMs. IncreaseParallelism is capped at 4 regardless of core count.
+        var parallelism = Math.Min(Environment.ProcessorCount, 4);
         var options = new DbOptions()
             .SetCreateIfMissing(true)
             .SetCreateMissingColumnFamilies(true)
-            .SetMaxBackgroundCompactions(4)
-            .SetMaxBackgroundFlushes(2)
-            .IncreaseParallelism(Environment.ProcessorCount);
+            .SetMaxBackgroundCompactions(2)
+            .SetMaxBackgroundFlushes(1)
+            .IncreaseParallelism(parallelism);
 
         // M-01: Per-CF options tuned for each access pattern.
         // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.

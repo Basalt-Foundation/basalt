@@ -49,6 +49,7 @@ public sealed class ResourceLimiter
         if (bytes <= 0)
             return;
 
+        var spin = new SpinWait();
         while (true)
         {
             var current = Interlocked.Read(ref _currentUsage);
@@ -64,7 +65,7 @@ public sealed class ResourceLimiter
 
             if (Interlocked.CompareExchange(ref _currentUsage, newUsage, current) == current)
                 return; // Successfully allocated
-            // Another thread changed _currentUsage — retry
+            spin.SpinOnce(); // Yield on contention instead of burning CPU
         }
     }
 

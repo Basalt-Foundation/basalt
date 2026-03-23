@@ -133,6 +133,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private long _circuitBreakerTrippedAtMs;
     private const long CircuitBreakerCooldownMs = 30_000; // Auto-reset after 30s
 
+    // Sync cooldown: prevent fire-and-forget Task.Run spam from the consensus loop
+    private long _lastSyncAttemptMs;
+
     // Fork detection: binary search for fork point
     private (ulong RequestedBlock, TaskCompletionSource<(Hash256 Hash, bool HasBlock)> Tcs)? _forkHashPending;
     private const int MaxRollbackDepth = 1000;
@@ -597,7 +600,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
-                    foreach (var key in _proposalsByView.Keys.ToArray())
+                    foreach (var key in _proposalsByView.Keys)
                     {
                         if (key.View < cutoff)
                             _proposalsByView.TryRemove(key, out _);
@@ -709,7 +712,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // N-10: Sliding window — retain evidence for last 10 views on epoch transition
             var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            foreach (var key in _proposalsByView.Keys.ToArray())
+            foreach (var key in _proposalsByView.Keys)
             {
                 if (key.View < cutoff)
                     _proposalsByView.TryRemove(key, out _);
@@ -1706,11 +1709,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // behind can still trigger sync during cooldown — otherwise small gaps
                 // cause a permanent stall when all validators trip their circuit breakers.
                 // The _isSyncing guard in TrySyncFromPeers prevents concurrent attempts.
-                var bestPeerCheck = GetBestPeer();
-                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber)
+                // Cooldown: limit sync attempts to at most once per second to avoid
+                // Task.Run allocation spam on every 200ms iteration.
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (now - Volatile.Read(ref _lastSyncAttemptMs) >= 1000)
                 {
-                    // Fire-and-forget sync attempt; _isSyncing guard deduplicates
-                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    var bestPeerCheck = GetBestPeer();
+                    if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber)
+                    {
+                        Volatile.Write(ref _lastSyncAttemptMs, now);
+                        _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    }
                 }
 
                 // Circuit breaker auto-reset: after cooldown, reset and attempt
@@ -2103,10 +2112,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// </summary>
     private void PruneProposalsByView(ulong currentView)
     {
-        // N-17: Thread-safe iteration with .ToArray() on ConcurrentDictionary
-        var staleKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < currentView);
-        foreach (var key in staleKeys)
-            _proposalsByView.TryRemove(key, out _);
+        // N-17: ConcurrentDictionary enumerators are safe for concurrent modification —
+        // .ToArray() was wasting O(n) allocation on every finalization.
+        foreach (var key in _proposalsByView.Keys)
+        {
+            if (key.View < currentView)
+                _proposalsByView.TryRemove(key, out _);
+        }
     }
 
     private PeerInfo? GetBestPeer()

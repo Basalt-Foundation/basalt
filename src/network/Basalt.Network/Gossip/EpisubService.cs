@@ -22,15 +22,15 @@ public sealed class EpisubService
 
     // Message deduplication cache
     private readonly ConcurrentDictionary<Hash256, long> _seenMessages = new();
-    private const int MaxSeenMessages = 200_000;
-    private const long SeenMessageTtlMs = 120_000; // 2 minutes
+    private const int MaxSeenMessages = 50_000;
+    private const long SeenMessageTtlMs = 60_000; // 1 minute
 
     // IHAVE tracking: messages we've announced but not yet requested
     private readonly ConcurrentDictionary<Hash256, List<PeerId>> _ihaveSources = new();
 
     // Message content cache: stores serialized messages for IWANT responses
     private readonly ConcurrentDictionary<Hash256, byte[]> _messageCache = new();
-    private const int MaxCachedMessages = 50_000;
+    private const int MaxCachedMessages = 10_000;
 
     // Target counts
     private const int TargetEagerPeers = 6;
@@ -51,11 +51,12 @@ public sealed class EpisubService
     // NET-M18: Maximum IHAVE sources tracked per message ID
     private const int MaxIHaveSources = 3;
 
-    // Periodic cleanup: avoid O(n) scans on every insert by rate-limiting cleanup
-    // to at most once per CleanupCooldownMs, run on a background thread.
+    // Periodic cleanup: TTL-based proactive cleanup on a background timer,
+    // plus reactive cleanup when collections exceed their caps.
     private long _lastCleanupMs;
     private int _cleanupRunning;
-    private const long CleanupCooldownMs = 10_000; // 10 seconds
+    private const long CleanupCooldownMs = 5_000; // 5 seconds
+    private Timer? _cleanupTimer;
 
     public event Action<PeerId, byte[]>? OnSendMessage;
     public event Action<PeerId, NetworkMessage>? OnMessageReceived;
@@ -64,6 +65,16 @@ public sealed class EpisubService
     {
         _peerManager = peerManager;
         _logger = logger;
+
+        // Proactive TTL cleanup every 30 seconds — prevents unbounded cache growth
+        // even when message rate stays below the reactive cap threshold.
+        _cleanupTimer = new Timer(_ =>
+        {
+            if (Interlocked.CompareExchange(ref _cleanupRunning, 1, 0) != 0)
+                return;
+            try { CleanupSeenMessages(); }
+            finally { Interlocked.Exchange(ref _cleanupRunning, 0); }
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     /// <summary>
@@ -145,15 +156,21 @@ public sealed class EpisubService
         // Cache the serialized message for IWANT responses
         CacheMessage(messageId, SerializeMessage(message));
 
-        // IHAVE to all peers (lazy protocol)
-        foreach (var peer in _peerManager.ConnectedPeers)
+        // IHAVE to eager + lazy peers (avoids ConnectedPeers snapshot allocation)
+        foreach (var (peerId, _) in _eagerPeers)
         {
-            if (excludePeer.HasValue && peer.Id == excludePeer.Value)
+            if (excludePeer.HasValue && peerId == excludePeer.Value)
                 continue;
-            SendIHave(peer.Id, messageId);
+            SendIHave(peerId, messageId);
+            RecordSentIHave(peerId, messageId);
+        }
 
-            // NET-M16: Track IHAVE sent to this peer for IWANT correlation
-            RecordSentIHave(peer.Id, messageId);
+        foreach (var (peerId, _) in _lazyPeers)
+        {
+            if (excludePeer.HasValue && peerId == excludePeer.Value)
+                continue;
+            SendIHave(peerId, messageId);
+            RecordSentIHave(peerId, messageId);
         }
     }
 

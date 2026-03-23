@@ -249,7 +249,11 @@ public sealed class BlockBuilder
         }
 
         // ═══ TWAP carry-forward: update accumulators for all pools using current price ═══
-        RunTwapCarryForward(stateDb, blockNumber);
+        // Skip entirely when no DEX pools exist — avoids DexState construction + storage reads on idle blocks.
+        var dexStateCheck = new DexState(stateDb);
+        var poolCount = dexStateCheck.GetPoolCount();
+        if (poolCount > 0)
+            RunTwapCarryForward(stateDb, blockNumber);
 
         // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
         var batchResults = new List<BatchResult>();
@@ -411,8 +415,11 @@ public sealed class BlockBuilder
         SkipBatchAuction:
 
         // ═══ Phase B2: Standalone limit order matching for pools not covered by swap intents ═══
-        var standaloneResults = RunStandaloneLimitOrderMatching(stateDb, blockNumber, settledPoolIds);
-        batchResults.AddRange(standaloneResults);
+        if (poolCount > 0)
+        {
+            var standaloneResults = RunStandaloneLimitOrderMatching(stateDb, blockNumber, settledPoolIds);
+            batchResults.AddRange(standaloneResults);
+        }
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
         bool gasLimitReached = false;

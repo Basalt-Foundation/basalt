@@ -25,6 +25,7 @@ public sealed class BasaltBft
     private readonly IBlsSigner _blsSigner;
     private readonly ILogger<BasaltBft> _logger;
     private readonly uint _chainId;
+    private readonly byte[] _cachedPublicKey;
 
     // State
     private ulong _currentView;
@@ -74,6 +75,7 @@ public sealed class BasaltBft
         _logger = logger;
         _viewTimeout = viewTimeout ?? TimeSpan.FromSeconds(5);
         _chainId = chainId;
+        _cachedPublicKey = _blsSigner.GetPublicKey(privateKey);
     }
 
     /// <summary>
@@ -460,7 +462,7 @@ public sealed class BasaltBft
             Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
             WriteViewChangeSigningPayload(viewPayload, _chainId, viewChange.ProposedView);
             var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
-            var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+            var publicKey = new BlsPublicKey(_cachedPublicKey);
 
             return new ViewChangeMessage
             {
@@ -570,7 +572,7 @@ public sealed class BasaltBft
         WriteConsensusSigningPayload(sigPayload, _chainId, phase, _currentView, _currentBlockNumber, blockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
-        var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+        var publicKey = new BlsPublicKey(_cachedPublicKey);
 
         // Track signature for aggregation (dedup by public key, O(1))
         var sigKey = (_currentView, phase);
@@ -765,7 +767,7 @@ public sealed class BasaltBft
         Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
         WriteViewChangeSigningPayload(viewPayload, _chainId, proposedView);
         var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
-        var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+        var publicKey = new BlsPublicKey(_cachedPublicKey);
 
         return new ViewChangeMessage
         {
