@@ -36,6 +36,12 @@ public sealed class WebSocketHandler : IDisposable
     /// </summary>
     public async Task BroadcastNewBlock(Block block)
     {
+        // Fast path: skip all allocations when no clients are connected.
+        // On an idle chain producing blocks every 3s, this avoids creating
+        // WebSocketBlockMessage + JSON string + byte[] per block for nothing.
+        if (_connections.IsEmpty)
+            return;
+
         var message = new WebSocketBlockMessage
         {
             Type = "new_block",

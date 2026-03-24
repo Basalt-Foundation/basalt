@@ -568,23 +568,27 @@ public sealed class BlockBuilder
     /// on the given state database. Called during block finalization and sync to ensure canonical
     /// state reflects DEX activity.
     /// </summary>
+    private static readonly List<TransactionReceipt> s_emptyReceipts = [];
+
     public List<TransactionReceipt> ApplyDexSettlement(IStateDatabase stateDb, BlockHeader blockHeader)
     {
-        var allReceipts = new List<TransactionReceipt>();
+        // Fast path: skip all DEX operations when no pools exist.
+        // On an idle chain this avoids allocating DexState objects, reading pool state,
+        // and running TWAP/order logic on every block.
+        var poolCheck = new DexState(stateDb);
+        if (poolCheck.GetPoolCount() == 0)
+            return s_emptyReceipts;
 
         RunTwapCarryForward(stateDb, blockHeader.Number);
 
         // Prune old TWAP snapshots to prevent unbounded storage cache growth.
-        // Each pool creates one unique storage key per block; without pruning,
-        // the flat state cache grows by (pool_count) entries every block, causing
-        // Fork() to become progressively more expensive and eventually saturate CPU.
-        var dexStateForPrune = new DexState(stateDb);
-        dexStateForPrune.PruneTwapSnapshots(blockHeader.Number);
+        poolCheck.PruneTwapSnapshots(blockHeader.Number);
 
         var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
         if (batchResults.Count == 0)
-            return allReceipts;
+            return s_emptyReceipts;
 
+        var allReceipts = new List<TransactionReceipt>();
         var emptyIntentMap = new Dictionary<Hash256, Transaction>();
         foreach (var result in batchResults)
         {

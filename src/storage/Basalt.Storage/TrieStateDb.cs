@@ -17,6 +17,13 @@ public sealed class TrieStateDb : IStateDatabase
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys = new();
     private readonly HashSet<Address> _dirtyAccounts = new();
 
+    /// <summary>
+    /// Cached state root — set after <see cref="ComputeStateRoot"/> and invalidated on any write.
+    /// Avoids expensive trie walks in <see cref="Fork"/> when the state hasn't changed
+    /// (e.g., consecutive empty blocks on an idle chain).
+    /// </summary>
+    private Hash256? _cachedStateRoot;
+
     public TrieStateDb(ITrieNodeStore nodeStore) : this(nodeStore, Hash256.Zero) { }
 
     public TrieStateDb(ITrieNodeStore nodeStore, Hash256 stateRoot)
@@ -40,6 +47,7 @@ public sealed class TrieStateDb : IStateDatabase
         var data = EncodeAccountState(state);
         _worldTrie.Put(key, data);
         _dirtyAccounts.Add(address);
+        _cachedStateRoot = null;
     }
 
     public bool AccountExists(Address address)
@@ -54,10 +62,15 @@ public sealed class TrieStateDb : IStateDatabase
         _worldTrie.Delete(key);
         _storageTries.Remove(address);
         _dirtyAccounts.Add(address);
+        _cachedStateRoot = null;
     }
 
     public Hash256 ComputeStateRoot()
     {
+        // Fast path: if no writes have occurred since last computation, return cached root.
+        if (_cachedStateRoot.HasValue)
+            return _cachedStateRoot.Value;
+
         // Flush any pending storage trie changes into account states.
         // Only write back accounts whose StorageRoot actually changed —
         // avoids unnecessary BLAKE3 rehashing of the entire trie path
@@ -81,7 +94,15 @@ public sealed class TrieStateDb : IStateDatabase
             }
         }
 
-        return _worldTrie.RootHash;
+        // Release storage trie objects after flushing their roots into account state.
+        // They hold references to trie nodes and can accumulate significant memory over
+        // thousands of blocks (TWAP snapshots create/delete storage keys every block).
+        // GetOrCreateStorageTrie will reconstruct them on-demand from the committed
+        // storage root, so clearing is always safe after flush.
+        _storageTries.Clear();
+
+        _cachedStateRoot = _worldTrie.RootHash;
+        return _cachedStateRoot.Value;
     }
 
     /// <summary>
@@ -140,6 +161,7 @@ public sealed class TrieStateDb : IStateDatabase
         key.WriteTo(storageKey);
         trie.Put(storageKey, value);
         _dirtyStorageKeys.Add((contract, key));
+        _cachedStateRoot = null;
     }
 
     public void DeleteStorage(Address contract, Hash256 key)
@@ -149,6 +171,7 @@ public sealed class TrieStateDb : IStateDatabase
         key.WriteTo(storageKey);
         trie.Delete(storageKey);
         _dirtyStorageKeys.Add((contract, key));
+        _cachedStateRoot = null;
     }
 
     public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _dirtyStorageKeys;

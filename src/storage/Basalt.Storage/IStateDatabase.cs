@@ -47,6 +47,20 @@ public interface IStateDatabase
     /// contract address) from a fork back to canonical state — including native transfer recipients.
     /// </summary>
     IReadOnlyCollection<Address> GetModifiedAccounts() => [];
+
+    /// <summary>
+    /// Clear dirty-tracking sets after block finalization to prevent unbounded memory growth.
+    /// Only meaningful on the canonical instance; forks are short-lived and discarded.
+    /// Default implementation is a no-op for implementations that don't track dirty state.
+    /// </summary>
+    void ClearDirtyTracking() { }
+
+    /// <summary>
+    /// Compact deletion guard sets to prevent unbounded memory growth.
+    /// Safe when the underlying store also reflects the deletions.
+    /// Default implementation is a no-op.
+    /// </summary>
+    void CompactDeletedSets() { }
 }
 
 /// <summary>

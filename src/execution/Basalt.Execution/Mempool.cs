@@ -174,10 +174,16 @@ public sealed class Mempool
     /// EXEC-10: Prevents nonce gap issues where a higher-nonce tx would fail execution
     /// because a required lower-nonce tx is missing from the batch.
     /// </summary>
+    private static readonly List<Transaction> s_emptyTxList = [];
+
     public List<Transaction> GetPending(int maxCount, IStateDatabase? stateDb = null)
     {
         lock (_lock)
         {
+            // Fast path: empty mempool — avoid all allocations
+            if (_orderedEntries.Count == 0)
+                return s_emptyTxList;
+
             if (stateDb == null)
             {
                 var fast = new List<Transaction>(Math.Min(maxCount, _orderedEntries.Count));
@@ -302,6 +308,9 @@ public sealed class Mempool
     {
         lock (_lock)
         {
+            if (_dexIntentEntries.Count == 0)
+                return s_emptyTxList;
+
             var result = new List<Transaction>();
             foreach (var entry in _dexIntentEntries)
             {

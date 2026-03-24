@@ -36,32 +36,35 @@ public sealed class RocksDbStore : IDisposable
     public RocksDbStore(string path)
     {
         // M12: Production-ready RocksDB options.
-        // Cap background threads at 2 compaction + 1 flush to prevent CPU saturation
-        // on small VMs. IncreaseParallelism is capped at 4 regardless of core count.
-        var parallelism = Math.Min(Environment.ProcessorCount, 4);
+        // Background threads scaled to core count to avoid saturating the machine
+        // with compaction work on idle chains.
+        var cores = Environment.ProcessorCount;
+        var compactionThreads = Math.Clamp(cores - 1, 1, 2);
         var options = new DbOptions()
             .SetCreateIfMissing(true)
             .SetCreateMissingColumnFamilies(true)
-            .SetMaxBackgroundCompactions(2)
+            .SetMaxBackgroundCompactions(compactionThreads)
             .SetMaxBackgroundFlushes(1)
-            .IncreaseParallelism(parallelism);
+            .IncreaseParallelism(Math.Min(cores, 4));
 
         // M-01: Per-CF options tuned for each access pattern.
+        // Conservative write buffer sizes to keep total memtable memory under ~320MB
+        // across all column families, leaving headroom for the application heap.
         // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
         var defaultOptions = new ColumnFamilyOptions();
 
         var pointLookupOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
-            .SetWriteBufferSize(64UL * 1024 * 1024)     // 64MB write buffer
-            .SetMaxWriteBufferNumber(3)
-            .SetTargetFileSizeBase(64UL * 1024 * 1024);  // 64MB SST files
+            .SetWriteBufferSize(16UL * 1024 * 1024)      // 16MB write buffer (was 64MB)
+            .SetMaxWriteBufferNumber(2)                    // 2 buffers (was 3)
+            .SetTargetFileSizeBase(32UL * 1024 * 1024);   // 32MB SST files (was 64MB)
 
-        // TrieNodes CF: write-heavy, point lookup — larger buffers
+        // TrieNodes CF: write-heavy, point lookup — moderate buffers
         var trieOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
-            .SetWriteBufferSize(128UL * 1024 * 1024)     // 128MB write buffer
-            .SetMaxWriteBufferNumber(4)
-            .SetTargetFileSizeBase(128UL * 1024 * 1024);  // 128MB SST files
+            .SetWriteBufferSize(32UL * 1024 * 1024)       // 32MB write buffer (was 128MB)
+            .SetMaxWriteBufferNumber(3)                     // 3 buffers (was 4)
+            .SetTargetFileSizeBase(64UL * 1024 * 1024);    // 64MB SST files (was 128MB)
 
         var cfs = new RocksDbSharp.ColumnFamilies();
         cfs.Add("default", defaultOptions);

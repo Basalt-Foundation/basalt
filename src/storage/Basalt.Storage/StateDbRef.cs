@@ -62,4 +62,8 @@ public sealed class StateDbRef : IStateDatabase
     public IReadOnlyCollection<(Address Contract, Hash256 Key)> GetModifiedStorageKeys() => _inner.GetModifiedStorageKeys();
 
     public IReadOnlyCollection<Address> GetModifiedAccounts() => _inner.GetModifiedAccounts();
+
+    public void ClearDirtyTracking() => _inner.ClearDirtyTracking();
+
+    public void CompactDeletedSets() => _inner.CompactDeletedSets();
 }

@@ -155,6 +155,15 @@ public sealed class BlockApplier
         PersistBlock(block, rawBlockData, commitBitmap);
         PersistReceipts(block.Receipts);
 
+        // Compact canonical state DB tracking sets to prevent unbounded memory growth.
+        // _dirtyStorageKeys/_dirtyAccounts are only used by fork→parent merge and grow
+        // forever on the canonical instance. _deletedStorage/_deletedAccounts are redundant
+        // after the trie's Delete() removed the keys. Without this, these HashSets accumulate
+        // entries every block (especially from TWAP snapshot writes/prunes) and eventually
+        // cause Gen 2 GC pressure → 100% CPU on long-running nodes.
+        stateDb.ClearDirtyTracking();
+        stateDb.CompactDeletedSets();
+
         // Record commit participation
         _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
 
