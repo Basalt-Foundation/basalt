@@ -19,6 +19,11 @@ public sealed class SlashingEngine
     private readonly object _historyLock = new();
 
     /// <summary>
+    /// Maximum slashing events retained in memory. Oldest events are evicted when exceeded.
+    /// </summary>
+    private const int MaxHistoryEntries = 10_000;
+
+    /// <summary>
     /// Double-sign penalty: 100% of stake.
     /// </summary>
     public const int DoubleSignPenaltyPercent = 100;
@@ -108,7 +113,13 @@ public sealed class SlashingEngine
         };
 
         lock (_historyLock)
+        {
             _slashingHistory.Add(evt);
+
+            // Evict oldest entries to prevent unbounded memory growth
+            if (_slashingHistory.Count > MaxHistoryEntries)
+                _slashingHistory.RemoveRange(0, _slashingHistory.Count - MaxHistoryEntries);
+        }
 
         var remainingStake = _stakingState.GetStakeInfo(validator)?.TotalStake ?? UInt256.Zero;
         _logger.LogWarning(

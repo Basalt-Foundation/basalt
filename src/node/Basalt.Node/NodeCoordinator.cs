@@ -511,6 +511,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         try
         {
+            // Updated bitmap for an already-finalized block (late-arriving COMMIT votes).
+            // Only update the epoch manager's record — don't re-apply the block.
+            if (blockData.Length == 0 && commitBitmap != 0)
+            {
+                _epochManager?.RecordBlockSigners(_chainManager.LatestBlockNumber, commitBitmap);
+                _blockStore?.PutCommitBitmap(_chainManager.LatestBlockNumber, commitBitmap);
+                return true;
+            }
+
             var block = BlockCodec.DeserializeBlock(blockData);
 
             // ── Race guard: if sync already applied this block, skip re-execution ──
@@ -746,6 +755,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         if (_circuitBreakerTripped) return;
 
+        // Don't propose if we're not in the active validator set (e.g. slashed/deactivated)
+        if (_validatorSet == null || !_validatorSet.IsValidator(_localPeerId))
+            return;
+
         if (!_consensus!.IsLeader || _consensus.State != ConsensusState.Proposing)
             return;
 
@@ -779,6 +792,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void TryProposeBlockPipelined()
     {
         if (_circuitBreakerTripped) return;
+
+        // Don't propose if we're not in the active validator set (e.g. slashed/deactivated)
+        if (_validatorSet == null || !_validatorSet.IsValidator(_localPeerId))
+            return;
 
         // Block time pacing
         var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
@@ -1578,6 +1595,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // M13: Update peer count metric
                 MetricsEndpoint.RecordPeerCount(connectedCount);
 
+                // Prune disconnected/expired-ban peers to prevent unbounded accumulation
+                _peerManager.PruneInactivePeers(TimeSpan.FromMinutes(5));
+
                 if (connectedCount < expectedPeerCount)
                 {
                     _logger.LogInformation("Only {Connected}/{Expected} peers connected, reconnecting...",
@@ -1907,18 +1927,27 @@ public sealed class NodeCoordinator : IAsyncDisposable
             // blocks without updating the consensus engine's _currentBlockNumber,
             // so without this restart, consensus would be stuck trying to decide a
             // block that was already applied via sync.
+            // Only restart if we're in the active validator set — deactivated nodes
+            // should follow via sync only, not waste resources running consensus rounds.
             var nextBlock = _chainManager.LatestBlockNumber + 1;
+            var isActiveValidator = _validatorSet != null && _validatorSet.IsValidator(_localPeerId);
             if (!_config.UsePipelining)
             {
                 _consensus!.StartRound(nextBlock);
-                _logger.LogInformation("Consensus restarted at block #{Block} after sync", nextBlock);
+                if (isActiveValidator)
+                    _logger.LogInformation("Consensus restarted at block #{Block} after sync", nextBlock);
+                else
+                    _logger.LogDebug("Sync complete at block #{Block} (not in active validator set)", nextBlock - 1);
             }
             else
             {
                 // Pipelined consensus tracks _lastFinalizedBlock internally.
                 // Clear stale rounds and let the pipeline restart from current height.
                 _pipelinedConsensus!.UpdateLastFinalizedBlock(_chainManager.LatestBlockNumber);
-                _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
+                if (isActiveValidator)
+                    _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
+                else
+                    _logger.LogDebug("Sync complete at block #{Block} (not in active validator set)", _chainManager.LatestBlockNumber);
             }
         }
     }

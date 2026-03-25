@@ -43,6 +43,12 @@ public sealed class BasaltBft
     private readonly TimeSpan _viewTimeout;
     private ulong? _viewChangeRequestedForView;
 
+    // Commit bitmap tracking: when a late-arriving COMMIT vote arrives after quorum was
+    // already reached, we re-broadcast an updated aggregate with the fuller bitmap so that
+    // all validators' participation is recorded for inactivity slashing.
+    private ulong _lastCommitBitmap;
+    private Hash256 _lastCommitBlockHash;
+
     // Callbacks
     // Events raised during consensus - consumed by the node integration layer
 #pragma warning disable CS0067
@@ -556,10 +562,29 @@ public sealed class BasaltBft
                 // Build and broadcast aggregate COMMIT QC
                 var aggregate = BuildAggregateVote(view, blockHash, VotePhase.Commit);
                 if (aggregate != null)
+                {
+                    _lastCommitBitmap = aggregate.VoterBitmap;
+                    _lastCommitBlockHash = blockHash;
                     OnAggregateVote?.Invoke(aggregate);
+                }
 
                 OnBlockFinalized?.Invoke(blockHash, _currentProposalData ?? [], aggregate?.VoterBitmap ?? 0UL);
                 return null;
+            }
+
+            // Late-arriving COMMIT vote after quorum was already reached.
+            // Rebuild the aggregate with the additional signature so that the updated
+            // bitmap (with better validator participation) is broadcast to all peers.
+            // This prevents systematic inactivity slashing of validators whose votes
+            // arrive slightly after the quorum-triggering vote due to thread scheduling.
+            if (_state == ConsensusState.Finalized && votes.Count > _validatorSet.QuorumThreshold)
+            {
+                var updatedAggregate = BuildAggregateVote(view, blockHash, VotePhase.Commit);
+                if (updatedAggregate != null && updatedAggregate.VoterBitmap != _lastCommitBitmap)
+                {
+                    _lastCommitBitmap = updatedAggregate.VoterBitmap;
+                    OnAggregateVote?.Invoke(updatedAggregate);
+                }
             }
         }
 
@@ -721,13 +746,30 @@ public sealed class BasaltBft
 
     private ConsensusVoteMessage? HandleCommitQC(AggregateVoteMessage aggregate)
     {
-        if (_state != ConsensusState.Committing)
+        if (_state == ConsensusState.Committing)
+        {
+            _state = ConsensusState.Finalized;
+            _lastCommitBitmap = aggregate.VoterBitmap;
+            _lastCommitBlockHash = aggregate.BlockHash;
+            _logger.LogInformation("COMMIT QC received — block {Hash} finalized at height {Height}",
+                aggregate.BlockHash, _currentBlockNumber);
+            OnBlockFinalized?.Invoke(aggregate.BlockHash, _currentProposalData ?? [], aggregate.VoterBitmap);
             return null;
+        }
 
-        _state = ConsensusState.Finalized;
-        _logger.LogInformation("COMMIT QC received — block {Hash} finalized at height {Height}",
-            aggregate.BlockHash, _currentBlockNumber);
-        OnBlockFinalized?.Invoke(aggregate.BlockHash, _currentProposalData ?? [], aggregate.VoterBitmap);
+        // Accept updated COMMIT aggregate with a fuller bitmap (more validator participation)
+        // after we've already finalized. This happens when the leader re-broadcasts an updated
+        // aggregate after collecting late-arriving votes.
+        if (_state == ConsensusState.Finalized
+            && aggregate.BlockHash == _lastCommitBlockHash
+            && aggregate.VoterBitmap != _lastCommitBitmap
+            && System.Numerics.BitOperations.PopCount(aggregate.VoterBitmap) > System.Numerics.BitOperations.PopCount(_lastCommitBitmap))
+        {
+            _lastCommitBitmap = aggregate.VoterBitmap;
+            // Re-fire with updated bitmap so the node records the fuller participation
+            OnBlockFinalized?.Invoke(aggregate.BlockHash, [], aggregate.VoterBitmap);
+        }
+
         return null;
     }
 

@@ -164,6 +164,9 @@ public sealed class BlockApplier
         stateDb.ClearDirtyTracking();
         stateDb.CompactDeletedSets();
 
+        // Process completed unbonding entries to prevent queue growth
+        _stakingState?.ProcessUnbonding(block.Number);
+
         // Record commit participation
         _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
 
@@ -263,6 +266,12 @@ public sealed class BlockApplier
         var newlyApplied = applied - skippedAsAlreadyApplied;
         if (applied == blocks.Count && newlyApplied > 0)
         {
+            // Compact tracking sets on the fork before it becomes canonical.
+            // Without this, _dirtyStorageKeys/_deletedStorage accumulate on
+            // sync-only nodes (which never call ApplyBlock's cleanup path).
+            forkedState.ClearDirtyTracking();
+            forkedState.CompactDeletedSets();
+
             stateDbRef.Swap(forkedState);
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}",
                 newlyApplied, _chainManager.LatestBlockNumber);

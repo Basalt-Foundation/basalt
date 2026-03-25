@@ -180,9 +180,10 @@ public class BasaltBftTests
         foreach (var vote in commitVotes)
             bfts[leaderIndex].HandleVote(vote);
 
-        // Leader should have finalized and built a COMMIT aggregate QC
-        aggregates.Should().ContainSingle(a => a.Phase == VotePhase.Commit);
-        var commitQC = aggregates.First(a => a.Phase == VotePhase.Commit);
+        // Leader should have finalized and built a COMMIT aggregate QC.
+        // May contain an updated aggregate if late-arriving votes improved the bitmap.
+        aggregates.Should().Contain(a => a.Phase == VotePhase.Commit);
+        var commitQC = aggregates.Last(a => a.Phase == VotePhase.Commit);
         bfts[leaderIndex].State.Should().Be(ConsensusState.Finalized);
 
         // Non-leaders receive COMMIT QC and finalize

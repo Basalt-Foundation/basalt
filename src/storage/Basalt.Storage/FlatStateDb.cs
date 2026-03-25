@@ -394,30 +394,35 @@ public sealed class FlatStateDb : IStateDatabase
     }
 
     /// <summary>
-    /// Log a warning if either cache exceeds the size threshold.
-    /// This is a monitoring aid — no eviction is performed.
+    /// Hard cap for storage cache entries. When exceeded, the cache is cleared to prevent
+    /// unbounded memory growth on long-running nodes. Reads will repopulate from the trie
+    /// on demand. The threshold is set high enough to avoid impacting normal block processing.
+    /// </summary>
+    private const int MaxStorageCacheEntries = 500_000;
+
+    /// <summary>
+    /// Check cache size and evict if the storage cache exceeds the hard cap.
+    /// Without eviction, _storageCache grows monotonically (entries are added on every
+    /// read miss and write but only removed on delete) causing unbounded RAM growth.
     /// </summary>
     private void CheckCacheSize()
     {
-        if (_logger == null) return;
-
-        int accountCount = _accountCache.Count;
         int storageCount = _storageCache.Count;
 
-        if (accountCount > CacheSizeWarningThreshold)
+        if (storageCount > MaxStorageCacheEntries)
         {
-            _logger.LogWarning(
-                "FlatStateDb account cache size ({Count}) exceeds warning threshold ({Threshold}). " +
-                "Consider implementing cache eviction or increasing available memory.",
-                accountCount, CacheSizeWarningThreshold);
+            _storageCache.Clear();
+            _storageSlotsIndex.Clear();
+            _logger?.LogInformation(
+                "FlatStateDb storage cache evicted ({Count} entries exceeded {Max} cap). " +
+                "Reads will repopulate from trie on demand.",
+                storageCount, MaxStorageCacheEntries);
         }
-
-        if (storageCount > CacheSizeWarningThreshold)
+        else if (_logger != null && storageCount > CacheSizeWarningThreshold)
         {
             _logger.LogWarning(
-                "FlatStateDb storage cache size ({Count}) exceeds warning threshold ({Threshold}). " +
-                "Consider implementing cache eviction or increasing available memory.",
-                storageCount, CacheSizeWarningThreshold);
+                "FlatStateDb storage cache size ({Count}) approaching eviction threshold ({Max})",
+                storageCount, MaxStorageCacheEntries);
         }
     }
 }

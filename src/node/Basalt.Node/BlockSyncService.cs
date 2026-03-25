@@ -35,6 +35,7 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
     private int _syncLag;
     private int _backoffMs = 1000;
     private const int MaxBackoffMs = 30_000;
+    private const int MinPollDelayMs = 500; // Minimum delay between sync polls to reduce pressure on source
     private const int MaxForkSearchDepth = 1000;
     private int _consecutiveForkFailures;
 
@@ -148,6 +149,9 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
                     _logger.LogInformation(
                         "Synced {Count} blocks from source, now at #{Height} (lag: {Lag})",
                         applied, newLocalTip, SyncLag);
+
+                    // Throttle sync polls to avoid hammering the source when catching up
+                    await Task.Delay(MinPollDelayMs, ct);
                 }
                 else
                 {
