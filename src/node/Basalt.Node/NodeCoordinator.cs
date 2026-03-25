@@ -1632,8 +1632,32 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private async Task RunConsensusLoop(CancellationToken ct)
     {
-        // Wait for peers to connect
-        await Task.Delay(2000, ct);
+        // Wait for all validator identities to be resolved via handshake before entering
+        // consensus. Without this, a leader whose validator set still has placeholder BLS
+        // keys will silently drop votes from unresolved peers, causing those peers to miss
+        // the commit bitmap. Different leaders may have different placeholder states, leading
+        // to divergent inactivity slashing calculations at epoch boundaries — a fatal
+        // consistency violation that permanently splits the network.
+        var expectedPeers = _config.Peers.Length;
+        for (int wait = 0; wait < 30; wait++) // Up to 15 seconds
+        {
+            await Task.Delay(500, ct);
+            var resolvedCount = 0;
+            foreach (var v in _validatorSet!.Validators)
+            {
+                // A placeholder PeerId won't match any real connection
+                if (_peerManager!.GetPeer(v.PeerId) != null || v.PeerId == _localPeerId)
+                    resolvedCount++;
+            }
+            if (resolvedCount >= _validatorSet.Count)
+            {
+                _logger.LogInformation("All {Count} validator identities resolved, starting consensus", resolvedCount);
+                break;
+            }
+            if (wait % 4 == 3)
+                _logger.LogInformation("Waiting for validator identities: {Resolved}/{Total} resolved",
+                    resolvedCount, _validatorSet.Count);
+        }
 
         // Retry initial sync until caught up or no peers are ahead.
         // A single sync attempt can fail mid-way due to peer disconnects.

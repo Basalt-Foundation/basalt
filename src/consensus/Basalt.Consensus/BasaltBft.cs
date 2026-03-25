@@ -322,7 +322,11 @@ public sealed class BasaltBft
         // validator's SenderId, causing aggregate QC verification to fail and stalling finalization.
         var voteVInfo = _validatorSet.GetByPeerId(vote.SenderId);
         if (voteVInfo == null || !voteVInfo.BlsPublicKeyBytes.AsSpan().SequenceEqual(vote.VoterPublicKey.ToArray()))
+        {
+            _logger.LogWarning("Vote from {Sender} dropped: BLS key mismatch (identity not yet resolved via handshake?)",
+                vote.SenderId);
             return null;
+        }
 
         // F-CON-02: Verify vote is for the correct block hash
         if (vote.BlockHash != _currentProposalHash)
