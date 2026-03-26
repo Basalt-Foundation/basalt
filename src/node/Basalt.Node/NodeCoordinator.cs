@@ -465,9 +465,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         _consensus.OnBehindDetected += (blockNumber) =>
         {
-            _logger.LogWarning("Consensus detected we are behind (need block #{Block}). Triggering sync.",
-                blockNumber);
-            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            // Only sync when >1 block behind. A 1-block gap resolves via normal consensus
+            // flow (the leader's aggregate QC finalizes the block). Syncing for 1-block gaps
+            // wastes CPU on Fork+ComputeStateRoot.
+            var gap = blockNumber - _chainManager.LatestBlockNumber;
+            if (gap > 1)
+            {
+                _logger.LogWarning("Consensus detected we are behind (need block #{Block}, gap={Gap}). Triggering sync.",
+                    blockNumber, gap);
+                _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            }
         };
 
         _logger.LogInformation("Consensus: sequential mode (BasaltBft)");
@@ -499,9 +506,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         _pipelinedConsensus.OnBehindDetected += (blockNumber) =>
         {
-            _logger.LogWarning("Pipelined consensus detected we are behind (need block #{Block}). Triggering sync.",
-                blockNumber);
-            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            var gap = blockNumber - _chainManager.LatestBlockNumber;
+            if (gap > 1)
+            {
+                _logger.LogWarning("Pipelined consensus detected we are behind (need block #{Block}, gap={Gap}). Triggering sync.",
+                    blockNumber, gap);
+                _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            }
         };
 
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
@@ -1251,10 +1262,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         _peerManager!.UpdatePeerBestBlock(sender, announce.BlockNumber, announce.BlockHash);
 
-        // If we're behind, trigger a full sync.  Previously this sent a BlockRequestMessage,
-        // but the BlockPayloadMessage response was rejected by the N-04 anti-injection guard
-        // when not in sync mode, causing validators to get permanently stuck after falling behind.
-        if (announce.BlockNumber > _chainManager.LatestBlockNumber)
+        // Only trigger sync when meaningfully behind (>1 block). A 1-block gap is normal —
+        // it means the peer finalized the block slightly before us. Consensus will finalize
+        // it within ~1 second. Triggering sync for a 1-block gap causes expensive unnecessary
+        // work: Fork() computes Merkle state root, TCP round-trip fetches the block, ApplyBatch
+        // creates a fork state, and by the time it arrives consensus has already finalized it.
+        // With 3 peers broadcasting every block, this wastes ~3 Fork+ComputeStateRoot per block
+        // per node, saturating CPU on idle chains.
+        var gap = announce.BlockNumber - _chainManager.LatestBlockNumber;
+        if (gap > 1)
         {
             _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
         }
