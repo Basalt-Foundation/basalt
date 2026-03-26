@@ -326,6 +326,9 @@ public sealed class FlatStateDb : IStateDatabase
     {
         _dirtyStorageKeys.Clear();
         _dirtyAccounts.Clear();
+        // Also clear the underlying TrieStateDb's tracking sets, which have their own
+        // _dirtyStorageKeys/_dirtyAccounts that grow independently.
+        _trie.ClearDirtyTracking();
     }
 
     /// <summary>

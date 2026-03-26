@@ -179,6 +179,18 @@ public sealed class TrieStateDb : IStateDatabase
     public IReadOnlyCollection<Address> GetModifiedAccounts() => _dirtyAccounts;
 
     /// <summary>
+    /// Clear dirty tracking sets to prevent unbounded growth on the canonical instance.
+    /// Without this, _dirtyStorageKeys and _dirtyAccounts accumulate one entry per
+    /// storage write / account modification per block — growing forever and causing
+    /// GC pressure that degrades to 100% CPU after hours of operation.
+    /// </summary>
+    public void ClearDirtyTracking()
+    {
+        _dirtyStorageKeys.Clear();
+        _dirtyAccounts.Clear();
+    }
+
+    /// <summary>
     /// Generate a Merkle proof for an account.
     /// </summary>
     public MerkleProof? GenerateAccountProof(Address address)
