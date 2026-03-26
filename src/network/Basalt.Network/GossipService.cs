@@ -99,7 +99,8 @@ public sealed class GossipService
             return;
         MarkMessageSeen(msgId);
 
-        BroadcastToAll(message, null);
+        // Reuse already-serialized bytes instead of serializing again in BroadcastToAll
+        BroadcastRawToAll(serialized, null);
     }
 
     /// <summary>
@@ -169,8 +170,16 @@ public sealed class GossipService
     /// </summary>
     private void BroadcastToAll(NetworkMessage message, PeerId? excludePeer)
     {
+        BroadcastRawToAll(SerializeMessage(message), excludePeer);
+    }
+
+    /// <summary>
+    /// Broadcast pre-serialized bytes to connected peers with fan-out limit.
+    /// Avoids re-serializing when the caller already has the wire bytes (e.g. dedup path).
+    /// </summary>
+    private void BroadcastRawToAll(byte[] data, PeerId? excludePeer)
+    {
         var allPeers = _peerManager.ConnectedPeers;
-        var data = SerializeMessage(message);
 
         // Filter out the excluded peer
         var eligible = new List<PeerInfo>();
