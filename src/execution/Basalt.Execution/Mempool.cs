@@ -385,6 +385,11 @@ public sealed class Mempool
     /// </summary>
     public int PruneStale(IStateDatabase stateDb, UInt256 baseFee)
     {
+        // Fast path: skip when mempool is empty (common on idle chains).
+        // Avoids lock acquisition, list allocation, and trie reads.
+        if (_transactions.Count == 0 && _dexIntentTransactions.Count == 0)
+            return 0;
+
         var toRemove = new List<Hash256>();
         var toRemoveIntents = new List<Hash256>();
         lock (_lock)

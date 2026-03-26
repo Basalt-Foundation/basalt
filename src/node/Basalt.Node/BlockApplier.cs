@@ -197,6 +197,39 @@ public sealed class BlockApplier
         if (blocks.Count == 0)
             return 0;
 
+        // Fast path: if the first block is already applied by consensus, check if ALL
+        // are already applied. This avoids the expensive Fork() → ComputeStateRoot() call
+        // that otherwise runs on every sync attempt even when consensus already finalized
+        // these blocks. On a 4-validator idle chain, this saves ~3 Merkle trie rehashes
+        // per block per node.
+        var firstBlock = blocks[0].Block;
+        if (firstBlock.Number <= _chainManager.LatestBlockNumber)
+        {
+            var allAlreadyApplied = true;
+            foreach (var (block, raw, bitmap) in blocks)
+            {
+                var existing = _chainManager.GetBlockByNumber(block.Number);
+                if (existing == null || existing.Hash != block.Hash)
+                {
+                    allAlreadyApplied = false;
+                    break;
+                }
+            }
+
+            if (allAlreadyApplied)
+            {
+                // Still record epoch data for these blocks
+                foreach (var (block, _, bitmap) in blocks)
+                {
+                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
+                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                    if (newSet != null)
+                        ApplyEpochTransition(newSet, block.Number);
+                }
+                return blocks.Count;
+            }
+        }
+
         var forkedState = stateDbRef.Fork();
         var applied = 0;
 
