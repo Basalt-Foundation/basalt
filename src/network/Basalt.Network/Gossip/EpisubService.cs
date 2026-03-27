@@ -73,6 +73,12 @@ public sealed class EpisubService
             if (Interlocked.CompareExchange(ref _cleanupRunning, 1, 0) != 0)
                 return;
             try { CleanupSeenMessages(); }
+            catch (Exception ex)
+            {
+                // Swallow to prevent process termination from unhandled ThreadPool exception.
+                // Timer will retry in 30 seconds.
+                _logger.LogWarning(ex, "Error during Episub message cache cleanup");
+            }
             finally { Interlocked.Exchange(ref _cleanupRunning, 0); }
         }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }

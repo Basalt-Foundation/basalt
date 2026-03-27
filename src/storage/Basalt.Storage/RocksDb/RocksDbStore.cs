@@ -51,20 +51,41 @@ public sealed class RocksDbStore : IDisposable
         // Conservative write buffer sizes to keep total memtable memory under ~320MB
         // across all column families, leaving headroom for the application heap.
         // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
-        var defaultOptions = new ColumnFamilyOptions();
+
+        // Shared LRU block cache across all column families.
+        // Without this, RocksDB creates an unbounded per-CF cache whose native memory
+        // grows proportionally to on-disk data (SST index/filter blocks, data blocks).
+        var blockCache = RocksDbSharp.Native.Instance.rocksdb_cache_create_lru(new UIntPtr(64 * 1024 * 1024)); // 64 MB shared
+
+        var defaultTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
+
+        var defaultOptions = new ColumnFamilyOptions()
+            .SetBlockBasedTableFactory(defaultTableOptions);
+
+        var pointLookupTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
 
         var pointLookupOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
             .SetWriteBufferSize(16UL * 1024 * 1024)      // 16MB write buffer (was 64MB)
             .SetMaxWriteBufferNumber(2)                    // 2 buffers (was 3)
-            .SetTargetFileSizeBase(32UL * 1024 * 1024);   // 32MB SST files (was 64MB)
+            .SetTargetFileSizeBase(32UL * 1024 * 1024)    // 32MB SST files (was 64MB)
+            .SetBlockBasedTableFactory(pointLookupTableOptions);
 
         // TrieNodes CF: write-heavy, point lookup — moderate buffers
+        var trieTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
+
         var trieOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
             .SetWriteBufferSize(32UL * 1024 * 1024)       // 32MB write buffer (was 128MB)
             .SetMaxWriteBufferNumber(3)                     // 3 buffers (was 4)
-            .SetTargetFileSizeBase(64UL * 1024 * 1024);    // 64MB SST files (was 128MB)
+            .SetTargetFileSizeBase(64UL * 1024 * 1024)     // 64MB SST files (was 128MB)
+            .SetBlockBasedTableFactory(trieTableOptions);
 
         var cfs = new RocksDbSharp.ColumnFamilies();
         cfs.Add("default", defaultOptions);

@@ -1642,6 +1642,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in reconnection loop");
+                // Prevent tight spin on persistent errors (e.g., socket exhaustion)
+                try { await Task.Delay(baseDelayMs, ct); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }

@@ -380,6 +380,8 @@ public sealed class TcpTransport : IAsyncDisposable
             catch (SocketException ex)
             {
                 _logger.LogError(ex, "Error accepting TCP connection");
+                // Prevent tight spin on persistent listener errors (e.g., EMFILE)
+                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
