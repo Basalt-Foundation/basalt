@@ -11,6 +11,7 @@ public sealed class RocksDbStore : IDisposable
 {
     private readonly RocksDbSharp.RocksDb _db;
     private readonly Dictionary<string, ColumnFamilyHandle> _columnFamilies;
+    private readonly IntPtr _blockCache;
 
     /// <summary>
     /// Column family names.
@@ -55,17 +56,17 @@ public sealed class RocksDbStore : IDisposable
         // Shared LRU block cache across all column families.
         // Without this, RocksDB creates an unbounded per-CF cache whose native memory
         // grows proportionally to on-disk data (SST index/filter blocks, data blocks).
-        var blockCache = RocksDbSharp.Native.Instance.rocksdb_cache_create_lru(new UIntPtr(64 * 1024 * 1024)); // 64 MB shared
+        _blockCache = RocksDbSharp.Native.Instance.rocksdb_cache_create_lru(new UIntPtr(64 * 1024 * 1024)); // 64 MB shared
 
         var defaultTableOptions = new BlockBasedTableOptions()
-            .SetBlockCache(blockCache)
+            .SetBlockCache(_blockCache)
             .SetCacheIndexAndFilterBlocks(true);
 
         var defaultOptions = new ColumnFamilyOptions()
             .SetBlockBasedTableFactory(defaultTableOptions);
 
         var pointLookupTableOptions = new BlockBasedTableOptions()
-            .SetBlockCache(blockCache)
+            .SetBlockCache(_blockCache)
             .SetCacheIndexAndFilterBlocks(true);
 
         var pointLookupOptions = new ColumnFamilyOptions()
@@ -77,7 +78,7 @@ public sealed class RocksDbStore : IDisposable
 
         // TrieNodes CF: write-heavy, point lookup — moderate buffers
         var trieTableOptions = new BlockBasedTableOptions()
-            .SetBlockCache(blockCache)
+            .SetBlockCache(_blockCache)
             .SetCacheIndexAndFilterBlocks(true);
 
         var trieOptions = new ColumnFamilyOptions()
@@ -189,6 +190,8 @@ public sealed class RocksDbStore : IDisposable
     public void Dispose()
     {
         _db.Dispose();
+        if (_blockCache != IntPtr.Zero)
+            RocksDbSharp.Native.Instance.rocksdb_cache_destroy(_blockCache);
     }
 }
 

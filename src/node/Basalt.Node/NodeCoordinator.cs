@@ -248,6 +248,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
         if (_transport != null)
             await _transport.DisposeAsync();
 
+        _episub?.Dispose();
+
         _logger.LogInformation("Node coordinator stopped.");
     }
 
@@ -1657,7 +1659,6 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // the commit bitmap. Different leaders may have different placeholder states, leading
         // to divergent inactivity slashing calculations at epoch boundaries — a fatal
         // consistency violation that permanently splits the network.
-        var expectedPeers = _config.Peers.Length;
         for (int wait = 0; wait < 30; wait++) // Up to 15 seconds
         {
             await Task.Delay(500, ct);

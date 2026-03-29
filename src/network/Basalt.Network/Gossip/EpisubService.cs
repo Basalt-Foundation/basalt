@@ -9,7 +9,7 @@ namespace Basalt.Network.Gossip;
 /// Priority tier: Eager push for high-priority messages (consensus, priority txs) - target &lt;200ms.
 /// Standard tier: Lazy IHAVE/IWANT for standard txs and blocks - target &lt;600ms.
 /// </summary>
-public sealed class EpisubService
+public sealed class EpisubService : IDisposable
 {
     private readonly PeerManager _peerManager;
     private readonly ILogger<EpisubService> _logger;
@@ -525,5 +525,11 @@ public sealed class EpisubService
     private static byte[] SerializeMessage(NetworkMessage message)
     {
         return MessageCodec.Serialize(message);
+    }
+
+    public void Dispose()
+    {
+        _cleanupTimer?.Dispose();
+        _cleanupTimer = null;
     }
 }

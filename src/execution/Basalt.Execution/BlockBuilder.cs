@@ -568,8 +568,6 @@ public sealed class BlockBuilder
     /// on the given state database. Called during block finalization and sync to ensure canonical
     /// state reflects DEX activity.
     /// </summary>
-    private static readonly List<TransactionReceipt> s_emptyReceipts = [];
-
     public List<TransactionReceipt> ApplyDexSettlement(IStateDatabase stateDb, BlockHeader blockHeader)
     {
         // Fast path: skip all DEX operations when no pools exist.
@@ -577,7 +575,7 @@ public sealed class BlockBuilder
         // and running TWAP/order logic on every block.
         var poolCheck = new DexState(stateDb);
         if (poolCheck.GetPoolCount() == 0)
-            return s_emptyReceipts;
+            return [];
 
         RunTwapCarryForward(stateDb, blockHeader.Number);
 
@@ -586,7 +584,7 @@ public sealed class BlockBuilder
 
         var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
         if (batchResults.Count == 0)
-            return s_emptyReceipts;
+            return [];
 
         var allReceipts = new List<TransactionReceipt>();
         var emptyIntentMap = new Dictionary<Hash256, Transaction>();
