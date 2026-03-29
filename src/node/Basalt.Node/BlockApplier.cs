@@ -155,6 +155,18 @@ public sealed class BlockApplier
         PersistBlock(block, rawBlockData, commitBitmap);
         PersistReceipts(block.Receipts);
 
+        // Compact canonical state DB tracking sets to prevent unbounded memory growth.
+        // _dirtyStorageKeys/_dirtyAccounts are only used by fork→parent merge and grow
+        // forever on the canonical instance. _deletedStorage/_deletedAccounts are redundant
+        // after the trie's Delete() removed the keys. Without this, these HashSets accumulate
+        // entries every block (especially from TWAP snapshot writes/prunes) and eventually
+        // cause Gen 2 GC pressure → 100% CPU on long-running nodes.
+        stateDb.ClearDirtyTracking();
+        stateDb.CompactDeletedSets();
+
+        // Process completed unbonding entries to prevent queue growth
+        _stakingState?.ProcessUnbonding(block.Number);
+
         // Record commit participation
         _epochManager?.RecordBlockSigners(block.Number, commitBitmap);
 
@@ -184,6 +196,39 @@ public sealed class BlockApplier
     {
         if (blocks.Count == 0)
             return 0;
+
+        // Fast path: if the first block is already applied by consensus, check if ALL
+        // are already applied. This avoids the expensive Fork() → ComputeStateRoot() call
+        // that otherwise runs on every sync attempt even when consensus already finalized
+        // these blocks. On a 4-validator idle chain, this saves ~3 Merkle trie rehashes
+        // per block per node.
+        var firstBlock = blocks[0].Block;
+        if (firstBlock.Number <= _chainManager.LatestBlockNumber)
+        {
+            var allAlreadyApplied = true;
+            foreach (var (block, raw, bitmap) in blocks)
+            {
+                var existing = _chainManager.GetBlockByNumber(block.Number);
+                if (existing == null || existing.Hash != block.Hash)
+                {
+                    allAlreadyApplied = false;
+                    break;
+                }
+            }
+
+            if (allAlreadyApplied)
+            {
+                // Still record epoch data for these blocks
+                foreach (var (block, _, bitmap) in blocks)
+                {
+                    _epochManager?.RecordBlockSigners(block.Number, bitmap);
+                    var newSet = _epochManager?.OnBlockFinalized(block.Number);
+                    if (newSet != null)
+                        ApplyEpochTransition(newSet, block.Number);
+                }
+                return blocks.Count;
+            }
+        }
 
         var forkedState = stateDbRef.Fork();
         var applied = 0;
@@ -254,6 +299,12 @@ public sealed class BlockApplier
         var newlyApplied = applied - skippedAsAlreadyApplied;
         if (applied == blocks.Count && newlyApplied > 0)
         {
+            // Compact tracking sets on the fork before it becomes canonical.
+            // Without this, _dirtyStorageKeys/_deletedStorage accumulate on
+            // sync-only nodes (which never call ApplyBlock's cleanup path).
+            forkedState.ClearDirtyTracking();
+            forkedState.CompactDeletedSets();
+
             stateDbRef.Swap(forkedState);
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}",
                 newlyApplied, _chainManager.LatestBlockNumber);

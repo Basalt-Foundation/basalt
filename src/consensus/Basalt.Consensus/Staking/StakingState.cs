@@ -52,6 +52,7 @@ public sealed class StakingState : IStakingState
 
     /// <summary>
     /// Add stake to an existing validator.
+    /// Re-activates the validator if TotalStake reaches MinValidatorStake after the addition.
     /// </summary>
     public StakingResult AddStake(Address validatorAddress, UInt256 amount)
     {
@@ -62,6 +63,11 @@ public sealed class StakingState : IStakingState
 
             info.SelfStake += amount;
             info.TotalStake += amount;
+
+            // Re-activate if stake recovered above minimum (e.g. after inactivity slashing)
+            if (!info.IsActive && info.TotalStake >= MinValidatorStake)
+                info.IsActive = true;
+
             return StakingResult.Ok();
         }
     }

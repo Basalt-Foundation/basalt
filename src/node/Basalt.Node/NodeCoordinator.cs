@@ -133,6 +133,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private long _circuitBreakerTrippedAtMs;
     private const long CircuitBreakerCooldownMs = 30_000; // Auto-reset after 30s
 
+    // Sync cooldown: prevent fire-and-forget Task.Run spam from the consensus loop
+    private long _lastSyncAttemptMs;
+
     // Fork detection: binary search for fork point
     private (ulong RequestedBlock, TaskCompletionSource<(Hash256 Hash, bool HasBlock)> Tcs)? _forkHashPending;
     private const int MaxRollbackDepth = 1000;
@@ -244,6 +247,8 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         if (_transport != null)
             await _transport.DisposeAsync();
+
+        _episub?.Dispose();
 
         _logger.LogInformation("Node coordinator stopped.");
     }
@@ -462,9 +467,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         _consensus.OnBehindDetected += (blockNumber) =>
         {
-            _logger.LogWarning("Consensus detected we are behind (need block #{Block}). Triggering sync.",
-                blockNumber);
-            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            // Only sync when >1 block behind. A 1-block gap resolves via normal consensus
+            // flow (the leader's aggregate QC finalizes the block). Syncing for 1-block gaps
+            // wastes CPU on Fork+ComputeStateRoot.
+            var gap = blockNumber - _chainManager.LatestBlockNumber;
+            if (gap > 1)
+            {
+                _logger.LogWarning("Consensus detected we are behind (need block #{Block}, gap={Gap}). Triggering sync.",
+                    blockNumber, gap);
+                _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            }
         };
 
         _logger.LogInformation("Consensus: sequential mode (BasaltBft)");
@@ -496,9 +508,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         _pipelinedConsensus.OnBehindDetected += (blockNumber) =>
         {
-            _logger.LogWarning("Pipelined consensus detected we are behind (need block #{Block}). Triggering sync.",
-                blockNumber);
-            _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            var gap = blockNumber - _chainManager.LatestBlockNumber;
+            if (gap > 1)
+            {
+                _logger.LogWarning("Pipelined consensus detected we are behind (need block #{Block}, gap={Gap}). Triggering sync.",
+                    blockNumber, gap);
+                _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
+            }
         };
 
         _logger.LogInformation("Consensus: pipelined mode (PipelinedConsensus)");
@@ -508,6 +524,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         try
         {
+            // Updated bitmap for an already-finalized block (late-arriving COMMIT votes).
+            // Only update the epoch manager's record — don't re-apply the block.
+            if (blockData.Length == 0 && commitBitmap != 0)
+            {
+                _epochManager?.RecordBlockSigners(_chainManager.LatestBlockNumber, commitBitmap);
+                _blockStore?.PutCommitBitmap(_chainManager.LatestBlockNumber, commitBitmap);
+                return true;
+            }
+
             var block = BlockCodec.DeserializeBlock(blockData);
 
             // ── Race guard: if sync already applied this block, skip re-execution ──
@@ -597,7 +622,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 {
                     var currentView = block.Number;
                     var cutoff = currentView > 10 ? currentView - 10 : 0;
-                    foreach (var key in _proposalsByView.Keys.ToArray())
+                    foreach (var key in _proposalsByView.Keys)
                     {
                         if (key.View < cutoff)
                             _proposalsByView.TryRemove(key, out _);
@@ -709,7 +734,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // N-10: Sliding window — retain evidence for last 10 views on epoch transition
             var cutoff = blockNumber > 10 ? blockNumber - 10 : 0;
-            foreach (var key in _proposalsByView.Keys.ToArray())
+            foreach (var key in _proposalsByView.Keys)
             {
                 if (key.View < cutoff)
                     _proposalsByView.TryRemove(key, out _);
@@ -742,6 +767,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void TryProposeBlockSequential()
     {
         if (_circuitBreakerTripped) return;
+
+        // Don't propose if we're not in the active validator set (e.g. slashed/deactivated)
+        if (_validatorSet == null || !_validatorSet.IsValidator(_localPeerId))
+            return;
 
         if (!_consensus!.IsLeader || _consensus.State != ConsensusState.Proposing)
             return;
@@ -776,6 +805,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private void TryProposeBlockPipelined()
     {
         if (_circuitBreakerTripped) return;
+
+        // Don't propose if we're not in the active validator set (e.g. slashed/deactivated)
+        if (_validatorSet == null || !_validatorSet.IsValidator(_localPeerId))
+            return;
 
         // Block time pacing
         var elapsedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Volatile.Read(ref _lastBlockFinalizedAtMs);
@@ -1231,10 +1264,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
     {
         _peerManager!.UpdatePeerBestBlock(sender, announce.BlockNumber, announce.BlockHash);
 
-        // If we're behind, trigger a full sync.  Previously this sent a BlockRequestMessage,
-        // but the BlockPayloadMessage response was rejected by the N-04 anti-injection guard
-        // when not in sync mode, causing validators to get permanently stuck after falling behind.
-        if (announce.BlockNumber > _chainManager.LatestBlockNumber)
+        // Only trigger sync when meaningfully behind (>1 block). A 1-block gap is normal —
+        // it means the peer finalized the block slightly before us. Consensus will finalize
+        // it within ~1 second. Triggering sync for a 1-block gap causes expensive unnecessary
+        // work: Fork() computes Merkle state root, TCP round-trip fetches the block, ApplyBatch
+        // creates a fork state, and by the time it arrives consensus has already finalized it.
+        // With 3 peers broadcasting every block, this wastes ~3 Fork+ComputeStateRoot per block
+        // per node, saturating CPU on idle chains.
+        var gap = announce.BlockNumber - _chainManager.LatestBlockNumber;
+        if (gap > 1)
         {
             _ = Task.Run(() => TrySyncFromPeers(_cts?.Token ?? CancellationToken.None));
         }
@@ -1575,6 +1613,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // M13: Update peer count metric
                 MetricsEndpoint.RecordPeerCount(connectedCount);
 
+                // Prune disconnected/expired-ban peers to prevent unbounded accumulation
+                _peerManager.PruneInactivePeers(TimeSpan.FromMinutes(5));
+
                 if (connectedCount < expectedPeerCount)
                 {
                     _logger.LogInformation("Only {Connected}/{Expected} peers connected, reconnecting...",
@@ -1603,14 +1644,40 @@ public sealed class NodeCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in reconnection loop");
+                // Prevent tight spin on persistent errors (e.g., socket exhaustion)
+                try { await Task.Delay(baseDelayMs, ct); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }
 
     private async Task RunConsensusLoop(CancellationToken ct)
     {
-        // Wait for peers to connect
-        await Task.Delay(2000, ct);
+        // Wait for all validator identities to be resolved via handshake before entering
+        // consensus. Without this, a leader whose validator set still has placeholder BLS
+        // keys will silently drop votes from unresolved peers, causing those peers to miss
+        // the commit bitmap. Different leaders may have different placeholder states, leading
+        // to divergent inactivity slashing calculations at epoch boundaries — a fatal
+        // consistency violation that permanently splits the network.
+        for (int wait = 0; wait < 30; wait++) // Up to 15 seconds
+        {
+            await Task.Delay(500, ct);
+            var resolvedCount = 0;
+            foreach (var v in _validatorSet!.Validators)
+            {
+                // A placeholder PeerId won't match any real connection
+                if (_peerManager!.GetPeer(v.PeerId) != null || v.PeerId == _localPeerId)
+                    resolvedCount++;
+            }
+            if (resolvedCount >= _validatorSet.Count)
+            {
+                _logger.LogInformation("All {Count} validator identities resolved, starting consensus", resolvedCount);
+                break;
+            }
+            if (wait % 4 == 3)
+                _logger.LogInformation("Waiting for validator identities: {Resolved}/{Total} resolved",
+                    resolvedCount, _validatorSet.Count);
+        }
 
         // Retry initial sync until caught up or no peers are ahead.
         // A single sync attempt can fail mid-way due to peer disconnects.
@@ -1706,11 +1773,17 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 // behind can still trigger sync during cooldown — otherwise small gaps
                 // cause a permanent stall when all validators trip their circuit breakers.
                 // The _isSyncing guard in TrySyncFromPeers prevents concurrent attempts.
-                var bestPeerCheck = GetBestPeer();
-                if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber)
+                // Cooldown: limit sync attempts to at most once per second to avoid
+                // Task.Run allocation spam on every 200ms iteration.
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (now - Volatile.Read(ref _lastSyncAttemptMs) >= 1000)
                 {
-                    // Fire-and-forget sync attempt; _isSyncing guard deduplicates
-                    _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    var bestPeerCheck = GetBestPeer();
+                    if (bestPeerCheck != null && bestPeerCheck.BestBlockNumber > _chainManager.LatestBlockNumber)
+                    {
+                        Volatile.Write(ref _lastSyncAttemptMs, now);
+                        _ = Task.Run(() => TrySyncFromPeers(ct), ct);
+                    }
                 }
 
                 // Circuit breaker auto-reset: after cooldown, reset and attempt
@@ -1898,18 +1971,27 @@ public sealed class NodeCoordinator : IAsyncDisposable
             // blocks without updating the consensus engine's _currentBlockNumber,
             // so without this restart, consensus would be stuck trying to decide a
             // block that was already applied via sync.
+            // Only restart if we're in the active validator set — deactivated nodes
+            // should follow via sync only, not waste resources running consensus rounds.
             var nextBlock = _chainManager.LatestBlockNumber + 1;
+            var isActiveValidator = _validatorSet != null && _validatorSet.IsValidator(_localPeerId);
             if (!_config.UsePipelining)
             {
                 _consensus!.StartRound(nextBlock);
-                _logger.LogInformation("Consensus restarted at block #{Block} after sync", nextBlock);
+                if (isActiveValidator)
+                    _logger.LogInformation("Consensus restarted at block #{Block} after sync", nextBlock);
+                else
+                    _logger.LogDebug("Sync complete at block #{Block} (not in active validator set)", nextBlock - 1);
             }
             else
             {
                 // Pipelined consensus tracks _lastFinalizedBlock internally.
                 // Clear stale rounds and let the pipeline restart from current height.
                 _pipelinedConsensus!.UpdateLastFinalizedBlock(_chainManager.LatestBlockNumber);
-                _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
+                if (isActiveValidator)
+                    _logger.LogInformation("Pipelined consensus updated to block #{Block} after sync", _chainManager.LatestBlockNumber);
+                else
+                    _logger.LogDebug("Sync complete at block #{Block} (not in active validator set)", _chainManager.LatestBlockNumber);
             }
         }
     }
@@ -2103,10 +2185,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// </summary>
     private void PruneProposalsByView(ulong currentView)
     {
-        // N-17: Thread-safe iteration with .ToArray() on ConcurrentDictionary
-        var staleKeys = _proposalsByView.Keys.ToArray().Where(k => k.View < currentView);
-        foreach (var key in staleKeys)
-            _proposalsByView.TryRemove(key, out _);
+        // N-17: ConcurrentDictionary enumerators are safe for concurrent modification —
+        // .ToArray() was wasting O(n) allocation on every finalization.
+        foreach (var key in _proposalsByView.Keys)
+        {
+            if (key.View < currentView)
+                _proposalsByView.TryRemove(key, out _);
+        }
     }
 
     private PeerInfo? GetBestPeer()

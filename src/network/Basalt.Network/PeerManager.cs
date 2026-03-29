@@ -14,6 +14,13 @@ public sealed class PeerManager
     private readonly ILogger<PeerManager> _logger;
     private readonly int _maxPeers;
 
+    // Cached connected-peer snapshot: avoids O(n) LINQ + List allocation on every access.
+    // Invalidated on any peer state change; lazily rebuilt on next read.
+    private volatile PeerInfo[] _connectedPeersCache = [];
+    private volatile int _connectedCountCache;
+    private long _cacheVersion;
+    private long _snapshotVersion = -1;
+
     public PeerManager(ILogger<PeerManager> logger, int maxPeers = 50)
     {
         _logger = logger;
@@ -21,10 +28,16 @@ public sealed class PeerManager
     }
 
     /// <summary>
-    /// Currently connected peers.
+    /// Currently connected peers (cached snapshot, allocation-free on repeated reads).
     /// </summary>
-    public IReadOnlyCollection<PeerInfo> ConnectedPeers =>
-        _peers.Values.Where(p => p.State == PeerState.Connected).ToList();
+    public IReadOnlyCollection<PeerInfo> ConnectedPeers
+    {
+        get
+        {
+            EnsureCacheFresh();
+            return _connectedPeersCache;
+        }
+    }
 
     /// <summary>
     /// All known peers.
@@ -32,9 +45,46 @@ public sealed class PeerManager
     public IReadOnlyCollection<PeerInfo> AllPeers => _peers.Values.ToList();
 
     /// <summary>
-    /// Number of connected peers.
+    /// Number of connected peers (O(1) cached).
     /// </summary>
-    public int ConnectedCount => _peers.Values.Count(p => p.State == PeerState.Connected);
+    public int ConnectedCount
+    {
+        get
+        {
+            EnsureCacheFresh();
+            return _connectedCountCache;
+        }
+    }
+
+    /// <summary>
+    /// Invalidate the connected-peers cache. Called on any state change.
+    /// </summary>
+    private void InvalidateCache()
+    {
+        Interlocked.Increment(ref _cacheVersion);
+    }
+
+    /// <summary>
+    /// Rebuild the cache if the version has changed since the last snapshot.
+    /// </summary>
+    private void EnsureCacheFresh()
+    {
+        var current = Volatile.Read(ref _cacheVersion);
+        if (current == Volatile.Read(ref _snapshotVersion))
+            return;
+
+        // Rebuild: single pass over _peers, no LINQ
+        var connected = new List<PeerInfo>();
+        foreach (var peer in _peers.Values)
+        {
+            if (peer.State == PeerState.Connected)
+                connected.Add(peer);
+        }
+
+        _connectedPeersCache = connected.ToArray();
+        _connectedCountCache = connected.Count;
+        Volatile.Write(ref _snapshotVersion, current);
+    }
 
     /// <summary>
     /// Add a peer from a static configuration.
@@ -50,6 +100,7 @@ public sealed class PeerManager
         };
 
         _peers.TryAdd(id, peer);
+        InvalidateCache();
         _logger.LogInformation("Added static peer {PeerId} at {Endpoint}", id, peer.Endpoint);
         return peer;
     }
@@ -92,6 +143,7 @@ public sealed class PeerManager
         peer.BannedUntil = null; // Clear any prior ban
 
         _peers.AddOrUpdate(peer.Id, peer, (_, _) => peer);
+        InvalidateCache();
         _logger.LogInformation("Peer {PeerId} connected from {Endpoint}", peer.Id, peer.Endpoint);
         return true;
     }
@@ -118,6 +170,7 @@ public sealed class PeerManager
         if (_peers.TryGetValue(id, out var peer))
         {
             peer.State = PeerState.Disconnected;
+            InvalidateCache();
             _logger.LogInformation("Peer {PeerId} disconnected: {Reason}", id, reason);
 
             // NET-L10: Notify listeners (e.g. EpisubService) to clean up peer sets
@@ -143,6 +196,7 @@ public sealed class PeerManager
             peer.State = PeerState.Banned;
             peer.ReputationScore = 0;
             peer.BannedUntil = DateTimeOffset.UtcNow + (duration ?? TimeSpan.FromHours(1));
+            InvalidateCache();
             _logger.LogWarning("Peer {PeerId} banned until {BannedUntil}: {Reason}",
                 id, peer.BannedUntil, reason);
 
@@ -194,7 +248,10 @@ public sealed class PeerManager
         }
 
         if (removed > 0)
+        {
+            InvalidateCache();
             _logger.LogInformation("Pruned {Count} inactive/expired-ban peers", removed);
+        }
 
         return removed;
     }

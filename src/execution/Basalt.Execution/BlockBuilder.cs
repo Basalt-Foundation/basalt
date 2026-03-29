@@ -249,7 +249,11 @@ public sealed class BlockBuilder
         }
 
         // ═══ TWAP carry-forward: update accumulators for all pools using current price ═══
-        RunTwapCarryForward(stateDb, blockNumber);
+        // Skip entirely when no DEX pools exist — avoids DexState construction + storage reads on idle blocks.
+        var dexStateCheck = new DexState(stateDb);
+        var poolCount = dexStateCheck.GetPoolCount();
+        if (poolCount > 0)
+            RunTwapCarryForward(stateDb, blockNumber);
 
         // ═══ Phase B: Batch auction — group intents by pair, compute clearing prices ═══
         var batchResults = new List<BatchResult>();
@@ -411,8 +415,11 @@ public sealed class BlockBuilder
         SkipBatchAuction:
 
         // ═══ Phase B2: Standalone limit order matching for pools not covered by swap intents ═══
-        var standaloneResults = RunStandaloneLimitOrderMatching(stateDb, blockNumber, settledPoolIds);
-        batchResults.AddRange(standaloneResults);
+        if (poolCount > 0)
+        {
+            var standaloneResults = RunStandaloneLimitOrderMatching(stateDb, blockNumber, settledPoolIds);
+            batchResults.AddRange(standaloneResults);
+        }
 
         // ═══ Phase C: Settlement — apply fills, update reserves, generate receipts ═══
         bool gasLimitReached = false;
@@ -563,21 +570,23 @@ public sealed class BlockBuilder
     /// </summary>
     public List<TransactionReceipt> ApplyDexSettlement(IStateDatabase stateDb, BlockHeader blockHeader)
     {
-        var allReceipts = new List<TransactionReceipt>();
+        // Fast path: skip all DEX operations when no pools exist.
+        // On an idle chain this avoids allocating DexState objects, reading pool state,
+        // and running TWAP/order logic on every block.
+        var poolCheck = new DexState(stateDb);
+        if (poolCheck.GetPoolCount() == 0)
+            return [];
 
         RunTwapCarryForward(stateDb, blockHeader.Number);
 
         // Prune old TWAP snapshots to prevent unbounded storage cache growth.
-        // Each pool creates one unique storage key per block; without pruning,
-        // the flat state cache grows by (pool_count) entries every block, causing
-        // Fork() to become progressively more expensive and eventually saturate CPU.
-        var dexStateForPrune = new DexState(stateDb);
-        dexStateForPrune.PruneTwapSnapshots(blockHeader.Number);
+        poolCheck.PruneTwapSnapshots(blockHeader.Number);
 
         var batchResults = RunStandaloneLimitOrderMatching(stateDb, blockHeader.Number, new HashSet<ulong>());
         if (batchResults.Count == 0)
-            return allReceipts;
+            return [];
 
+        var allReceipts = new List<TransactionReceipt>();
         var emptyIntentMap = new Dictionary<Hash256, Transaction>();
         foreach (var result in batchResults)
         {

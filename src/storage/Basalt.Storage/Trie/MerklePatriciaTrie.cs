@@ -243,6 +243,11 @@ public sealed class MerklePatriciaTrie
             {
                 if (path.Equals(node.Path))
                 {
+                    // Short-circuit: if the value is identical, the hash is unchanged —
+                    // skip the BLAKE3 rehash + store write entirely.
+                    if (node.Value != null && value.AsSpan().SequenceEqual(node.Value))
+                        return nodeHash;
+
                     // Update existing leaf
                     var newLeaf = TrieNode.CreateLeaf(path, value);
                     var hash = newLeaf.ComputeHash();

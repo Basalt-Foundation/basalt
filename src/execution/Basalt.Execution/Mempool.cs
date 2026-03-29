@@ -178,6 +178,10 @@ public sealed class Mempool
     {
         lock (_lock)
         {
+            // Fast path: empty mempool — avoid all allocations
+            if (_orderedEntries.Count == 0)
+                return [];
+
             if (stateDb == null)
             {
                 var fast = new List<Transaction>(Math.Min(maxCount, _orderedEntries.Count));
@@ -302,6 +306,9 @@ public sealed class Mempool
     {
         lock (_lock)
         {
+            if (_dexIntentEntries.Count == 0)
+                return [];
+
             var result = new List<Transaction>();
             foreach (var entry in _dexIntentEntries)
             {
@@ -380,6 +387,10 @@ public sealed class Mempool
         var toRemoveIntents = new List<Hash256>();
         lock (_lock)
         {
+            // Fast path: skip when mempool is empty (common on idle chains).
+            if (_transactions.Count == 0 && _dexIntentTransactions.Count == 0)
+                return 0;
+
             foreach (var tx in _transactions.Values)
             {
                 var account = stateDb.GetAccount(tx.Sender);

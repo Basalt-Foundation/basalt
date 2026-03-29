@@ -316,25 +316,51 @@ public sealed class FlatStateDb : IStateDatabase
     public IReadOnlyCollection<Address> GetModifiedAccounts() => _dirtyAccounts;
 
     /// <summary>
+    /// Clear the dirty-tracking sets (<see cref="_dirtyStorageKeys"/> and <see cref="_dirtyAccounts"/>).
+    /// Call on the <b>canonical</b> FlatStateDb after each block finalization to prevent
+    /// unbounded growth. These sets are only consumed by
+    /// <see cref="TransactionExecutor.MergeForkState"/> which operates on <b>forks</b>,
+    /// not the canonical instance — so clearing them on the canonical DB is always safe.
+    /// </summary>
+    public void ClearDirtyTracking()
+    {
+        _dirtyStorageKeys.Clear();
+        _dirtyAccounts.Clear();
+        // Also clear the underlying TrieStateDb's tracking sets, which have their own
+        // _dirtyStorageKeys/_dirtyAccounts that grow independently.
+        _trie.ClearDirtyTracking();
+    }
+
+    /// <summary>
+    /// Compact the deletion guard sets (<see cref="_deletedStorage"/> and <see cref="_deletedAccounts"/>).
+    /// Safe to call because <see cref="DeleteStorage"/> and <see cref="DeleteAccount"/> also
+    /// call the underlying <see cref="TrieStateDb"/> Delete, which removes the key from the
+    /// trie structure. After that, trie reads for deleted keys already return <c>null</c>,
+    /// making the flat-cache guard redundant. Without compaction these sets grow unboundedly
+    /// (one entry per TWAP prune per block) and contribute to memory pressure that triggers
+    /// aggressive Gen 2 GC → 100% CPU.
+    /// </summary>
+    public void CompactDeletedSets()
+    {
+        _deletedStorage.Clear();
+        _deletedAccounts.Clear();
+    }
+
+    /// <summary>
     /// Flush the current flat cache to persistent storage, including deletions.
     /// Call on shutdown or periodically after block finalization.
     /// </summary>
-    /// <remarks>
-    /// <para><b>M-06 fix:</b> Deletion sets are <b>not</b> cleared after flush.
-    /// Although the persisted store has the deletions applied, the underlying
-    /// <see cref="TrieStateDb"/> still contains the old data (trie nodes are never pruned).
-    /// Clearing the deletion sets would cause subsequent reads to fall through to the trie
-    /// and return stale data for entries that were deleted.</para>
-    /// </remarks>
     public void FlushToPersistence()
     {
         if (_persistence == null) return;
 
         _persistence.Flush(_accountCache, _storageCache, _deletedAccounts, _deletedStorage);
 
-        // M-06: Do NOT clear _deletedAccounts / _deletedStorage here.
-        // The trie still contains the old nodes, so the deletion guard must remain
-        // active to prevent fallthrough reads returning stale data.
+        // After flush, compact deletion sets — the persisted store has the deletions
+        // applied, and the trie's Delete() also removed the keys from the trie structure.
+        // Keeping stale tombstones causes unbounded memory growth on long-running nodes.
+        CompactDeletedSets();
+        ClearDirtyTracking();
     }
 
     /// <summary>
@@ -371,30 +397,35 @@ public sealed class FlatStateDb : IStateDatabase
     }
 
     /// <summary>
-    /// Log a warning if either cache exceeds the size threshold.
-    /// This is a monitoring aid — no eviction is performed.
+    /// Hard cap for storage cache entries. When exceeded, the cache is cleared to prevent
+    /// unbounded memory growth on long-running nodes. Reads will repopulate from the trie
+    /// on demand. The threshold is set high enough to avoid impacting normal block processing.
+    /// </summary>
+    private const int MaxStorageCacheEntries = 500_000;
+
+    /// <summary>
+    /// Check cache size and evict if the storage cache exceeds the hard cap.
+    /// Without eviction, _storageCache grows monotonically (entries are added on every
+    /// read miss and write but only removed on delete) causing unbounded RAM growth.
     /// </summary>
     private void CheckCacheSize()
     {
-        if (_logger == null) return;
-
-        int accountCount = _accountCache.Count;
         int storageCount = _storageCache.Count;
 
-        if (accountCount > CacheSizeWarningThreshold)
+        if (storageCount > MaxStorageCacheEntries)
         {
-            _logger.LogWarning(
-                "FlatStateDb account cache size ({Count}) exceeds warning threshold ({Threshold}). " +
-                "Consider implementing cache eviction or increasing available memory.",
-                accountCount, CacheSizeWarningThreshold);
+            _storageCache.Clear();
+            _storageSlotsIndex.Clear();
+            _logger?.LogInformation(
+                "FlatStateDb storage cache evicted ({Count} entries exceeded {Max} cap). " +
+                "Reads will repopulate from trie on demand.",
+                storageCount, MaxStorageCacheEntries);
         }
-
-        if (storageCount > CacheSizeWarningThreshold)
+        else if (_logger != null && storageCount > CacheSizeWarningThreshold)
         {
             _logger.LogWarning(
-                "FlatStateDb storage cache size ({Count}) exceeds warning threshold ({Threshold}). " +
-                "Consider implementing cache eviction or increasing available memory.",
-                storageCount, CacheSizeWarningThreshold);
+                "FlatStateDb storage cache size ({Count}) approaching eviction threshold ({Max})",
+                storageCount, MaxStorageCacheEntries);
         }
     }
 }

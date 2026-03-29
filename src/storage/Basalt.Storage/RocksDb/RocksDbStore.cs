@@ -11,6 +11,7 @@ public sealed class RocksDbStore : IDisposable
 {
     private readonly RocksDbSharp.RocksDb _db;
     private readonly Dictionary<string, ColumnFamilyHandle> _columnFamilies;
+    private readonly IntPtr _blockCache;
 
     /// <summary>
     /// Column family names.
@@ -35,30 +36,57 @@ public sealed class RocksDbStore : IDisposable
 
     public RocksDbStore(string path)
     {
-        // M12: Production-ready RocksDB options
+        // M12: Production-ready RocksDB options.
+        // Background threads scaled to core count to avoid saturating the machine
+        // with compaction work on idle chains.
+        var cores = Environment.ProcessorCount;
+        var compactionThreads = Math.Clamp(cores - 1, 1, 2);
         var options = new DbOptions()
             .SetCreateIfMissing(true)
             .SetCreateMissingColumnFamilies(true)
-            .SetMaxBackgroundCompactions(4)
-            .SetMaxBackgroundFlushes(2)
-            .IncreaseParallelism(Environment.ProcessorCount);
+            .SetMaxBackgroundCompactions(compactionThreads)
+            .SetMaxBackgroundFlushes(1)
+            .IncreaseParallelism(Math.Min(cores, 4));
 
         // M-01: Per-CF options tuned for each access pattern.
+        // Conservative write buffer sizes to keep total memtable memory under ~320MB
+        // across all column families, leaving headroom for the application heap.
         // Point-lookup-heavy CFs get bloom filters to reduce unnecessary disk reads.
-        var defaultOptions = new ColumnFamilyOptions();
+
+        // Shared LRU block cache across all column families.
+        // Without this, RocksDB creates an unbounded per-CF cache whose native memory
+        // grows proportionally to on-disk data (SST index/filter blocks, data blocks).
+        _blockCache = RocksDbSharp.Native.Instance.rocksdb_cache_create_lru(new UIntPtr(64 * 1024 * 1024)); // 64 MB shared
+
+        var defaultTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(_blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
+
+        var defaultOptions = new ColumnFamilyOptions()
+            .SetBlockBasedTableFactory(defaultTableOptions);
+
+        var pointLookupTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(_blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
 
         var pointLookupOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
-            .SetWriteBufferSize(64UL * 1024 * 1024)     // 64MB write buffer
-            .SetMaxWriteBufferNumber(3)
-            .SetTargetFileSizeBase(64UL * 1024 * 1024);  // 64MB SST files
+            .SetWriteBufferSize(16UL * 1024 * 1024)      // 16MB write buffer (was 64MB)
+            .SetMaxWriteBufferNumber(2)                    // 2 buffers (was 3)
+            .SetTargetFileSizeBase(32UL * 1024 * 1024)    // 32MB SST files (was 64MB)
+            .SetBlockBasedTableFactory(pointLookupTableOptions);
 
-        // TrieNodes CF: write-heavy, point lookup — larger buffers
+        // TrieNodes CF: write-heavy, point lookup — moderate buffers
+        var trieTableOptions = new BlockBasedTableOptions()
+            .SetBlockCache(_blockCache)
+            .SetCacheIndexAndFilterBlocks(true);
+
         var trieOptions = new ColumnFamilyOptions()
             .SetBloomLocality(1)
-            .SetWriteBufferSize(128UL * 1024 * 1024)     // 128MB write buffer
-            .SetMaxWriteBufferNumber(4)
-            .SetTargetFileSizeBase(128UL * 1024 * 1024);  // 128MB SST files
+            .SetWriteBufferSize(32UL * 1024 * 1024)       // 32MB write buffer (was 128MB)
+            .SetMaxWriteBufferNumber(3)                     // 3 buffers (was 4)
+            .SetTargetFileSizeBase(64UL * 1024 * 1024)     // 64MB SST files (was 128MB)
+            .SetBlockBasedTableFactory(trieTableOptions);
 
         var cfs = new RocksDbSharp.ColumnFamilies();
         cfs.Add("default", defaultOptions);
@@ -162,6 +190,8 @@ public sealed class RocksDbStore : IDisposable
     public void Dispose()
     {
         _db.Dispose();
+        if (_blockCache != IntPtr.Zero)
+            RocksDbSharp.Native.Instance.rocksdb_cache_destroy(_blockCache);
     }
 }
 

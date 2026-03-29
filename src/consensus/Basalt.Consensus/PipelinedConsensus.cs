@@ -25,6 +25,7 @@ public sealed class PipelinedConsensus
     private readonly IBlsSigner _blsSigner;
     private readonly ILogger<PipelinedConsensus> _logger;
     private readonly uint _chainId;
+    private readonly byte[] _cachedPublicKey;
 
     // Active consensus rounds (one per block height)
     private readonly ConcurrentDictionary<ulong, ConsensusRound> _activeRounds = new();
@@ -76,6 +77,7 @@ public sealed class PipelinedConsensus
         _logger = logger;
         _lastFinalizedBlock = lastFinalizedBlock;
         _roundTimeout = roundTimeout ?? TimeSpan.FromSeconds(2);
+        _cachedPublicKey = blsSigner.GetPublicKey(privateKey);
     }
 
     /// <summary>
@@ -182,7 +184,7 @@ public sealed class PipelinedConsensus
 
         // Self-vote PREPARE with signature tracking
         RecordVote(round, VotePhase.Prepare, _localPeerId, signatureBytes,
-            _blsSigner.GetPublicKey(_privateKey));
+            _cachedPublicKey);
 
         // Cascade through phases if self-vote alone meets quorum (e.g., single validator)
         TryCascadeFromPrepare(round);
@@ -327,6 +329,9 @@ public sealed class PipelinedConsensus
     /// </summary>
     public ViewChangeMessage? CheckViewTimeout()
     {
+        if (_activeRounds.IsEmpty)
+            return null;
+
         foreach (var (blockNumber, round) in _activeRounds)
         {
             if (round.State == ConsensusState.Finalized || round.State == ConsensusState.Idle)
@@ -438,7 +443,7 @@ public sealed class PipelinedConsensus
             Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
             WriteViewChangeSigningPayload(viewPayload, _chainId, viewChange.ProposedView);
             var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
-            var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+            var publicKey = new BlsPublicKey(_cachedPublicKey);
 
             return new ViewChangeMessage
             {
@@ -462,7 +467,15 @@ public sealed class PipelinedConsensus
         foreach (var (blockNumber, round) in _activeRounds)
         {
             if (round.State == ConsensusState.Finalized)
+            {
+                // Release large allocations before removing the round —
+                // prevents BlockData + signature lists from lingering until GC.
+                round.BlockData = null;
+                round.PrepareSignatures.Clear();
+                round.PreCommitSignatures.Clear();
+                round.CommitSignatures.Clear();
                 _activeRounds.TryRemove(blockNumber, out _);
+            }
         }
     }
 
@@ -669,7 +682,7 @@ public sealed class PipelinedConsensus
         Span<byte> sigPayload = stackalloc byte[ConsensusPayloadSize];
         WriteConsensusSigningPayload(sigPayload, _chainId, phase, round.View, round.BlockNumber, round.BlockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
-        var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
+        var publicKeyBytes = _cachedPublicKey;
         RecordVote(round, phase, _localPeerId, signatureBytes, publicKeyBytes);
     }
 
@@ -679,7 +692,7 @@ public sealed class PipelinedConsensus
         WriteConsensusSigningPayload(sigPayload, _chainId, phase, round.View, round.BlockNumber, round.BlockHash);
         var signatureBytes = _blsSigner.Sign(_privateKey, sigPayload);
         var signature = new BlsSignature(signatureBytes);
-        var publicKeyBytes = _blsSigner.GetPublicKey(_privateKey);
+        var publicKeyBytes = _cachedPublicKey;
         var publicKey = new BlsPublicKey(publicKeyBytes);
 
         var vote = new ConsensusVoteMessage
@@ -706,7 +719,7 @@ public sealed class PipelinedConsensus
         Span<byte> viewPayload = stackalloc byte[ViewChangePayloadSize];
         WriteViewChangeSigningPayload(viewPayload, _chainId, proposedView);
         var signature = new BlsSignature(_blsSigner.Sign(_privateKey, viewPayload));
-        var publicKey = new BlsPublicKey(_blsSigner.GetPublicKey(_privateKey));
+        var publicKey = new BlsPublicKey(_cachedPublicKey);
 
         return new ViewChangeMessage
         {
