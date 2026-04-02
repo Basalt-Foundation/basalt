@@ -218,6 +218,17 @@ public sealed class ContractRegistry
         registry.Register(0x000B, "SanctionsPolicy", _ =>
             new Basalt.Sdk.Contracts.Policies.SanctionsPolicy());
 
+        registry.Register(0x0108, "OracleNetwork", args =>
+        {
+            if (args.Length > 0)
+            {
+                var reader = new Basalt.Codec.BasaltReader(args);
+                var slashBps = reader.ReadUInt32();
+                return new Basalt.Sdk.Contracts.Standards.OracleNetwork(slashBps);
+            }
+            return new Basalt.Sdk.Contracts.Standards.OracleNetwork();
+        });
+
         return registry;
     }
 
