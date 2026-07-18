@@ -241,9 +241,14 @@ public sealed class BlockApplier
         }
 
         var forkedState = stateDbRef.Fork();
+        // Canonical height the fork is based on. Used below to tell a benign consensus/sync race (the
+        // canonical tip advanced into this batch, so the fork re-applies an already-applied prefix) from
+        // a genuine state divergence.
+        var forkBaseHeight = _chainManager.LatestBlockNumber;
         var applied = 0;
 
         // Phase 1: Execute all blocks on forked state
+        var phase1Complete = true;
         foreach (var (block, raw, bitmap) in blocks)
         {
             try
@@ -255,8 +260,46 @@ public sealed class BlockApplier
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to execute synced block #{Number}", block.Number);
+                phase1Complete = false;
                 break;
             }
+        }
+
+        // A block failed to execute mid-batch: the fork holds only a prefix, so do NOT advance the chain
+        // with a partial batch (the old code applied the prefix to the chain index but skipped the state
+        // swap, splitting chain height from state). This is an execution failure, not a divergence, so it
+        // is already logged at Warning above; just abort the batch.
+        if (!phase1Complete)
+            return 0;
+
+        // Phase 1.5: State-root gate (soundness). Verify our recomputed state matches the finalized chain
+        // BEFORE advancing the chain. The replay path used the single-arg AddBlock, so ChainManager's
+        // state-root check (which only fires when a computed root is supplied) never ran on sync — any
+        // execution divergence was silently accepted, forking the node off canonical. Checking here makes
+        // the batch atomic: a mismatch aborts with the node still at its previous canonical state, rather
+        // than advancing the chain (Phase 2) without swapping the state (Phase 3).
+        var computedRoot = forkedState.ComputeStateRoot();
+        var expectedRoot = blocks[^1].Block.Header.StateRoot;
+        if (computedRoot != expectedRoot)
+        {
+            if (firstBlock.Number <= forkBaseHeight)
+            {
+                // Benign race: consensus finalized part of this batch while we synced, so re-executing the
+                // already-applied prefix on the fork double-applies it and the root no longer matches.
+                // Self-corrects on the next poll with a clean forward batch. Not a divergence.
+                _logger.LogInformation(
+                    "Sync batch ending #{Height} superseded by consensus (root mismatch from re-applied " +
+                    "prefix); retrying with a forward batch.", blocks[^1].Block.Number);
+            }
+            else
+            {
+                _logger.LogCritical(
+                    "Sync state-root divergence at batch ending #{Height}: expected header root {Expected}, " +
+                    "computed {Computed}. Refusing the batch; node stays at #{Current} (no chain advance).",
+                    blocks[^1].Block.Number, expectedRoot.ToHexString(), computedRoot.ToHexString(),
+                    _chainManager.LatestBlockNumber);
+            }
+            return 0;
         }
 
         // Phase 2: Add executed blocks to chain and persist
@@ -321,8 +364,8 @@ public sealed class BlockApplier
                 // Persist them and adopt a fresh disk-backed canonical state at the new root, so a
                 // synced node survives a restart and does not accumulate an unbounded overlay stack
                 // (which would also stop every subsequent consensus write from persisting).
-                var newRoot = forkedState.ComputeStateRoot();
-                stateDbRef.Swap(_syncStateCommit(forkedState, newRoot));
+                // Reuse the root already computed and verified by the Phase 1.5 gate above.
+                stateDbRef.Swap(_syncStateCommit(forkedState, computedRoot));
             }
             else
             {
