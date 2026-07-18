@@ -2204,6 +2204,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             {
                 var stats = RunPruneSweep(window);
                 lastSweptTip = tip;
+                MetricsEndpoint.RecordTriePrune(stats.TotalScanned, stats.Deleted, stats.Retained, (long)tip);
                 _logger.LogInformation(
                     "Trie prune sweep at #{Tip}: scanned {Scanned}, deleted {Deleted}, retained {Retained}",
                     tip, stats.TotalScanned, stats.Deleted, stats.Retained);
