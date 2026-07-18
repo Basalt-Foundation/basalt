@@ -65,6 +65,12 @@ func (c *ComplianceCircuitV1) Define(api frontend.API) error {
 // MerkleDepth is the fixed issuer-tree depth for the membership circuit (2^depth leaves).
 const MerkleDepth = 4
 
+// RevDepth is the fixed revocation sparse-Merkle-tree depth. The credential's revocation slot is the low
+// RevDepth bits of MiMC(secret); non-membership proves that slot's leaf is empty (0) in revocationRoot.
+// A 32-bit slot keyspace has negligible collisions at testnet scale (mainnet would use a full-width or
+// indexed tree).
+const RevDepth = 32
+
 // ComplianceCircuitMembership binds the whole credential to the issuer: the credential commitment
 // leaf = MiMC(Secret, Expiry, IssuerTier) must be a member of the issuer's Merkle tree whose root is the
 // public IssuerRoot, proven by a private Merkle path. Because Expiry and IssuerTier are hashed into the
@@ -80,8 +86,9 @@ type ComplianceCircuitMembership struct {
 
 	Secret       frontend.Variable
 	Epoch        frontend.Variable
-	PathElements [MerkleDepth]frontend.Variable // sibling hash at each level
+	PathElements [MerkleDepth]frontend.Variable // issuer-tree sibling hash at each level
 	PathIndices  [MerkleDepth]frontend.Variable // 0 = current node is the left child, 1 = the right child
+	RevSiblings  [RevDepth]frontend.Variable    // revocation SMT sibling hash at each level
 }
 
 func (c *ComplianceCircuitMembership) Define(api frontend.API) error {
@@ -112,6 +119,24 @@ func (c *ComplianceCircuitMembership) Define(api frontend.API) error {
 	h.Reset()
 	h.Write(c.Secret, c.Epoch)
 	api.AssertIsEqual(c.Nullifier, h.Sum())
+
+	// Revocation non-membership: the credential's revocation slot (low RevDepth bits of MiMC(Secret)) has
+	// an empty (0) leaf in the revocation SMT whose root is the public RevocationRoot. If the credential
+	// were revoked, that leaf would be non-zero and the empty leaf would not hash to RevocationRoot.
+	h.Reset()
+	h.Write(c.Secret)
+	revId := h.Sum()
+	revBits := api.ToBinary(revId) // full field decomposition; the low RevDepth bits are the slot path
+	revCur := frontend.Variable(0) // empty leaf = not revoked
+	for i := 0; i < RevDepth; i++ {
+		bit := revBits[i]
+		left := api.Select(bit, c.RevSiblings[i], revCur)
+		right := api.Select(bit, revCur, c.RevSiblings[i])
+		h.Reset()
+		h.Write(left, right)
+		revCur = h.Sum()
+	}
+	api.AssertIsEqual(revCur, c.RevocationRoot)
 
 	return nil
 }
@@ -327,6 +352,17 @@ func mimcHash3(a, b, c fr.Element) fr.Element {
 	return out
 }
 
+// revocationDefaults returns the default (empty-subtree) hash at each revocation-SMT level: d[0] = 0
+// (empty leaf), d[i] = MiMC(d[i-1], d[i-1]). d[RevDepth] is the root of a fully-empty tree (no revocations).
+func revocationDefaults() []fr.Element {
+	d := make([]fr.Element, RevDepth+1)
+	d[0].SetZero()
+	for i := 1; i <= RevDepth; i++ {
+		d[i] = mimcHash2(d[i-1], d[i-1])
+	}
+	return d
+}
+
 // buildTreeAndPath builds a depth-`depth` MiMC Merkle tree over `leaves` (len == 2^depth) and returns the
 // root plus the authentication path (sibling per level and the left/right index bit) for `index`.
 func buildTreeAndPath(leaves []fr.Element, index, depth int) (root fr.Element, pathElements []fr.Element, pathIndices []int) {
@@ -372,8 +408,10 @@ func genMembership() {
 	root, pathElems, pathIdx := buildTreeAndPath(leaves, leafIndex, MerkleDepth)
 	nullifier := mimcNullifier(secret, epoch)
 
-	var revocationRoot fr.Element
-	revocationRoot.SetUint64(0x5555_5555)
+	// Empty revocation tree (nothing revoked): root is the all-empty default, and every sibling on the
+	// credential's revocation path is the empty-subtree default, so the empty leaf hashes to the root.
+	revDefaults := revocationDefaults()
+	revocationRoot := revDefaults[RevDepth]
 
 	assignment := &ComplianceCircuitMembership{
 		IssuerRoot:     root,
@@ -387,6 +425,9 @@ func genMembership() {
 	for i := 0; i < MerkleDepth; i++ {
 		assignment.PathElements[i] = pathElems[i]
 		assignment.PathIndices[i] = pathIdx[i]
+	}
+	for i := 0; i < RevDepth; i++ {
+		assignment.RevSiblings[i] = revDefaults[i]
 	}
 
 	fullWitness, err := frontend.NewWitness(assignment, field)

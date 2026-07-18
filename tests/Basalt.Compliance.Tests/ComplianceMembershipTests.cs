@@ -65,4 +65,14 @@ public class ComplianceMembershipTests
         pis[CircuitV1Layout.Nullifier] = Word(1);
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
+
+    [Fact]
+    public void TamperedRevocationRoot_FailsVerification()
+    {
+        // revocationRoot is bound by the non-membership proof: a prover cannot substitute a different
+        // revocation-tree root (e.g. an empty one) to hide that they were revoked.
+        var pis = MembershipVector.PublicInputs();
+        pis[CircuitV1Layout.RevocationRoot] = Word(0xdeadbeef);
+        Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
+    }
 }

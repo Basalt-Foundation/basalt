@@ -3,43 +3,45 @@ using Basalt.Core;
 namespace Basalt.Compliance.Tests;
 
 /// <summary>
-/// The golden membership-circuit vector shared by the circuit tests and the COMPL-C03 enforcement tests.
+/// The golden compliance-circuit vector shared by the circuit tests and the COMPL-C03 enforcement tests.
 /// From <c>tools/basalt-prove membership</c>: gnark v0.15, depth-4 issuer tree, credential commitment
-/// MiMC(secret=42, expiry=1893456000, tier=3) at leaf index 5, nullifier MiMC(42, 7). issuerRoot, expiry,
-/// and tier are all bound (tampering any fails verification).
+/// MiMC(secret=42, expiry=1893456000, tier=3) at leaf index 5, nullifier MiMC(42, 7), and a revocation
+/// non-membership proof against an empty revocation tree. All five public inputs are bound:
+/// issuerRoot (membership), expiry and tier (in the leaf), nullifier, and revocationRoot (non-membership).
+/// Tampering any of them fails verification.
 /// </summary>
 internal static class MembershipVector
 {
     public const string VkHex =
-        "a6374cfbb15730721c24fc29e5bf378235af42091427ac151f161c02b1b9a2eb2a8b585db9695cf2a24345039118df0b" +
-        "90d8ed8cfd4d6349c125e40e34495ff475d02b13561892c809ca5af300bac95835e4060546f41c8ba7f450ff2d870557" +
-        "044394eadd246080a731499ea2c2eeac475988eeac5ebecd86ce6948c5e7747a548e988bffff1e88903f710cf328f07d" +
-        "98e425a09b909aede650ab3233719500789c0712d28c6835336560005cefbd82a05cd6b87769c082d394195737f2826a" +
-        "0a0b2ba7c6aeecd06abdaeabbcc61b301d06c82260ce40bc273db7fe4736db1b2d9b5ce8f7b444ee5b47132b664c9de9" +
-        "aaa923f4d46a5f2b76a25453abe8a8d44ca54847002939cb413b68a687e4abd908e40793cd16e758278b872f6a80a7b7" +
-        "03404e111ed30dcc2899d1fa87ffcba72a00862bc9aec3524515caf24a3dcf573330a5c76bbd25c993064dcca57fc5fe" +
-        "060000008bed772f9f22d8f1e3e7da9d775862580fa3d7030db7d4081f636d066616b2bdf1d1d41a8c3b9dee8be27fd9" +
-        "843c73998f2ef20d0f3ae13be166476cd6fd8c60eea118dc8783665ccdd714f3cdb2322e5a7b3cb1eb7bc78010062a39" +
-        "da339bfb830125d4f2eeae04a94707dc7fc47c796ec5a5e9d2741e68afc028aca028968fa6e6c5e06b5d6074ce6ecd63" +
-        "5d3ff92cac847bf03dff842ab1374d2500b36a47a4563f2cad9b8b50f9887aa8977178f9b27e51fc4e7c09024b32ecca" +
-        "e8d0bbbbae4f9a9caae913cd1a5c7b8991b047c3e5db9c9b6c78323bc8c73298431efa5d977995e40dc816b36119f6fe" +
-        "f6bf0a18c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" +
-        "00000000";
+        "aca15121d5d87f56dacc31922957e9b7476c22fd1165982d7e9a5227cd5fdef27d707b0494b18e87330d1cf3a5dc2c73" +
+        "90233090d41b03b17bf1b52c41cac265e60aef1ab64eadd68be06f8b60110c3fceaab3181b991cf4c206cfd10389ed02" +
+        "16838f9eac84596d1980c6bb3c131e1957c854f02db42422919d8ddac5d88350f001ccdbf4bbb8113b29c4edafbd689c" +
+        "87cf388602b24e0cf5c22b43b2a5f6d0dfd9f22a50c20ae0d5e538cdf09b9c60d6361d38c9f75f8953b592b6ab85af66" +
+        "0d547cba48ddaf855e31119b0a31048fa5814e1d82184c585b40e30e344e203313ef612e234c2df56ffb7c872cbd35f8" +
+        "94df8deae6fa21d0cc93d62357990fa80dbc685cda753d157fc23fe8f84adf92c2427009b577e72f0dc66989e45ef93d" +
+        "08e653fb139ab84b6d68cbbb8a9aec1ce490c212259a613f9268ebca2a8b2106b200d1a3be551cb9b5fc046b4533dbdd" +
+        "06000000a954a9faa9ed51adaf747aafeed2867bc03a0cb06df59e1ca04a263eddf39ab33115465debb5f9944eb41617" +
+        "9cfa323d8eb5d8b969b3135f9ded68e1be6705db60a407068cd51ae642f45d9b3b776d0f1c81ec03705ec1ab0a4f352b" +
+        "ee6c96cb8876eb3f6f6b65b84b380c99d98f54b2364cfa99f7b7e248dd24b07d37c6648901366f48dcfb5f0b710d6506" +
+        "e4b4437b8e802ecd813fd250ea0562a879ab84f5e5d5be1456c41428be204a5b139aaba60cfc520d865cfaaf8cbe6f0d" +
+        "cca93c6cb93404e88e1c3b5e63227f259958de91323a236971e75aed1d18cdfa07f67b0fdb02743294b2c943eb29b709" +
+        "999c7945ae0232bc2b4ec453a4c8a94c24ff57db0ceab12bc8835b43e229412ad46b999204629a0fa3aa49004d326f00" +
+        "00814f55";
 
     public const string ProofHex =
-        "91002a73d3fd3f3009c2350f9953ea0be3bfc1be7be03da77a9fde2d091a71eaaface06f557c84be82f1e4840155035b" +
-        "a47c11986b752b65e46992aca45afb1526129260e3070aaa3cd4373dc4f6ea03987f458b86d947580e6f88e03a52068e" +
-        "12a9b5a4b439a987db62b45beb66c6bb0bf341ad64411b3d46dc76ea4f0a31a1c4914fc679aef865e76674ad9958aed0" +
-        "b82c410c84fbc50266d1f8f468d5937a4c0e7ef6ff8660de54d8cd5e8648ba0f4e8bf2cbc70ec943ae2f366f7d6b62fd";
+        "a0705cf0244fe50c28000c7ad5b53337e53b0c67350b2f5c19c80a6428368b00284c51d137dc5b4ccf67f8c029318d47" +
+        "80c34ab560b1ad614b3e9dad6d152f07a64e1bc429c8f25d1223b4e06d01ae42fb0561ce140d12af55da821585e33adf" +
+        "1347886871c9c8cac74d45ad8a1fbc80aaac2c51291052261da694392f8856cf4ae5d436e9832d282f9408e51d1aad9f" +
+        "98fa05d0f59dbae246d61f15e21a4273f109e2789898bed1e3edaca07ac099b8420f2566a286838147f89d5be0a5ce3e";
 
-    // Frozen layout order: issuerRoot, nullifier, expiry (1893456000), tier (3), revocationRoot.
+    // Frozen layout order: issuerRoot, nullifier, expiry (1893456000), tier (3), revocationRoot (empty tree).
     public static readonly string[] PublicInputHex =
     {
         "17e1ee6c2f7d633c138faaabc0eb014f127bc2c8c5290929e293034c590c07ab",
         "706e7b7578eccdb3df4775460af7243b71d2a3168763c75c4347f42a863c1749",
         "0000000000000000000000000000000000000000000000000000000070dbd880",
         "0000000000000000000000000000000000000000000000000000000000000003",
-        "0000000000000000000000000000000000000000000000000000000055555555",
+        "5cf842758b8b17627ab0e9144945946eb38940bb715085ac0e71754dacd72018",
     };
 
     public const ulong ExpirySeconds = 1893456000; // 2030-01-01
