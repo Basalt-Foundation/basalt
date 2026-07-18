@@ -122,11 +122,13 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     }
 
     /// <summary>
-    /// MED-03: blockTimestamp is accepted for future use. Currently, credential expiry is enforced
-    /// within the Groth16 circuit itself — the proof mathematically guarantees the credential
-    /// has not expired at the time of proving. Out-of-circuit timestamp validation would require
-    /// a standardized public input layout (e.g., fixed index for expiry field), which is
-    /// circuit-dependent and not yet standardized across schema types.
+    /// COMPL-C03: for proofs using the standardized circuit-v1 public-input layout
+    /// (<see cref="CircuitV1Layout"/>), the verifier enforces credential expiry against the block
+    /// timestamp (which the circuit cannot know), issuer tier against the schema's minimum, and that the
+    /// nullifier public input equals the tracked <c>ComplianceProof.Nullifier</c>. These checks are
+    /// meaningful because the circuit binds expiry/tier/issuerRoot to the credential (a prover cannot
+    /// forge them). Proofs whose input count is not the v1 layout are verified by the pairing alone
+    /// (their VK/circuit defines their own semantics).
     /// </summary>
     private ComplianceCheckOutcome VerifySingleProof(
         ComplianceProof proof,
@@ -202,6 +204,55 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Groth16 proof verification failed");
+        }
+
+        // 7. COMPL-C03: enforce the credential's expiry, tier, and nullifier binding for the standardized
+        // v1 public-input layout. Skipped for other layouts (their VK/circuit defines their semantics).
+        if (inputCount == CircuitV1Layout.PublicInputCount)
+        {
+            ulong expirySeconds, issuerTier;
+            try
+            {
+                expirySeconds = CircuitV1Layout.ReadUInt64(publicInputs[CircuitV1Layout.Expiry]);
+                issuerTier = CircuitV1Layout.ReadUInt64(publicInputs[CircuitV1Layout.IssuerTier]);
+            }
+            catch (Exception ex)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid, $"Malformed v1 public inputs: {ex.Message}");
+            }
+
+            // Block timestamps are milliseconds; credential expiry is unix seconds.
+            var nowSeconds = blockTimestamp / 1000;
+            if (nowSeconds > 0 && expirySeconds < (ulong)nowSeconds)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Credential expired: expiry {expirySeconds}s is before block time {nowSeconds}s");
+            }
+
+            if (issuerTier < requirement.MinIssuerTier)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Issuer tier {issuerTier} is below the required {requirement.MinIssuerTier}");
+            }
+
+            // Bind the tracked nullifier to the one the circuit proved (32-byte big-endian). Otherwise a
+            // prover could carry a fresh ComplianceProof.Nullifier while the circuit reuses an old one,
+            // bypassing replay protection.
+            Span<byte> provenNullifier = stackalloc byte[Hash256.Size];
+            proof.Nullifier.WriteTo(provenNullifier);
+            if (!provenNullifier.SequenceEqual(publicInputs[CircuitV1Layout.Nullifier]))
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    "Nullifier public input does not match the proof nullifier");
+            }
         }
 
         // Nullifier already consumed in step 2 — no further action needed
