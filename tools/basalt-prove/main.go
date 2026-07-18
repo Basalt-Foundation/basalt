@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
@@ -171,10 +172,35 @@ func main() {
 		genCompliance()
 	case "membership":
 		genMembership()
+	case "setup":
+		genSetup()
+	case "prove":
+		genProve()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q (want: encoding | compliance | membership)\n", mode)
+		fmt.Fprintf(os.Stderr, "unknown mode %q (want: encoding | compliance | membership | setup | prove)\n", mode)
 		os.Exit(1)
 	}
+}
+
+// proveInput is the JSON a prover feeds to `prove` on stdin: their private credential plus the issuer's
+// published tree leaves (so the tool can build the membership path).
+type proveInput struct {
+	Secret    uint64   `json:"secret"`
+	Epoch     uint64   `json:"epoch"`
+	Expiry    uint64   `json:"expiry"`
+	Tier      uint64   `json:"tier"`
+	LeafIndex int      `json:"leafIndex"`
+	Leaves    []string `json:"leaves"` // 2^MerkleDepth hex field elements (the issuer's published tree)
+}
+
+// complianceProofOut is what a transaction's ComplianceProof carries: the Groth16 proof, the public
+// inputs concatenated, and the nullifier.
+type complianceProofOut struct {
+	Description     string `json:"description"`
+	ProofHex        string `json:"proof_hex"`         // 192 bytes: A(48) B(96) C(48)
+	PublicInputsHex string `json:"public_inputs_hex"` // flat 5*32 = 160 bytes
+	NullifierHex    string `json:"nullifier_hex"`     // 32 bytes, equals public input index 1
+	VkHex           string `json:"vk_hex,omitempty"`  // Basalt-layout VK (setup only)
 }
 
 func appendG1(dst []byte, b [48]byte) []byte { return append(dst, b[:]...) }
@@ -448,5 +474,144 @@ func genMembership() {
 		Proof:         hex.EncodeToString(serializeProof(proofc)),
 		PublicInputs:  publicInputsHex(publicWitness),
 		ExpectedValid: true,
+	})
+}
+
+func emitJSON(v any) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	must(enc.Encode(v), "encode json")
+}
+
+// CircuitV1Nullifier mirrors CircuitV1Layout.Nullifier (public input index 1) for this tool.
+const CircuitV1Nullifier = 1
+
+// genSetup runs the trusted setup ONCE for the membership circuit and writes the fixed proving and
+// verifying keys to membership.pk / membership.vk. The emitted vk_hex is what the issuer registers
+// on-chain (SchemaRegistry); every proof made with membership.pk verifies against it.
+func genSetup() {
+	field := ecc.BLS12_381.ScalarField()
+	ccs, err := frontend.Compile(field, r1cs.NewBuilder, &ComplianceCircuitMembership{})
+	must(err, "compile")
+	pk, vk, err := groth16.Setup(ccs)
+	must(err, "setup")
+
+	pkFile, err := os.Create("membership.pk")
+	must(err, "create membership.pk")
+	_, err = pk.WriteTo(pkFile)
+	must(err, "write pk")
+	must(pkFile.Close(), "close pk")
+
+	vkFile, err := os.Create("membership.vk")
+	must(err, "create membership.vk")
+	_, err = vk.WriteTo(vkFile)
+	must(err, "write vk")
+	must(vkFile.Close(), "close vk")
+
+	vkc := vk.(*groth16bls12381.VerifyingKey)
+	emitJSON(complianceProofOut{
+		Description: "wrote membership.pk and membership.vk; register vk_hex on-chain (SchemaRegistry)",
+		VkHex:       hex.EncodeToString(serializeVK(vkc)),
+	})
+}
+
+// genProve reads a credential + the issuer's published leaves from stdin, builds the witness, loads the
+// fixed proving key from `setup`, produces a proof, self-verifies it against the fixed vk, and emits the
+// pieces a Basalt ComplianceProof carries (proof, concatenated public inputs, nullifier).
+func genProve() {
+	field := ecc.BLS12_381.ScalarField()
+	ccs, err := frontend.Compile(field, r1cs.NewBuilder, &ComplianceCircuitMembership{})
+	must(err, "compile")
+
+	var in proveInput
+	must(json.NewDecoder(os.Stdin).Decode(&in), "decode stdin JSON")
+
+	n := 1 << MerkleDepth
+	if in.LeafIndex < 0 || in.LeafIndex >= n {
+		fmt.Fprintf(os.Stderr, "leafIndex %d out of range [0,%d)\n", in.LeafIndex, n)
+		os.Exit(1)
+	}
+
+	var secret, epoch, expiryE, tierE fr.Element
+	secret.SetUint64(in.Secret)
+	epoch.SetUint64(in.Epoch)
+	expiryE.SetUint64(in.Expiry)
+	tierE.SetUint64(in.Tier)
+	credLeaf := mimcHash3(secret, expiryE, tierE) // the prover's credential commitment
+
+	leaves := make([]fr.Element, n)
+	if len(in.Leaves) == 0 {
+		// Demo mode: synthesize an issuer tree with this credential at leafIndex, others arbitrary.
+		for i := range leaves {
+			leaves[i].SetUint64(uint64(1000 + i))
+		}
+		leaves[in.LeafIndex] = credLeaf
+	} else if len(in.Leaves) == n {
+		for i, hx := range in.Leaves {
+			b, err := hex.DecodeString(strings.TrimPrefix(hx, "0x"))
+			must(err, "decode leaf hex")
+			leaves[i].SetBytes(b)
+		}
+		if !leaves[in.LeafIndex].Equal(&credLeaf) {
+			fmt.Fprintf(os.Stderr, "leaves[%d] is not MiMC(secret, expiry, tier) for this credential\n", in.LeafIndex)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "leaves must be empty (demo tree) or have %d entries, got %d\n", n, len(in.Leaves))
+		os.Exit(1)
+	}
+
+	root, pathElems, pathIdx := buildTreeAndPath(leaves, in.LeafIndex, MerkleDepth)
+	nullifier := mimcNullifier(secret, epoch)
+	revDefaults := revocationDefaults()
+
+	assignment := &ComplianceCircuitMembership{
+		IssuerRoot:     root,
+		Nullifier:      nullifier,
+		Expiry:         expiryE,
+		IssuerTier:     tierE,
+		RevocationRoot: revDefaults[RevDepth],
+		Secret:         secret,
+		Epoch:          epoch,
+	}
+	for i := 0; i < MerkleDepth; i++ {
+		assignment.PathElements[i] = pathElems[i]
+		assignment.PathIndices[i] = pathIdx[i]
+	}
+	for i := 0; i < RevDepth; i++ {
+		assignment.RevSiblings[i] = revDefaults[i]
+	}
+
+	fullWitness, err := frontend.NewWitness(assignment, field)
+	must(err, "witness")
+	publicWitness, err := fullWitness.Public()
+	must(err, "public witness")
+
+	pk := groth16.NewProvingKey(ecc.BLS12_381)
+	pkFile, err := os.Open("membership.pk")
+	must(err, "open membership.pk (run `setup` first)")
+	_, err = pk.ReadFrom(pkFile)
+	must(err, "read pk")
+	must(pkFile.Close(), "close pk")
+
+	proof, err := groth16.Prove(ccs, pk, fullWitness)
+	must(err, "prove")
+
+	// Self-verify against the fixed verifying key.
+	vk := groth16.NewVerifyingKey(ecc.BLS12_381)
+	vkFile, err := os.Open("membership.vk")
+	must(err, "open membership.vk")
+	_, err = vk.ReadFrom(vkFile)
+	must(err, "read vk")
+	must(vkFile.Close(), "close vk")
+	must(groth16.Verify(proof, vk, publicWitness), "self-verify against fixed vk")
+
+	proofc := proof.(*groth16bls12381.Proof)
+	pis := publicInputsHex(publicWitness)
+	emitJSON(complianceProofOut{
+		Description:     "compliance proof for the given credential (Basalt ComplianceProof pieces)",
+		ProofHex:        hex.EncodeToString(serializeProof(proofc)),
+		PublicInputsHex: strings.Join(pis, ""),
+		NullifierHex:    pis[CircuitV1Nullifier],
 	})
 }
