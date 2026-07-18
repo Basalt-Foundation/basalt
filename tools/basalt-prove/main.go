@@ -62,6 +62,57 @@ func (c *ComplianceCircuitV1) Define(api frontend.API) error {
 	return nil
 }
 
+// MerkleDepth is the fixed issuer-tree depth for the membership circuit (2^depth leaves).
+const MerkleDepth = 4
+
+// ComplianceCircuitMembership binds IssuerRoot to the credential: it proves the identity commitment
+// MiMC(Secret) is a member of the issuer's Merkle tree whose root is the public IssuerRoot, using a
+// private Merkle path. It keeps the same frozen public-input layout and the nullifier binding. This is
+// the membership increment of the full circuit (3B.7): IssuerRoot is now CONSTRAINED (tampering it makes
+// the proof fail), unlike ComplianceCircuitV1 where it was merely exposed.
+type ComplianceCircuitMembership struct {
+	IssuerRoot     frontend.Variable `gnark:",public"`
+	Nullifier      frontend.Variable `gnark:",public"`
+	Expiry         frontend.Variable `gnark:",public"`
+	IssuerTier     frontend.Variable `gnark:",public"`
+	RevocationRoot frontend.Variable `gnark:",public"`
+
+	Secret       frontend.Variable
+	Epoch        frontend.Variable
+	PathElements [MerkleDepth]frontend.Variable // sibling hash at each level
+	PathIndices  [MerkleDepth]frontend.Variable // 0 = current node is the left child, 1 = the right child
+}
+
+func (c *ComplianceCircuitMembership) Define(api frontend.API) error {
+	h, err := mimc.NewMiMC(api)
+	if err != nil {
+		return err
+	}
+
+	// Leaf = identity commitment = MiMC(Secret).
+	h.Reset()
+	h.Write(c.Secret)
+	cur := h.Sum()
+
+	// Walk the Merkle path up to the root, hashing MiMC(left, right) at each level.
+	for i := 0; i < MerkleDepth; i++ {
+		api.AssertIsBoolean(c.PathIndices[i])
+		left := api.Select(c.PathIndices[i], c.PathElements[i], cur)
+		right := api.Select(c.PathIndices[i], cur, c.PathElements[i])
+		h.Reset()
+		h.Write(left, right)
+		cur = h.Sum()
+	}
+	api.AssertIsEqual(cur, c.IssuerRoot) // binds IssuerRoot to the credential
+
+	// Nullifier = MiMC(Secret, Epoch).
+	h.Reset()
+	h.Write(c.Secret, c.Epoch)
+	api.AssertIsEqual(c.Nullifier, h.Sum())
+
+	return nil
+}
+
 type golden struct {
 	Description   string   `json:"description"`
 	Curve         string   `json:"curve"`
@@ -90,8 +141,10 @@ func main() {
 		genEncoding()
 	case "compliance":
 		genCompliance()
+	case "membership":
+		genMembership()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q (want: encoding | compliance)\n", mode)
+		fmt.Fprintf(os.Stderr, "unknown mode %q (want: encoding | compliance | membership)\n", mode)
 		os.Exit(1)
 	}
 }
@@ -236,6 +289,109 @@ func genCompliance() {
 
 	emit(golden{
 		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitV1 (5 public inputs: issuerRoot,nullifier,expiry=1893456000,tier=3,revocationRoot), Basalt Groth16Codec layout",
+		Curve:         "BLS12-381",
+		Vk:            hex.EncodeToString(serializeVK(vkc)),
+		Proof:         hex.EncodeToString(serializeProof(proofc)),
+		PublicInputs:  publicInputsHex(publicWitness),
+		ExpectedValid: true,
+	})
+}
+
+// mimcHash1 = MiMC(x); mimcHash2 = MiMC(a, b). Off-circuit counterparts of the in-circuit hashing, used
+// to build the issuer tree so its root matches what the circuit recomputes.
+func mimcHash1(x fr.Element) fr.Element {
+	h := frmimc.NewMiMC()
+	b := x.Bytes()
+	_, _ = h.Write(b[:])
+	var out fr.Element
+	out.SetBytes(h.Sum(nil))
+	return out
+}
+
+func mimcHash2(a, b fr.Element) fr.Element {
+	h := frmimc.NewMiMC()
+	ab := a.Bytes()
+	bb := b.Bytes()
+	_, _ = h.Write(ab[:])
+	_, _ = h.Write(bb[:])
+	var out fr.Element
+	out.SetBytes(h.Sum(nil))
+	return out
+}
+
+// buildTreeAndPath builds a depth-`depth` MiMC Merkle tree over `leaves` (len == 2^depth) and returns the
+// root plus the authentication path (sibling per level and the left/right index bit) for `index`.
+func buildTreeAndPath(leaves []fr.Element, index, depth int) (root fr.Element, pathElements []fr.Element, pathIndices []int) {
+	layer := leaves
+	idx := index
+	for d := 0; d < depth; d++ {
+		pathElements = append(pathElements, layer[idx^1])
+		pathIndices = append(pathIndices, idx&1)
+		next := make([]fr.Element, len(layer)/2)
+		for j := range next {
+			next[j] = mimcHash2(layer[2*j], layer[2*j+1])
+		}
+		layer = next
+		idx /= 2
+	}
+	return layer[0], pathElements, pathIndices
+}
+
+func genMembership() {
+	field := ecc.BLS12_381.ScalarField()
+	ccs, err := frontend.Compile(field, r1cs.NewBuilder, &ComplianceCircuitMembership{})
+	must(err, "compile")
+	pk, vk, err := groth16.Setup(ccs)
+	must(err, "setup")
+
+	var secret, epoch fr.Element
+	secret.SetUint64(42)
+	epoch.SetUint64(7)
+
+	// Build a 16-leaf issuer tree; our identity commitment MiMC(secret) sits at index 5 (0b0101, so the
+	// path exercises both left and right positions). Other leaves are arbitrary distinct values.
+	const leafIndex = 5
+	nLeaves := 1 << MerkleDepth
+	leaves := make([]fr.Element, nLeaves)
+	for i := range leaves {
+		leaves[i].SetUint64(uint64(1000 + i))
+	}
+	leaves[leafIndex] = mimcHash1(secret) // identity commitment
+	root, pathElems, pathIdx := buildTreeAndPath(leaves, leafIndex, MerkleDepth)
+	nullifier := mimcNullifier(secret, epoch)
+
+	const expiry = uint64(1893456000)
+	const tier = uint64(3)
+	var revocationRoot fr.Element
+	revocationRoot.SetUint64(0x5555_5555)
+
+	assignment := &ComplianceCircuitMembership{
+		IssuerRoot:     root,
+		Nullifier:      nullifier,
+		Expiry:         expiry,
+		IssuerTier:     tier,
+		RevocationRoot: revocationRoot,
+		Secret:         secret,
+		Epoch:          epoch,
+	}
+	for i := 0; i < MerkleDepth; i++ {
+		assignment.PathElements[i] = pathElems[i]
+		assignment.PathIndices[i] = pathIdx[i]
+	}
+
+	fullWitness, err := frontend.NewWitness(assignment, field)
+	must(err, "witness")
+	publicWitness, err := fullWitness.Public()
+	must(err, "public witness")
+	proof, err := groth16.Prove(ccs, pk, fullWitness)
+	must(err, "prove")
+	must(groth16.Verify(proof, vk, publicWitness), "gnark verify")
+
+	vkc := vk.(*groth16bls12381.VerifyingKey)
+	proofc := proof.(*groth16bls12381.Proof)
+
+	emit(golden{
+		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitMembership (IssuerRoot bound via MiMC Merkle membership, leaf=MiMC(secret) at index 5, depth 4), Basalt Groth16Codec layout",
 		Curve:         "BLS12-381",
 		Vk:            hex.EncodeToString(serializeVK(vkc)),
 		Proof:         hex.EncodeToString(serializeProof(proofc)),
