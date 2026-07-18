@@ -14,5 +14,21 @@
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="FluentAssertions" />
+    <!-- Direct reference so the native RocksDB runtime asset is copied to this test's output
+         (it does not flow transitively through the Basalt.Storage project reference). -->
+    <PackageReference Include="RocksDB" />
   </ItemGroup>
+
+  <!-- RocksDbSharp's loader probes the output base directory, not runtimes/<rid>/native. Flatten the
+       real (x64) native libraries there so RocksDB-backed tests load on x64 CI. The arm64 entries in
+       the 8.9.1 package are stubs, so those tests skip on Apple Silicon (see RocksDbFactAttribute). -->
+  <Target Name="FlattenRealRocksDbNative" AfterTargets="Build;Publish">
+    <ItemGroup>
+      <_RocksRealNative Include="$(OutDir)runtimes/linux-x64/native/*.so" />
+      <_RocksRealNative Include="$(OutDir)runtimes/osx-x64/native/*.dylib" />
+      <_RocksRealNative Include="$(OutDir)runtimes/win-x64/native/*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_RocksRealNative)" DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" Condition="'@(_RocksRealNative)' != ''" />
+  </Target>
 </Project>
