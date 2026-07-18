@@ -1337,9 +1337,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
 
                 var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                var result = RunStateMutation(() => _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap));
 
-                if (result.Success)
+                // Apply pushed sync blocks through ApplyBatch (fork -> execute -> state-root gate ->
+                // swap), NOT the single-arg ApplyBlock path, so a divergent pushed block is rejected
+                // rather than executed directly onto canonical state (which cannot be rolled back). This
+                // closes the same silent-fork hole the batch sync path had.
+                var single = new List<(Block Block, byte[] Raw, ulong CommitBitmap)> { (block, blockBytes, bitmap) };
+                var applied = RunStateMutation(() => _blockApplier!.ApplyBatch(single, _stateDb));
+
+                if (applied > 0)
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
             }
             catch (Exception ex)
