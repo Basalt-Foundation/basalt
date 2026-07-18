@@ -1,11 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Compliance</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Basalt compliance engine: ZK-proof verification (Groth16 over BLS12-381), identity and sanctions registries, and the compliance circuit v1 layout.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
     <ProjectReference Include="../../core/Basalt.Crypto/Basalt.Crypto.csproj" />
-    <ProjectReference Include="../../execution/Basalt.Execution/Basalt.Execution.csproj" />
     <ProjectReference Include="../../confidentiality/Basalt.Confidentiality/Basalt.Confidentiality.csproj" />
   </ItemGroup>
 </Project>

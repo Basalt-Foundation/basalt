@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Core</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Basalt core primitives: Hash256, Address, UInt256, error codes, and the compliance abstractions (IComplianceVerifier, ComplianceProof, ProofRequirement).</Description>
   </PropertyGroup>
 </Project>

@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Confidentiality</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Basalt confidentiality primitives: Groth16 verifier and codec over BLS12-381 (blst), Pedersen commitments, sparse Merkle trees, and private channels.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../core/Basalt.Core/Basalt.Core.csproj" />
