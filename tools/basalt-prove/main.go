@@ -65,11 +65,12 @@ func (c *ComplianceCircuitV1) Define(api frontend.API) error {
 // MerkleDepth is the fixed issuer-tree depth for the membership circuit (2^depth leaves).
 const MerkleDepth = 4
 
-// ComplianceCircuitMembership binds IssuerRoot to the credential: it proves the identity commitment
-// MiMC(Secret) is a member of the issuer's Merkle tree whose root is the public IssuerRoot, using a
-// private Merkle path. It keeps the same frozen public-input layout and the nullifier binding. This is
-// the membership increment of the full circuit (3B.7): IssuerRoot is now CONSTRAINED (tampering it makes
-// the proof fail), unlike ComplianceCircuitV1 where it was merely exposed.
+// ComplianceCircuitMembership binds the whole credential to the issuer: the credential commitment
+// leaf = MiMC(Secret, Expiry, IssuerTier) must be a member of the issuer's Merkle tree whose root is the
+// public IssuerRoot, proven by a private Merkle path. Because Expiry and IssuerTier are hashed into the
+// leaf, the prover cannot change them without breaking membership, so IssuerRoot, Expiry, and IssuerTier
+// are ALL constrained (tampering any of them fails), unlike ComplianceCircuitV1 where they were merely
+// exposed. Keeps the frozen public-input layout and the nullifier binding.
 type ComplianceCircuitMembership struct {
 	IssuerRoot     frontend.Variable `gnark:",public"`
 	Nullifier      frontend.Variable `gnark:",public"`
@@ -89,9 +90,11 @@ func (c *ComplianceCircuitMembership) Define(api frontend.API) error {
 		return err
 	}
 
-	// Leaf = identity commitment = MiMC(Secret).
+	// Credential commitment leaf = MiMC(Secret, Expiry, IssuerTier). Hashing Expiry and IssuerTier into
+	// the leaf binds them: a prover cannot change the public Expiry/IssuerTier without changing the leaf,
+	// which breaks the Merkle membership below.
 	h.Reset()
-	h.Write(c.Secret)
+	h.Write(c.Secret, c.Expiry, c.IssuerTier)
 	cur := h.Sum()
 
 	// Walk the Merkle path up to the root, hashing MiMC(left, right) at each level.
@@ -297,23 +300,28 @@ func genCompliance() {
 	})
 }
 
-// mimcHash1 = MiMC(x); mimcHash2 = MiMC(a, b). Off-circuit counterparts of the in-circuit hashing, used
-// to build the issuer tree so its root matches what the circuit recomputes.
-func mimcHash1(x fr.Element) fr.Element {
-	h := frmimc.NewMiMC()
-	b := x.Bytes()
-	_, _ = h.Write(b[:])
-	var out fr.Element
-	out.SetBytes(h.Sum(nil))
-	return out
-}
-
+// mimcHash2 = MiMC(a, b); mimcHash3 = MiMC(a, b, c). Off-circuit counterparts of the in-circuit hashing,
+// used to build the issuer tree (node hashes and the credential leaf) so its root matches what the
+// circuit recomputes.
 func mimcHash2(a, b fr.Element) fr.Element {
 	h := frmimc.NewMiMC()
 	ab := a.Bytes()
 	bb := b.Bytes()
 	_, _ = h.Write(ab[:])
 	_, _ = h.Write(bb[:])
+	var out fr.Element
+	out.SetBytes(h.Sum(nil))
+	return out
+}
+
+func mimcHash3(a, b, c fr.Element) fr.Element {
+	h := frmimc.NewMiMC()
+	ab := a.Bytes()
+	bb := b.Bytes()
+	cb := c.Bytes()
+	_, _ = h.Write(ab[:])
+	_, _ = h.Write(bb[:])
+	_, _ = h.Write(cb[:])
 	var out fr.Element
 	out.SetBytes(h.Sum(nil))
 	return out
@@ -348,28 +356,30 @@ func genMembership() {
 	secret.SetUint64(42)
 	epoch.SetUint64(7)
 
-	// Build a 16-leaf issuer tree; our identity commitment MiMC(secret) sits at index 5 (0b0101, so the
-	// path exercises both left and right positions). Other leaves are arbitrary distinct values.
+	var expiryE, tierE fr.Element
+	expiryE.SetUint64(1893456000) // 2030-01-01
+	tierE.SetUint64(3)
+
+	// Build a 16-leaf issuer tree; the credential commitment MiMC(secret, expiry, tier) sits at index 5
+	// (0b0101, so the path exercises both left and right positions). Other leaves are arbitrary distinct.
 	const leafIndex = 5
 	nLeaves := 1 << MerkleDepth
 	leaves := make([]fr.Element, nLeaves)
 	for i := range leaves {
 		leaves[i].SetUint64(uint64(1000 + i))
 	}
-	leaves[leafIndex] = mimcHash1(secret) // identity commitment
+	leaves[leafIndex] = mimcHash3(secret, expiryE, tierE) // credential commitment binds secret, expiry, tier
 	root, pathElems, pathIdx := buildTreeAndPath(leaves, leafIndex, MerkleDepth)
 	nullifier := mimcNullifier(secret, epoch)
 
-	const expiry = uint64(1893456000)
-	const tier = uint64(3)
 	var revocationRoot fr.Element
 	revocationRoot.SetUint64(0x5555_5555)
 
 	assignment := &ComplianceCircuitMembership{
 		IssuerRoot:     root,
 		Nullifier:      nullifier,
-		Expiry:         expiry,
-		IssuerTier:     tier,
+		Expiry:         expiryE,
+		IssuerTier:     tierE,
 		RevocationRoot: revocationRoot,
 		Secret:         secret,
 		Epoch:          epoch,
@@ -391,7 +401,7 @@ func genMembership() {
 	proofc := proof.(*groth16bls12381.Proof)
 
 	emit(golden{
-		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitMembership (IssuerRoot bound via MiMC Merkle membership, leaf=MiMC(secret) at index 5, depth 4), Basalt Groth16Codec layout",
+		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitMembership (issuerRoot+expiry+tier bound via MiMC Merkle membership, leaf=MiMC(secret,expiry,tier) at index 5, depth 4), Basalt Groth16Codec layout",
 		Curve:         "BLS12-381",
 		Vk:            hex.EncodeToString(serializeVK(vkc)),
 		Proof:         hex.EncodeToString(serializeProof(proofc)),
