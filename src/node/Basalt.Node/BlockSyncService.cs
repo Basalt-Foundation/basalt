@@ -37,6 +37,9 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
     private const int MaxBackoffMs = 30_000;
     private const int MinPollDelayMs = 500; // Minimum delay between sync polls to reduce pressure on source
     private const int MaxForkSearchDepth = 1000;
+    // Blindage: after this many consecutive fork-recovery failures the node is genuinely wedged;
+    // it exits non-zero rather than serving a permanently-stale chain in silence (see RunAsync).
+    private const int HardForkFailureThreshold = 15;
     private int _consecutiveForkFailures;
 
     public int SyncLag => Volatile.Read(ref _syncLag);
@@ -167,6 +170,21 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
                             continue; // Immediately retry sync from the new tip
                         }
                     }
+
+                    // Blindage: never wedge silently. If fork recovery cannot make progress after many
+                    // attempts the node is stuck (the old "RPC node stuck at 503 forever" failure mode).
+                    // Exit non-zero so the orchestrator (restart: unless-stopped) restarts us into the
+                    // verified startup recovery path, which re-roots state from the persisted store and
+                    // checks the state root (Program.cs), instead of serving a permanently-stale chain.
+                    if (_consecutiveForkFailures >= HardForkFailureThreshold)
+                    {
+                        _logger.LogCritical(
+                            "Sync unrecoverable after {Failures} consecutive fork-recovery failures at local tip #{Tip}. " +
+                            "Exiting for orchestrator restart (never wedge silently).",
+                            _consecutiveForkFailures, _chainManager.LatestBlockNumber);
+                        Environment.Exit(70);
+                    }
+
                     await BackoffAsync(ct);
                 }
             }
@@ -255,7 +273,16 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
             return false;
         }
 
-        // Rollback chain to the fork point
+        // Rollback chain to the fork point.
+        // KNOWN LATENT ISSUE (root-cause-b, characterized 18 Jul 2026): this rolls back only the in-memory
+        // ChainManager index. The persisted BlockStore and the state trie are NOT rolled back here, so on a
+        // genuine reorg an RPC follower's BlockStore/state can diverge from ChainManager. The path is dormant
+        // in the current topology (the RPC node syncs from a single BFT-finalized source that never reorgs),
+        // and the hard-fail guard in RunAsync turns any real stall into an orchestrator restart into the
+        // verified startup recovery. The proper self-heal is to also roll back BlockStore
+        // (_blockStore.RollbackToBlock) and re-root state to forkPointBlock.Header.StateRoot, PLUS roll back
+        // the flat-state persistence (so a later restart's LoadFromPersistence is not stale) — this needs a
+        // dedicated BlockSyncServiceForkRecoveryTests and an IFlatStatePersistence rollback method.
         _chainManager.RollbackTo(forkPointBlock);
         _logger.LogInformation(
             "Chain rolled back to block #{Block}. Re-sync will resume from here.",

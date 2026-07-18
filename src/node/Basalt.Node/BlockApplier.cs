@@ -46,6 +46,14 @@ public sealed class BlockApplier
     private readonly IStakingPersistence? _stakingPersistence;
     private readonly WebSocketHandler _wsHandler;
     private readonly ILogger _logger;
+    /// <summary>
+    /// Sync-durability hook (H4). Given the just-executed forked state and its new root, persists the
+    /// batch's new trie nodes and returns a fresh disk-backed canonical state at that root. When null
+    /// (in-memory / dev mode) the forked overlay is adopted directly. Without this, synced trie nodes
+    /// stay in memory only, so a node that catches up via sync cannot survive a restart, and its state
+    /// stops persisting (every later consensus write also lands in the in-memory overlay).
+    /// </summary>
+    private readonly Func<IStateDatabase, Hash256, IStateDatabase>? _syncStateCommit;
 
     /// <summary>
     /// Fired when an epoch transition occurs. The caller (NodeCoordinator) can hook this
@@ -66,7 +74,8 @@ public sealed class BlockApplier
         StakingState? stakingState,
         IStakingPersistence? stakingPersistence,
         WebSocketHandler wsHandler,
-        ILogger logger)
+        ILogger logger,
+        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null)
     {
         _chainParams = chainParams;
         _chainManager = chainManager;
@@ -80,6 +89,7 @@ public sealed class BlockApplier
         _stakingPersistence = stakingPersistence;
         _wsHandler = wsHandler;
         _logger = logger;
+        _syncStateCommit = syncStateCommit;
     }
 
     /// <summary>
@@ -305,7 +315,19 @@ public sealed class BlockApplier
             forkedState.ClearDirtyTracking();
             forkedState.CompactDeletedSets();
 
-            stateDbRef.Swap(forkedState);
+            if (_syncStateCommit != null)
+            {
+                // H4: the batch's new trie nodes currently live only in the in-memory fork overlay.
+                // Persist them and adopt a fresh disk-backed canonical state at the new root, so a
+                // synced node survives a restart and does not accumulate an unbounded overlay stack
+                // (which would also stop every subsequent consensus write from persisting).
+                var newRoot = forkedState.ComputeStateRoot();
+                stateDbRef.Swap(_syncStateCommit(forkedState, newRoot));
+            }
+            else
+            {
+                stateDbRef.Swap(forkedState);
+            }
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}",
                 newlyApplied, _chainManager.LatestBlockNumber);
         }

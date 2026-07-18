@@ -30,4 +30,22 @@ internal sealed class OverlayTrieNodeStore : ITrieNodeStore
     public void Put(Hash256 hash, TrieNode node) => _overlay[hash] = node;
 
     public void Delete(Hash256 hash) => _overlay[hash] = null;
+
+    /// <summary>
+    /// Write every live (non-tombstoned) overlay node through to <paramref name="target"/>.
+    /// This is how synced state is made durable (H4): after a sync batch the batch's new trie nodes
+    /// live only in this in-memory overlay, so they must be persisted before the forked state becomes
+    /// canonical — otherwise a restart cannot rebuild state and aborts on the state-root check.
+    /// Tombstones are intentionally not propagated: the trie is content-addressed and append-only, so an
+    /// unreferenced old node is simply left for the pruner, and the new root references only nodes that
+    /// are present here (new) or already in the base store (unchanged).
+    /// </summary>
+    public void FlushTo(ITrieNodeStore target)
+    {
+        foreach (var (hash, node) in _overlay)
+        {
+            if (node != null)
+                target.Put(hash, node);
+        }
+    }
 }

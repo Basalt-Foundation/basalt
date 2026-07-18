@@ -32,6 +32,18 @@ public sealed class TrieStateDb : IStateDatabase
         _worldTrie = new MerklePatriciaTrie(nodeStore, stateRoot == Hash256.Zero ? null : stateRoot);
     }
 
+    /// <summary>
+    /// If this state db is backed by an in-memory overlay (produced by <see cref="Fork"/>), write the
+    /// overlay's new trie nodes through to <paramref name="target"/> so they become durable. A no-op when
+    /// the backing store is already persistent. Used to persist synced state before it becomes canonical
+    /// so a restarted node can rebuild it (H4).
+    /// </summary>
+    public void FlushOverlayTo(ITrieNodeStore target)
+    {
+        if (_nodeStore is OverlayTrieNodeStore overlay)
+            overlay.FlushTo(target);
+    }
+
     public AccountState? GetAccount(Address address)
     {
         var key = AddressToKey(address);

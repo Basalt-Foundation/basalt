@@ -500,6 +500,18 @@ try
             var rpcTxExecutor = new TransactionExecutor(chainParams, rpcContractRuntime, stakingState);
             var rpcBlockBuilder = new BlockBuilder(chainParams, rpcTxExecutor, loggerFactory.CreateLogger<BlockBuilder>());
 
+            // H4: after a sync batch, persist the batch's new trie nodes to CF.TrieNodes and adopt a
+            // fresh disk-backed canonical state at the new root — so a synced RPC node survives a restart
+            // (its state-root check would otherwise fail on missing nodes) and does not accumulate an
+            // unbounded in-memory overlay stack.
+            Func<IStateDatabase, Hash256, IStateDatabase> rpcSyncStateCommit = (forked, newRoot) =>
+            {
+                var persistent = new RocksDbTrieNodeStore(rocksDbStore!);
+                if (forked is FlatStateDb fsd)
+                    fsd.InnerTrie.FlushOverlayTo(persistent);
+                return new FlatStateDb(new TrieStateDb(persistent, newRoot), new RocksDbFlatStatePersistence(rocksDbStore!));
+            };
+
             var rpcBlockApplier = new BlockApplier(
                 chainParams, chainManager, mempool, rpcTxExecutor, rpcBlockBuilder,
                 blockStore, receiptStore,
@@ -507,7 +519,8 @@ try
                 stakingState: stakingState,
                 stakingPersistence: stakingPersistence,
                 wsHandler,
-                loggerFactory.CreateLogger<BlockApplier>());
+                loggerFactory.CreateLogger<BlockApplier>(),
+                syncStateCommit: rpcSyncStateCommit);
 
             var rpcSyncService = new BlockSyncService(
                 config.SyncSource!,

@@ -709,11 +709,28 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 poolId, buys, sells, reserves, feeBps,
                 intentMinAmounts, stateDb, dexState, intentTxMap);
 
+        // H4: after a catch-up sync batch, persist the batch's new trie nodes and adopt a fresh
+        // disk-backed canonical state — so a validator that fell behind and re-synced survives a
+        // restart and keeps persisting on the consensus path afterwards. Null in memory-only mode.
+        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null;
+        if (_rocksDbStore != null)
+        {
+            var rocks = _rocksDbStore;
+            syncStateCommit = (forked, newRoot) =>
+            {
+                var persistent = new RocksDbTrieNodeStore(rocks);
+                if (forked is FlatStateDb fsd)
+                    fsd.InnerTrie.FlushOverlayTo(persistent);
+                return new FlatStateDb(new TrieStateDb(persistent, newRoot), new RocksDbFlatStatePersistence(rocks));
+            };
+        }
+
         // Create shared BlockApplier for finalization and sync paths
         _blockApplier = new BlockApplier(
             _chainParams, _chainManager, _mempool, _txExecutor, _blockBuilder,
             _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
-            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>());
+            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>(),
+            syncStateCommit: syncStateCommit);
 
         // Hook epoch transitions to rewire consensus-specific components
         _blockApplier.OnEpochTransition += (newSet, blockNumber) =>
