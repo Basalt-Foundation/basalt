@@ -141,6 +141,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private const int MaxRollbackDepth = 1000;
     private const int MaxForkRetries = 3;
 
+    // Phase 1.6: state-trie pruning. The lock serializes the background prune sweep against every state
+    // mutation (block apply, sync apply, rollback) so a stale-as-of-snapshot node cannot be resurrected
+    // by a concurrent block and then wrongly deleted (guard 6). The pruner never acquires lock(this), so
+    // there is no lock cycle. Null (and the lock uncontended, hence zero cost) when pruning is disabled.
+    private readonly object _stateMutationLock = new();
+    private RocksDbTriePruner? _triePruner;
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -230,6 +237,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         // 9. Start peer reconnection loop
         _ = ReconnectLoop(_cts.Token);
+
+        // 10. Start the trie prune loop (no-op unless pruning is enabled and stores are disk-backed)
+        if (_triePruner != null)
+            _ = RunTriePruneLoop(_cts.Token);
 
         _logger.LogInformation("Node coordinator started. Validator index: {Index}, PeerId: {PeerId}",
             _config.ValidatorIndex, _localPeerId);
@@ -597,7 +608,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // Apply block via shared BlockApplier (executes txs, DEX settlement, chain update,
             // mempool pruning, persistence, epoch transitions, WebSocket broadcast, metrics).
-            var applyResult = _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap);
+            var applyResult = RunStateMutation(() => _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap));
 
             if (applyResult.Success)
             {
@@ -731,6 +742,16 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
             _wsHandler, _loggerFactory.CreateLogger<BlockApplier>(),
             syncStateCommit: syncStateCommit);
+
+        // Phase 1.6: background trie pruner, off by default. Requires disk-backed stores (null in
+        // memory-only mode). When enabled, RunTriePruneLoop sweeps trie_nodes every interval.
+        if (_chainParams.EnableTriePruning && _rocksDbStore != null && _blockStore != null)
+        {
+            _triePruner = new RocksDbTriePruner(_rocksDbStore);
+            _logger.LogInformation(
+                "Trie pruning ENABLED: window={Window} blocks, interval={Interval} blocks",
+                _chainParams.TriePruneWindowSize, _chainParams.TriePruneIntervalBlocks);
+        }
 
         // Hook epoch transitions to rewire consensus-specific components
         _blockApplier.OnEpochTransition += (newSet, blockNumber) =>
@@ -1316,7 +1337,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
 
                 var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                var result = _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap);
+                var result = RunStateMutation(() => _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap));
 
                 if (result.Success)
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
@@ -1420,7 +1441,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
 
         // Delegate to BlockApplier for fork-execute-swap
-        var applied = _blockApplier!.ApplyBatch(blocksToApply, _stateDb);
+        var applied = RunStateMutation(() => _blockApplier!.ApplyBatch(blocksToApply, _stateDb));
 
         // Signal the sync loop under lock to prevent stale responses completing wrong TCS
         lock (this)
@@ -2137,6 +2158,93 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Roll back the chain, block store, and state to the given fork point block.
     /// Returns true if rollback succeeded.
     /// </summary>
+    /// <summary>
+    /// Runs a state mutation (block apply, sync apply, rollback) under the prune-serialization lock when
+    /// pruning is enabled, or directly otherwise. Direct-call when disabled keeps consensus timing
+    /// identical to the default (no-pruning) configuration.
+    /// </summary>
+    private void RunStateMutation(Action mutation)
+    {
+        if (_triePruner == null) { mutation(); return; }
+        lock (_stateMutationLock) mutation();
+    }
+
+    /// <inheritdoc cref="RunStateMutation(Action)"/>
+    private T RunStateMutation<T>(Func<T> mutation)
+    {
+        if (_triePruner == null) return mutation();
+        lock (_stateMutationLock) return mutation();
+    }
+
+    /// <summary>
+    /// Background loop that sweeps stale trie nodes once the tip has advanced a full interval past the
+    /// last sweep. Runs off the consensus thread; the sweep itself holds <see cref="_stateMutationLock"/>
+    /// so it never overlaps a block apply or rollback. Only started when pruning is enabled.
+    /// </summary>
+    private async Task RunTriePruneLoop(CancellationToken ct)
+    {
+        var interval = _chainParams.TriePruneIntervalBlocks;
+        var window = _chainParams.TriePruneWindowSize;
+        // Poll on the order of a few blocks; the interval check below gates the actual work.
+        var pollDelay = TimeSpan.FromMilliseconds(Math.Max(2000, _chainParams.BlockTimeMs * 10));
+        ulong lastSweptTip = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(pollDelay, ct); }
+            catch (OperationCanceledException) { break; }
+
+            if (_blockStore?.GetLatestBlockNumber() is not ulong tip)
+                continue;
+            // Wait for a full window of history and for the tip to advance a full interval since last sweep.
+            if (tip < window || tip < lastSweptTip + interval)
+                continue;
+
+            try
+            {
+                var stats = RunPruneSweep(window);
+                lastSweptTip = tip;
+                _logger.LogInformation(
+                    "Trie prune sweep at #{Tip}: scanned {Scanned}, deleted {Deleted}, retained {Retained}",
+                    tip, stats.TotalScanned, stats.Deleted, stats.Retained);
+            }
+            catch (TriePruneAbortedException ex)
+            {
+                // Tripwire fired: the mark looked implausibly small, so nothing was deleted. Advance the
+                // marker so we do not hammer it every poll, and surface it loudly for investigation.
+                lastSweptTip = tip;
+                _logger.LogWarning(ex, "Trie prune tripwire fired at #{Tip}; deleted nothing", tip);
+            }
+            catch (Exception ex)
+            {
+                // Abort-on-missing or any transient failure: delete nothing, retry next interval.
+                _logger.LogError(ex, "Trie prune sweep failed at #{Tip}; will retry next interval", tip);
+            }
+        }
+
+        _logger.LogInformation("Trie prune loop stopped");
+    }
+
+    /// <summary>
+    /// Executes one prune sweep: computes the retained roots and deletes unreachable nodes under the
+    /// serialization lock, then compacts outside the lock (compaction is slow and must not block state
+    /// mutation).
+    /// </summary>
+    private TriePruneStats RunPruneSweep(ulong window)
+    {
+        var pruner = _triePruner!;
+        TriePruneStats stats;
+        lock (_stateMutationLock)
+        {
+            // BlockStore is stable here (all mutators hold the same lock), so the retained set and the
+            // pruner's internal snapshot are mutually consistent.
+            var retained = TrieRetention.CollectRetainedRoots(_blockStore!, window);
+            stats = pruner.Prune(retained);
+        }
+        pruner.Compact();
+        return stats;
+    }
+
     private bool RollbackToForkPoint(ulong forkPointBlockNumber)
     {
         var currentHeight = _chainManager.LatestBlockNumber;
@@ -2166,31 +2274,36 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return false;
         }
 
-        // 2. Roll back BlockStore (delete blocks after fork point)
-        _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
-        _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
-
-        // 3. Roll back ChainManager
-        _chainManager.RollbackTo(forkPointBlock);
-        _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
-
-        // 4. Roll back state — re-root trie to the fork point's state root
-        if (_rocksDbStore != null)
+        // Steps 2-5 mutate canonical state (block store, chain manager, trie root, epoch). Run them under
+        // the prune-serialization lock so a background sweep never overlaps a rollback (guard 6).
+        RunStateMutation(() =>
         {
-            var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
-            var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
-            // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
-            // The trie is the source of truth; cache warms lazily from trie reads.
-            var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
-            _stateDb.Swap(flat);
-            _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
-        }
+            // 2. Roll back BlockStore (delete blocks after fork point)
+            _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
+            _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
 
-        // 5. Re-seed epoch manager from the new chain height
-        if (_epochManager != null)
-        {
-            _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
-        }
+            // 3. Roll back ChainManager
+            _chainManager.RollbackTo(forkPointBlock);
+            _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
+
+            // 4. Roll back state — re-root trie to the fork point's state root
+            if (_rocksDbStore != null)
+            {
+                var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
+                var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
+                // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
+                // The trie is the source of truth; cache warms lazily from trie reads.
+                var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
+                _stateDb.Swap(flat);
+                _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
+            }
+
+            // 5. Re-seed epoch manager from the new chain height
+            if (_epochManager != null)
+            {
+                _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
+            }
+        });
 
         return true;
     }

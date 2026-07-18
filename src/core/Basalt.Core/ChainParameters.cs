@@ -1,9 +1,10 @@
 namespace Basalt.Core;
 
 /// <summary>
-/// Immutable chain configuration parameters.
+/// Immutable chain configuration parameters. A record so callers can derive a variant with a single
+/// overridden field via <c>with</c> (e.g. enabling trie pruning from an environment toggle at startup).
 /// </summary>
-public sealed class ChainParameters
+public sealed record ChainParameters
 {
     /// <summary>Chain ID for replay protection.</summary>
     public required uint ChainId { get; init; }
@@ -158,6 +159,24 @@ public sealed class ChainParameters
     /// <summary>Protocol version.</summary>
     public uint ProtocolVersion { get; init; } = 1;
 
+    // ── State-trie pruning (Phase 1.6) ──
+
+    /// <summary>
+    /// Enables the background trie prune sweep that bounds <c>trie_nodes</c> disk growth. Off by default
+    /// because it is consensus-critical and is validated by the disk-flattening soak before being turned
+    /// on. When off, the node never sweeps and relies on the testnet reset escape hatch.
+    /// </summary>
+    public bool EnableTriePruning { get; init; } = false;
+
+    /// <summary>
+    /// Number of recent canonical blocks whose state roots a prune sweep retains. Must be at least the
+    /// fork rollback depth (1000) so any legal rollback re-roots onto a state whose nodes still exist.
+    /// </summary>
+    public ulong TriePruneWindowSize { get; init; } = 1000;
+
+    /// <summary>Run a prune sweep every this many finalized blocks. Default 1000 (one epoch).</summary>
+    public uint TriePruneIntervalBlocks { get; init; } = 1000;
+
     /// <summary>
     /// Validates that all chain parameters are within acceptable ranges.
     /// Should be called at node startup to catch misconfigurations early.
@@ -174,6 +193,14 @@ public sealed class ChainParameters
             throw new InvalidOperationException("EpochLength must be greater than zero.");
         if (ValidatorSetSize == 0)
             throw new InvalidOperationException("ValidatorSetSize must be greater than zero.");
+        if (EnableTriePruning)
+        {
+            if (TriePruneIntervalBlocks == 0)
+                throw new InvalidOperationException("TriePruneIntervalBlocks must be greater than zero when pruning is enabled.");
+            if (TriePruneWindowSize < 1000)
+                throw new InvalidOperationException(
+                    $"TriePruneWindowSize ({TriePruneWindowSize}) must be at least the fork rollback depth (1000).");
+        }
         // MEDIUM-02: Consensus vote bitmap is ulong (64 bits), so >64 validators silently
         // corrupts quorum detection. Enforce at validation time.
         if (ValidatorSetSize > MaxValidatorSetSize)

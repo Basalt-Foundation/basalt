@@ -63,6 +63,24 @@ try
 
     var chainParams = ChainParameters.FromConfiguration(config.ChainId, config.NetworkName);
 
+    // Phase 1.6: opt into background trie pruning via env (used by the testnet soak). Off unless set.
+    // BASALT_TRIE_PRUNE_WINDOW / _INTERVAL override the defaults (window must stay >= rollback depth).
+    if (Environment.GetEnvironmentVariable("BASALT_ENABLE_TRIE_PRUNING") == "1")
+    {
+        var pruneWindow = ulong.TryParse(Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_WINDOW"), out var w)
+            ? w : chainParams.TriePruneWindowSize;
+        var pruneInterval = uint.TryParse(Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_INTERVAL"), out var iv)
+            ? iv : chainParams.TriePruneIntervalBlocks;
+        chainParams = chainParams with
+        {
+            EnableTriePruning = true,
+            TriePruneWindowSize = pruneWindow,
+            TriePruneIntervalBlocks = pruneInterval,
+        };
+        Log.Information("Trie pruning enabled via env: window={Window} blocks, interval={Interval} blocks",
+            pruneWindow, pruneInterval);
+    }
+
     // B4: Refuse BASALT_DEBUG=1 on mainnet/testnet — debug mode enables AllowAnyOrigin CORS
     var isDebugMode = Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1";
     if (isDebugMode && chainParams.ChainId <= 2)
