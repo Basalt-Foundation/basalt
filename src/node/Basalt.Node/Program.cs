@@ -442,9 +442,15 @@ try
             });
             // H9: No MockKycProvider in consensus mode — only governance-approved
             // providers can issue attestations on mainnet/testnet.
+            // COMPL-C02: bind both registries to the Governance system-contract address (0x1003) so their
+            // admin guards enforce that only Governance can approve KYC providers or edit the sanctions
+            // list. The parameterless ctors leave the guard address null, which DISABLES that access
+            // control (any/null caller passes). No consensus path calls those admin methods today, so this
+            // is defense-in-depth for when a governance handler is wired, with no runtime behavior change.
+            var governanceAddress = Basalt.Execution.GenesisContractDeployer.Addresses.Governance.ToArray();
             var complianceEngine = new Basalt.Compliance.ComplianceEngine(
-                new Basalt.Compliance.IdentityRegistry(),
-                new Basalt.Compliance.SanctionsList(),
+                new Basalt.Compliance.IdentityRegistry(governanceAddress),
+                new Basalt.Compliance.SanctionsList(governanceAddress),
                 zkVerifier);
 
             var coordinator = new NodeCoordinator(
