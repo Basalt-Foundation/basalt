@@ -229,6 +229,17 @@ public sealed class ContractRegistry
             return new Basalt.Sdk.Contracts.Standards.OracleNetwork();
         });
 
+        registry.Register(0x0109, "TrilithAnchor", args =>
+        {
+            if (args.Length > 0)
+            {
+                var reader = new Basalt.Codec.BasaltReader(args);
+                var fee = reader.ReadUInt64();
+                return new Basalt.Sdk.Contracts.Standards.TrilithAnchor(fee);
+            }
+            return new Basalt.Sdk.Contracts.Standards.TrilithAnchor();
+        });
+
         return registry;
     }
 
