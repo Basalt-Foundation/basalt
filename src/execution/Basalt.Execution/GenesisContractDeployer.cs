@@ -25,8 +25,9 @@ public static class GenesisContractDeployer
         public static readonly Address SchemaRegistry = MakeSystemAddress(0x1006);
         public static readonly Address IssuerRegistry = MakeSystemAddress(0x1007);
         public static readonly Address BridgeETH = MakeSystemAddress(0x1008);
-        // 0x1009 is the DEX system account (DexState.DexAddress); the next free system address is 0x100A.
-        public static readonly Address TrilithAnchor = MakeSystemAddress(0x100A);
+        // 0x1009 is the DEX system account (DexState.DexAddress) and 0x100A is the DEX governance/admin
+        // address (ChainParameters.MakeDexGovernanceAddress), so the next free system address is 0x100B.
+        public static readonly Address TrilithAnchor = MakeSystemAddress(0x100B);
         public static readonly Address Dex = DexState.DexAddress;
 
         private static Address MakeSystemAddress(ushort id)
