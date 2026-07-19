@@ -9,6 +9,17 @@ public sealed record ChainParameters
     /// <summary>Chain ID for replay protection.</summary>
     public required uint ChainId { get; init; }
 
+    /// <summary>Well-known chain id of the public incentivized testnet.</summary>
+    public const uint IncentivizedTestnetChainId = 4242;
+
+    /// <summary>
+    /// Whether this is a public network, subject to the stricter startup guards (explicit faucet key, no
+    /// debug CORS, required data dir and validator key). True for mainnet (1), the built-in testnet (2), and
+    /// the public incentivized testnet (4242). Private devnets (e.g. 31337) are exempt. Without this, a
+    /// public testnet on a chain id above 2 would silently run with devnet-relaxed guards.
+    /// </summary>
+    public bool IsPublicNetwork => ChainId is 1 or 2 or IncentivizedTestnetChainId;
+
     /// <summary>Human-readable network name.</summary>
     public required string NetworkName { get; init; }
 
@@ -215,9 +226,9 @@ public sealed record ChainParameters
             throw new InvalidOperationException("MaxTransactionsPerBlock must be greater than zero.");
         if (string.IsNullOrEmpty(NetworkName))
             throw new InvalidOperationException("NetworkName must not be empty.");
-        if (ChainId <= 2 && DexAdminAddress == null)
+        if (IsPublicNetwork && DexAdminAddress == null)
             throw new InvalidOperationException(
-                "DexAdminAddress must be set for mainnet/testnet. DEX governance cannot function without an admin.");
+                "DexAdminAddress must be set for a public network. DEX governance cannot function without an admin.");
     }
 
     private static Address MakeDexGovernanceAddress()

@@ -81,16 +81,16 @@ try
             pruneWindow, pruneInterval);
     }
 
-    // B4: Refuse BASALT_DEBUG=1 on mainnet/testnet — debug mode enables AllowAnyOrigin CORS
+    // B4: Refuse BASALT_DEBUG=1 on public networks — debug mode enables AllowAnyOrigin CORS
     var isDebugMode = Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1";
-    if (isDebugMode && chainParams.ChainId <= 2)
+    if (isDebugMode && chainParams.IsPublicNetwork)
     {
-        Log.Fatal("BASALT_DEBUG=1 is not allowed on mainnet/testnet. Remove this flag.");
+        Log.Fatal("BASALT_DEBUG=1 is not allowed on a public network. Remove this flag.");
         return 1;
     }
 
-    // H7: Mainnet/testnet configuration guards
-    if (chainParams.ChainId <= 2)
+    // H7: Public-network configuration guards (mainnet, built-in testnet, and the incentivized testnet 4242)
+    if (chainParams.IsPublicNetwork)
     {
         if (chainParams.ChainId == 1 && chainParams.NetworkName != "basalt-mainnet")
             throw new InvalidOperationException("ChainId 1 requires network name 'basalt-mainnet'");
@@ -114,10 +114,10 @@ try
     {
         faucetPrivateKey = Convert.FromHexString(faucetKeyHex);
     }
-    else if (chainParams.ChainId <= 2)
+    else if (chainParams.IsPublicNetwork)
     {
-        // B2: Reject startup on mainnet/testnet without explicit faucet key
-        Log.Fatal("BASALT_FAUCET_KEY must be set for mainnet/testnet. Cannot use deterministic dev key.");
+        // B2: Reject startup on a public network without an explicit faucet key
+        Log.Fatal("BASALT_FAUCET_KEY must be set for a public network. Cannot use deterministic dev key.");
         return 1;
     }
     else
