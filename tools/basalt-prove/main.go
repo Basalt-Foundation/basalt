@@ -52,7 +52,7 @@ func fieldFromRecipientKey(key []byte) fr.Element { return reduceToField(recipie
 // The fixed request binding baked into the golden membership vector (mode `membership`). The same cid and
 // recipient public key appear in the Trilith KeyGate test vector, whose private key unwraps the result.
 const (
-	goldenCid             = "trilith://cid-under-test"
+	goldenCid             = "bagaybqabciqopr4hislq6p6zfb7u4ddve6ws5m7j56qr6ldiarp74y2zpt6rcmy"
 	goldenRecipientKeyHex = "87b6fc9b465c6b1404b71ae1c538f6099d494db31b414afb02476cba256ef754"
 )
 
