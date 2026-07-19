@@ -7,6 +7,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,36 @@ import (
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/logger"
 	"github.com/consensys/gnark/std/hash/mimc"
+)
+
+// Domain separators for deriving the request-binding field elements. These MUST match the C# side
+// (Trilith.KeyGate.RequestBinding) byte-for-byte: field = SHA256(domain || input) reduced mod r.
+const (
+	cidDomain       = "trilith-keygate-cid-v2"
+	recipientDomain = "trilith-keygate-recipient-v2"
+)
+
+// reduceToField maps arbitrary bytes to a BLS12-381 scalar: SHA256(domain || data) interpreted big-endian
+// and reduced mod r (fr.Element.SetBytes does the reduction). The C# verifier recomputes this identically.
+func reduceToField(domain string, data []byte) fr.Element {
+	h := sha256.New()
+	h.Write([]byte(domain))
+	h.Write(data)
+	var e fr.Element
+	e.SetBytes(h.Sum(nil))
+	return e
+}
+
+// fieldFromCid binds a proof to a specific content id; fieldFromRecipientKey binds the wrapped key to a
+// specific X25519 recipient public key.
+func fieldFromCid(cid string) fr.Element          { return reduceToField(cidDomain, []byte(cid)) }
+func fieldFromRecipientKey(key []byte) fr.Element { return reduceToField(recipientDomain, key) }
+
+// The fixed request binding baked into the golden membership vector (mode `membership`). The same cid and
+// recipient public key appear in the Trilith KeyGate test vector, whose private key unwraps the result.
+const (
+	goldenCid             = "trilith://cid-under-test"
+	goldenRecipientKeyHex = "87b6fc9b465c6b1404b71ae1c538f6099d494db31b414afb02476cba256ef754"
 )
 
 // SquareCircuit proves knowledge of X such that X*X == Y, with Y a public input.
@@ -72,21 +103,25 @@ const MerkleDepth = 4
 // indexed tree).
 const RevDepth = 32
 
-// ComplianceCircuitMembership binds the whole credential to the issuer: the credential commitment
-// leaf = MiMC(Secret, Expiry, IssuerTier) must be a member of the issuer's Merkle tree whose root is the
-// public IssuerRoot, proven by a private Merkle path. Because Expiry and IssuerTier are hashed into the
-// leaf, the prover cannot change them without breaking membership, so IssuerRoot, Expiry, and IssuerTier
-// are ALL constrained (tampering any of them fails), unlike ComplianceCircuitV1 where they were merely
-// exposed. Keeps the frozen public-input layout and the nullifier binding.
+// ComplianceCircuitMembership binds the whole credential to the issuer AND binds the proof to a specific
+// request (content id + recipient). The credential commitment leaf = MiMC(Secret, Expiry, IssuerTier) must
+// be a member of the issuer's Merkle tree whose root is the public IssuerRoot, proven by a private Merkle
+// path. Because Expiry and IssuerTier are hashed into the leaf, the prover cannot change them without
+// breaking membership, so IssuerRoot, Expiry, and IssuerTier are ALL constrained (tampering any of them
+// fails). The nullifier binds CidField and RecipientKeyHash: nullifier = MiMC(Secret, CidField,
+// RecipientKeyHash). This is the v2 request binding (7 public inputs): a captured proof cannot be
+// redirected to a different content id or a different recipient key, because either change alters the
+// nullifier the circuit proved and the pairing check rejects it.
 type ComplianceCircuitMembership struct {
-	IssuerRoot     frontend.Variable `gnark:",public"`
-	Nullifier      frontend.Variable `gnark:",public"`
-	Expiry         frontend.Variable `gnark:",public"`
-	IssuerTier     frontend.Variable `gnark:",public"`
-	RevocationRoot frontend.Variable `gnark:",public"`
+	IssuerRoot       frontend.Variable `gnark:",public"`
+	Nullifier        frontend.Variable `gnark:",public"`
+	Expiry           frontend.Variable `gnark:",public"`
+	IssuerTier       frontend.Variable `gnark:",public"`
+	RevocationRoot   frontend.Variable `gnark:",public"`
+	CidField         frontend.Variable `gnark:",public"` // binds the proof to one content id
+	RecipientKeyHash frontend.Variable `gnark:",public"` // binds the wrapped key to one recipient
 
 	Secret       frontend.Variable
-	Epoch        frontend.Variable
 	PathElements [MerkleDepth]frontend.Variable // issuer-tree sibling hash at each level
 	PathIndices  [MerkleDepth]frontend.Variable // 0 = current node is the left child, 1 = the right child
 	RevSiblings  [RevDepth]frontend.Variable    // revocation SMT sibling hash at each level
@@ -116,9 +151,12 @@ func (c *ComplianceCircuitMembership) Define(api frontend.API) error {
 	}
 	api.AssertIsEqual(cur, c.IssuerRoot) // binds IssuerRoot to the credential
 
-	// Nullifier = MiMC(Secret, Epoch).
+	// Nullifier = MiMC(Secret, CidField, RecipientKeyHash). Folding the request bindings into the nullifier
+	// makes CidField and RecipientKeyHash genuinely constrained public inputs (their IC points are not the
+	// identity), so the verifier can trust them: changing either one changes the proven nullifier and the
+	// pairing check fails. The single-use nullifier is thus scoped to (credential, cid, recipient).
 	h.Reset()
-	h.Write(c.Secret, c.Epoch)
+	h.Write(c.Secret, c.CidField, c.RecipientKeyHash)
 	api.AssertIsEqual(c.Nullifier, h.Sum())
 
 	// Revocation non-membership: the credential's revocation slot (low RevDepth bits of MiMC(Secret)) has
@@ -182,15 +220,17 @@ func main() {
 	}
 }
 
-// proveInput is the JSON a prover feeds to `prove` on stdin: their private credential plus the issuer's
-// published tree leaves (so the tool can build the membership path).
+// proveInput is the JSON a prover feeds to `prove` on stdin: their private credential, the specific
+// request being authorized (content id + recipient X25519 public key), plus the issuer's published tree
+// leaves (so the tool can build the membership path).
 type proveInput struct {
-	Secret    uint64   `json:"secret"`
-	Epoch     uint64   `json:"epoch"`
-	Expiry    uint64   `json:"expiry"`
-	Tier      uint64   `json:"tier"`
-	LeafIndex int      `json:"leafIndex"`
-	Leaves    []string `json:"leaves"` // 2^MerkleDepth hex field elements (the issuer's published tree)
+	Secret           uint64   `json:"secret"`
+	Expiry           uint64   `json:"expiry"`
+	Tier             uint64   `json:"tier"`
+	Cid              string   `json:"cid"`              // the content id this proof authorizes
+	RecipientKeyHex  string   `json:"recipientKeyHex"`  // the recipient X25519 public key (hex, 32 bytes)
+	LeafIndex        int      `json:"leafIndex"`
+	Leaves           []string `json:"leaves"` // 2^MerkleDepth hex field elements (the issuer's published tree)
 }
 
 // complianceProofOut is what a transaction's ComplianceProof carries: the Groth16 proof, the public
@@ -198,7 +238,7 @@ type proveInput struct {
 type complianceProofOut struct {
 	Description     string `json:"description"`
 	ProofHex        string `json:"proof_hex"`         // 192 bytes: A(48) B(96) C(48)
-	PublicInputsHex string `json:"public_inputs_hex"` // flat 5*32 = 160 bytes
+	PublicInputsHex string `json:"public_inputs_hex"` // flat 7*32 = 224 bytes
 	NullifierHex    string `json:"nullifier_hex"`     // 32 bytes, equals public input index 1
 	VkHex           string `json:"vk_hex,omitempty"`  // Basalt-layout VK (setup only)
 }
@@ -414,13 +454,18 @@ func genMembership() {
 	pk, vk, err := groth16.Setup(ccs)
 	must(err, "setup")
 
-	var secret, epoch fr.Element
+	var secret fr.Element
 	secret.SetUint64(42)
-	epoch.SetUint64(7)
 
 	var expiryE, tierE fr.Element
 	expiryE.SetUint64(1893456000) // 2030-01-01
 	tierE.SetUint64(3)
+
+	// Request binding: the proof authorizes exactly this content id and this recipient key.
+	recipientKey, err := hex.DecodeString(goldenRecipientKeyHex)
+	must(err, "decode golden recipient key")
+	cidField := fieldFromCid(goldenCid)
+	recipientKeyHash := fieldFromRecipientKey(recipientKey)
 
 	// Build a 16-leaf issuer tree; the credential commitment MiMC(secret, expiry, tier) sits at index 5
 	// (0b0101, so the path exercises both left and right positions). Other leaves are arbitrary distinct.
@@ -432,7 +477,7 @@ func genMembership() {
 	}
 	leaves[leafIndex] = mimcHash3(secret, expiryE, tierE) // credential commitment binds secret, expiry, tier
 	root, pathElems, pathIdx := buildTreeAndPath(leaves, leafIndex, MerkleDepth)
-	nullifier := mimcNullifier(secret, epoch)
+	nullifier := mimcHash3(secret, cidField, recipientKeyHash) // nullifier binds the request (cid, recipient)
 
 	// Empty revocation tree (nothing revoked): root is the all-empty default, and every sibling on the
 	// credential's revocation path is the empty-subtree default, so the empty leaf hashes to the root.
@@ -440,13 +485,14 @@ func genMembership() {
 	revocationRoot := revDefaults[RevDepth]
 
 	assignment := &ComplianceCircuitMembership{
-		IssuerRoot:     root,
-		Nullifier:      nullifier,
-		Expiry:         expiryE,
-		IssuerTier:     tierE,
-		RevocationRoot: revocationRoot,
-		Secret:         secret,
-		Epoch:          epoch,
+		IssuerRoot:       root,
+		Nullifier:        nullifier,
+		Expiry:           expiryE,
+		IssuerTier:       tierE,
+		RevocationRoot:   revocationRoot,
+		CidField:         cidField,
+		RecipientKeyHash: recipientKeyHash,
+		Secret:           secret,
 	}
 	for i := 0; i < MerkleDepth; i++ {
 		assignment.PathElements[i] = pathElems[i]
@@ -468,7 +514,7 @@ func genMembership() {
 	proofc := proof.(*groth16bls12381.Proof)
 
 	emit(golden{
-		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitMembership (issuerRoot+expiry+tier bound via MiMC Merkle membership, leaf=MiMC(secret,expiry,tier) at index 5, depth 4), Basalt Groth16Codec layout",
+		Description:   "gnark v0.15 Groth16 BLS12-381, ComplianceCircuitMembership v2 (7 public inputs: issuerRoot,nullifier,expiry=1893456000,tier=3,revocationRoot,cidField,recipientKeyHash; issuerRoot+expiry+tier bound via MiMC Merkle membership leaf=MiMC(secret,expiry,tier) at index 5 depth 4; nullifier=MiMC(secret,cidField,recipientKeyHash) binds cid+recipient), Basalt Groth16Codec layout",
 		Curve:         "BLS12-381",
 		Vk:            hex.EncodeToString(serializeVK(vkc)),
 		Proof:         hex.EncodeToString(serializeProof(proofc)),
@@ -532,12 +578,25 @@ func genProve() {
 		os.Exit(1)
 	}
 
-	var secret, epoch, expiryE, tierE fr.Element
+	var secret, expiryE, tierE fr.Element
 	secret.SetUint64(in.Secret)
-	epoch.SetUint64(in.Epoch)
 	expiryE.SetUint64(in.Expiry)
 	tierE.SetUint64(in.Tier)
 	credLeaf := mimcHash3(secret, expiryE, tierE) // the prover's credential commitment
+
+	// Request binding: derive the field elements for the content id and recipient key this proof authorizes.
+	if in.Cid == "" {
+		fmt.Fprintln(os.Stderr, "cid is required")
+		os.Exit(1)
+	}
+	recipientKey, err := hex.DecodeString(strings.TrimPrefix(in.RecipientKeyHex, "0x"))
+	must(err, "decode recipientKeyHex")
+	if len(recipientKey) != 32 {
+		fmt.Fprintf(os.Stderr, "recipientKeyHex must be 32 bytes, got %d\n", len(recipientKey))
+		os.Exit(1)
+	}
+	cidField := fieldFromCid(in.Cid)
+	recipientKeyHash := fieldFromRecipientKey(recipientKey)
 
 	leaves := make([]fr.Element, n)
 	if len(in.Leaves) == 0 {
@@ -562,17 +621,18 @@ func genProve() {
 	}
 
 	root, pathElems, pathIdx := buildTreeAndPath(leaves, in.LeafIndex, MerkleDepth)
-	nullifier := mimcNullifier(secret, epoch)
+	nullifier := mimcHash3(secret, cidField, recipientKeyHash) // nullifier binds the request (cid, recipient)
 	revDefaults := revocationDefaults()
 
 	assignment := &ComplianceCircuitMembership{
-		IssuerRoot:     root,
-		Nullifier:      nullifier,
-		Expiry:         expiryE,
-		IssuerTier:     tierE,
-		RevocationRoot: revDefaults[RevDepth],
-		Secret:         secret,
-		Epoch:          epoch,
+		IssuerRoot:       root,
+		Nullifier:        nullifier,
+		Expiry:           expiryE,
+		IssuerTier:       tierE,
+		RevocationRoot:   revDefaults[RevDepth],
+		CidField:         cidField,
+		RecipientKeyHash: recipientKeyHash,
+		Secret:           secret,
 	}
 	for i := 0; i < MerkleDepth; i++ {
 		assignment.PathElements[i] = pathElems[i]

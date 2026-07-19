@@ -207,20 +207,22 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
         }
 
         // 7. COMPL-C03: enforce the credential's expiry, tier, and nullifier binding for the standardized
-        // v1 public-input layout. Skipped for other layouts (their VK/circuit defines their semantics).
-        if (inputCount == CircuitV1Layout.PublicInputCount)
+        // v2 request-bound public-input layout. The expiry/tier/nullifier indices are identical to v1; v2
+        // simply appends cidField and recipientKeyHash (checked by the consumer that knows their semantics,
+        // e.g. Trilith.KeyGate). Skipped for other layouts (their VK/circuit defines their semantics).
+        if (inputCount == CircuitV2Layout.PublicInputCount)
         {
             ulong expirySeconds, issuerTier;
             try
             {
-                expirySeconds = CircuitV1Layout.ReadUInt64(publicInputs[CircuitV1Layout.Expiry]);
-                issuerTier = CircuitV1Layout.ReadUInt64(publicInputs[CircuitV1Layout.IssuerTier]);
+                expirySeconds = CircuitV2Layout.ReadUInt64(publicInputs[CircuitV2Layout.Expiry]);
+                issuerTier = CircuitV2Layout.ReadUInt64(publicInputs[CircuitV2Layout.IssuerTier]);
             }
             catch (Exception ex)
             {
                 lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
                 return ComplianceCheckOutcome.Fail(
-                    BasaltErrorCode.ComplianceProofInvalid, $"Malformed v1 public inputs: {ex.Message}");
+                    BasaltErrorCode.ComplianceProofInvalid, $"Malformed v2 public inputs: {ex.Message}");
             }
 
             // Block timestamps are milliseconds; credential expiry is unix seconds.
@@ -246,7 +248,7 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
             // bypassing replay protection.
             Span<byte> provenNullifier = stackalloc byte[Hash256.Size];
             proof.Nullifier.WriteTo(provenNullifier);
-            if (!provenNullifier.SequenceEqual(publicInputs[CircuitV1Layout.Nullifier]))
+            if (!provenNullifier.SequenceEqual(publicInputs[CircuitV2Layout.Nullifier]))
             {
                 lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
                 return ComplianceCheckOutcome.Fail(

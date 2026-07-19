@@ -27,16 +27,16 @@ public class ComplianceMembershipTests
     [Fact]
     public void CredentialProof_Verifies()
     {
-        Vk().IC.Should().HaveCount(CircuitV1Layout.PublicInputCount + 1); // same frozen layout
+        Vk().IC.Should().HaveCount(CircuitV2Layout.PublicInputCount + 1); // v2 request-bound layout: 7 inputs
         Groth16Verifier.Verify(Vk(), Proof(), MembershipVector.PublicInputs()).Should().BeTrue(
-            "the credential membership proof binds issuerRoot, expiry, and tier, and must verify");
+            "the credential membership proof binds issuerRoot, expiry, tier, cid, and recipient, and must verify");
     }
 
     [Fact]
     public void TamperedIssuerRoot_FailsVerification()
     {
         var pis = MembershipVector.PublicInputs();
-        pis[CircuitV1Layout.IssuerRoot] = Word(0xdeadbeef);
+        pis[CircuitV2Layout.IssuerRoot] = Word(0xdeadbeef);
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
 
@@ -46,7 +46,7 @@ public class ComplianceMembershipTests
         // The milestone: expiry is hashed into the credential leaf, so a prover cannot claim a later
         // expiry than the issuer attested. In circuit v1 this tamper still verified.
         var pis = MembershipVector.PublicInputs();
-        pis[CircuitV1Layout.Expiry] = Word(4102444800); // year 2100, not the attested 1893456000
+        pis[CircuitV2Layout.Expiry] = Word(4102444800); // year 2100, not the attested 1893456000
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
 
@@ -54,7 +54,7 @@ public class ComplianceMembershipTests
     public void TamperedTier_FailsVerification()
     {
         var pis = MembershipVector.PublicInputs();
-        pis[CircuitV1Layout.IssuerTier] = Word(9);
+        pis[CircuitV2Layout.IssuerTier] = Word(9);
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
 
@@ -62,7 +62,7 @@ public class ComplianceMembershipTests
     public void TamperedNullifier_FailsVerification()
     {
         var pis = MembershipVector.PublicInputs();
-        pis[CircuitV1Layout.Nullifier] = Word(1);
+        pis[CircuitV2Layout.Nullifier] = Word(1);
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
 
@@ -72,7 +72,27 @@ public class ComplianceMembershipTests
         // revocationRoot is bound by the non-membership proof: a prover cannot substitute a different
         // revocation-tree root (e.g. an empty one) to hide that they were revoked.
         var pis = MembershipVector.PublicInputs();
-        pis[CircuitV1Layout.RevocationRoot] = Word(0xdeadbeef);
+        pis[CircuitV2Layout.RevocationRoot] = Word(0xdeadbeef);
+        Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TamperedCidField_FailsVerification()
+    {
+        // v2 request binding: cidField is folded into the nullifier, so redirecting the proof to a
+        // different content id changes the proven nullifier and the pairing check rejects it.
+        var pis = MembershipVector.PublicInputs();
+        pis[CircuitV2Layout.CidField] = Word(0xdeadbeef);
+        Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TamperedRecipientKeyHash_FailsVerification()
+    {
+        // v2 request binding: recipientKeyHash is folded into the nullifier, so substituting the recipient
+        // key (key-substitution / MITM) changes the proven nullifier and the pairing check rejects it.
+        var pis = MembershipVector.PublicInputs();
+        pis[CircuitV2Layout.RecipientKeyHash] = Word(0xdeadbeef);
         Groth16Verifier.Verify(Vk(), Proof(), pis).Should().BeFalse();
     }
 }
