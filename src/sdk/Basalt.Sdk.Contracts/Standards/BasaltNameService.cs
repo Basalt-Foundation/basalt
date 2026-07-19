@@ -58,6 +58,18 @@ public partial class BasaltNameService
     /// <summary>Current block time in unix seconds (block timestamps are unix milliseconds).</summary>
     private static long NowSeconds() => Context.BlockTimestamp / 1000;
 
+    /// <summary>
+    /// The registration term in seconds, falling back to the default when unset. The genesis deploy path
+    /// constructs system contracts with <c>Context.IsDeploying == false</c>, so the constructor's init block
+    /// does not run at genesis and the stored value is 0 there; the fallback keeps a genesis-deployed BNS
+    /// working (a governance setter could still store a non-default term later).
+    /// </summary>
+    private long RegistrationPeriodSeconds()
+    {
+        var stored = _registrationPeriodSeconds.Get();
+        return stored > 0 ? stored : DefaultRegistrationPeriodSeconds;
+    }
+
     /// <summary>Whether a name is expired and past its grace period (so anyone may take it).</summary>
     private bool IsExpiredPastGrace(string name)
     {
@@ -97,7 +109,7 @@ public partial class BasaltNameService
         var callerHex = Convert.ToHexString(Context.Caller);
         _owners.Set(name, callerHex);
         _addresses.Set(name, callerHex);
-        _expiries.Set(name, NowSeconds() + _registrationPeriodSeconds.Get());
+        _expiries.Set(name, NowSeconds() + RegistrationPeriodSeconds());
 
         Context.Emit(new NameRegisteredEvent { Name = name, Owner = Context.Caller });
     }
@@ -117,7 +129,7 @@ public partial class BasaltNameService
         var now = NowSeconds();
         var current = _expiries.Get(name);
         var baseTime = current > now ? current : now;
-        var newExpiry = baseTime + _registrationPeriodSeconds.Get();
+        var newExpiry = baseTime + RegistrationPeriodSeconds();
         _expiries.Set(name, newExpiry);
 
         Context.Emit(new NameRenewedEvent { Name = name, NewExpiry = newExpiry });

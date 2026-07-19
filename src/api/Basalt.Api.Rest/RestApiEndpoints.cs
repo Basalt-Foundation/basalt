@@ -503,6 +503,66 @@ public static class RestApiEndpoints
             });
         }
 
+        // Trilith read surface: convenience JSON endpoints over the BNS v2 and TrilithAnchor system
+        // contracts, so the (Basalt-free) Trilith.Naming.Basalt adapter reads them with plain HTTP + JSON
+        // instead of encoding contract-view calls itself. The encode/call/decode lives in SystemContractReader.
+        if (contractRuntime != null)
+        {
+            var reader = new SystemContractReader(stateDb, contractRuntime, () =>
+            {
+                var b = chainManager.LatestBlock;
+                return new ViewBlockContext(
+                    b != null ? (ulong)b.Header.Timestamp : 0,
+                    b?.Number ?? 0,
+                    b?.Header.Proposer ?? Address.Zero,
+                    b?.Header.ChainId ?? 1);
+            }, Math.Min(5_000_000UL, chainParams?.BlockGasLimit ?? 100_000_000UL));
+
+            // GET /v1/names/{label} — resolve a BNS v2 name to its trilith:// content record, expiry, owner.
+            app.MapGet("/v1/names/{label}", (string label) =>
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(label) || label.Length > 64)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "invalid label" });
+
+                    var record = reader.ReadName(label);
+                    return record == null
+                        ? Microsoft.AspNetCore.Http.Results.NotFound(new ErrorResponse { Code = 404, Message = "name not registered" })
+                        : Microsoft.AspNetCore.Http.Results.Ok(record);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Name lookup failed");
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = (int)BasaltErrorCode.InternalError, Message = "Internal error" });
+                }
+            });
+
+            // GET /v1/anchors/{digest} — read a TrilithAnchor record for a 32-byte digest (hex).
+            app.MapGet("/v1/anchors/{digest}", (string digest) =>
+            {
+                try
+                {
+                    var hex = StripHexPrefix(digest);
+                    byte[] digestBytes;
+                    try { digestBytes = Convert.FromHexString(hex); }
+                    catch { return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "digest must be hex" }); }
+                    if (digestBytes.Length != 32)
+                        return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = 400, Message = "digest must be 32 bytes" });
+
+                    var record = reader.ReadAnchor(digestBytes);
+                    return record == null
+                        ? Microsoft.AspNetCore.Http.Results.NotFound(new ErrorResponse { Code = 404, Message = "digest not anchored" })
+                        : Microsoft.AspNetCore.Http.Results.Ok(record);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Anchor lookup failed");
+                    return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse { Code = (int)BasaltErrorCode.InternalError, Message = "Internal error" });
+                }
+            });
+        }
+
         // GET /v1/contracts/{address} — contract metadata
         if (contractRuntime != null)
         {
@@ -1776,6 +1836,26 @@ public sealed class SyncBlocksResponse
 /// Forwards transactions from RPC nodes to validators.
 /// </summary>
 
+/// <summary>A BNS v2 name record: its trilith:// content name, expiry (unix seconds), and owner (hex).</summary>
+public class NameRecordResponse
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    [JsonPropertyName("contentUri")] public string ContentUri { get; set; } = "";
+    [JsonPropertyName("expiry")] public long Expiry { get; set; }
+    [JsonPropertyName("owner")] public string Owner { get; set; } = "";
+}
+
+/// <summary>A TrilithAnchor record for a 32-byte digest.</summary>
+public class AnchorResponse
+{
+    [JsonPropertyName("digest")] public string Digest { get; set; } = "";
+    [JsonPropertyName("timestamp")] public ulong Timestamp { get; set; }
+    [JsonPropertyName("kind")] public byte Kind { get; set; }
+    [JsonPropertyName("blockNumber")] public ulong BlockNumber { get; set; }
+    [JsonPropertyName("submitter")] public string Submitter { get; set; } = "";
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+}
+
 [JsonSerializable(typeof(SyncStatusResponse))]
 [JsonSerializable(typeof(SyncBlockEntry))]
 [JsonSerializable(typeof(SyncBlockEntry[]))]
@@ -1798,6 +1878,8 @@ public sealed class SyncBlocksResponse
 [JsonSerializable(typeof(PoolInfoResponse[]))]
 [JsonSerializable(typeof(CallRequest))]
 [JsonSerializable(typeof(CallResponse))]
+[JsonSerializable(typeof(NameRecordResponse))]
+[JsonSerializable(typeof(AnchorResponse))]
 [JsonSerializable(typeof(ContractInfoResponse))]
 [JsonSerializable(typeof(StorageReadResponse))]
 [JsonSerializable(typeof(ReceiptResponse))]
