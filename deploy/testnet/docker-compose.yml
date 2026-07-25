@@ -62,6 +62,7 @@ services:
       - BASALT_VALIDATOR_INDEX=0
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_0_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_0_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -93,6 +94,7 @@ services:
       - BASALT_VALIDATOR_INDEX=1
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_1_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_1_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -118,6 +120,7 @@ services:
       - BASALT_VALIDATOR_INDEX=2
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_2_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_2_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -143,6 +146,7 @@ services:
       - BASALT_VALIDATOR_INDEX=3
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_3_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_3_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -167,6 +171,9 @@ services:
     environment:
       - BASALT_MODE=rpc
       - BASALT_SYNC_SOURCE=http://validator-0:5000
+      # Required even here: the public-network guard is in the common startup path, and this node serves
+      # the faucet endpoint that is how testnet users actually get funds.
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
