@@ -36,43 +36,45 @@ public static class TrieReachability
         ArgumentNullException.ThrowIfNull(roots);
 
         var reachable = new HashSet<Hash256>();
-        // Explicit work stack (root, isWorldTrie) to keep depth off the call stack.
-        var stack = new Stack<(Hash256 Hash, bool IsWorldTrie)>();
+        // Explicit work stack (root, isWorldTrie, originRoot) to keep depth off the call stack. The origin
+        // is carried purely so a failure can name which retained root led to the missing node, which is
+        // what separates "the tip is broken" from "some historical state was never persisted".
+        var stack = new Stack<(Hash256 Hash, bool IsWorldTrie, Hash256 Origin)>();
         foreach (var root in roots)
         {
             if (root != Hash256.Zero)
-                stack.Push((root, true));
+                stack.Push((root, true, root));
         }
 
         while (stack.Count > 0)
         {
-            var (nodeHash, isWorldTrie) = stack.Pop();
+            var (nodeHash, isWorldTrie, origin) = stack.Pop();
             if (nodeHash == Hash256.Zero || !reachable.Add(nodeHash))
                 continue; // empty or already visited (also breaks any cycle)
 
-            var node = store.Get(nodeHash) ?? throw new MissingTrieNodeException(nodeHash);
+            var node = store.Get(nodeHash) ?? throw new MissingTrieNodeException(nodeHash, origin);
 
             switch (node.NodeType)
             {
                 case TrieNodeType.Extension:
                     if (node.ChildHash.HasValue)
-                        stack.Push((node.ChildHash.Value, isWorldTrie));
+                        stack.Push((node.ChildHash.Value, isWorldTrie, origin));
                     break;
 
                 case TrieNodeType.Branch:
                     foreach (var child in node.Children)
                     {
                         if (child.HasValue)
-                            stack.Push((child.Value, isWorldTrie));
+                            stack.Push((child.Value, isWorldTrie, origin));
                     }
                     // A branch can itself carry a terminal value (a key that ends at the branch).
                     if (isWorldTrie)
-                        PushStorageRoot(node.BranchValue, stack);
+                        PushStorageRoot(node.BranchValue, stack, origin);
                     break;
 
                 case TrieNodeType.Leaf:
                     if (isWorldTrie)
-                        PushStorageRoot(node.Value, stack);
+                        PushStorageRoot(node.Value, stack, origin);
                     break;
             }
         }
@@ -81,14 +83,14 @@ public static class TrieReachability
     }
 
     /// <summary>If <paramref name="accountValue"/> is an account carrying a non-empty storage root, queue that sub-trie.</summary>
-    private static void PushStorageRoot(byte[]? accountValue, Stack<(Hash256, bool)> stack)
+    private static void PushStorageRoot(byte[]? accountValue, Stack<(Hash256, bool, Hash256)> stack, Hash256 origin)
     {
         if (accountValue == null || accountValue.Length < AccountStorageRootOffset + Hash256.Size)
             return; // not an account-shaped value; nothing to descend
 
         var storageRoot = new Hash256(accountValue.AsSpan(AccountStorageRootOffset, Hash256.Size));
         if (storageRoot != Hash256.Zero)
-            stack.Push((storageRoot, false)); // storage sub-trie: values are raw slots, never accounts
+            stack.Push((storageRoot, false, origin)); // storage sub-trie: values are raw slots, never accounts
     }
 }
 
@@ -97,10 +99,13 @@ public static class TrieReachability
 /// caller can probe other stores and tell apart the two very different causes: a node that is genuinely
 /// gone (deleted, or never written) from one that exists but is invisible through a pinned snapshot.
 /// </summary>
-public sealed class MissingTrieNodeException(Hash256 hash) : InvalidOperationException(
-    $"Trie pruning: node {hash.ToHexString()} referenced by a retained root is missing from the store. " +
-    "Aborting sweep (deleting nothing).")
+public sealed class MissingTrieNodeException(Hash256 hash, Hash256 root) : InvalidOperationException(
+    $"Trie pruning: node {hash.ToHexString()} referenced by retained root {root.ToHexString()} is missing " +
+    "from the store. Aborting sweep (deleting nothing).")
 {
     /// <summary>The node that could not be read.</summary>
     public Hash256 Hash { get; } = hash;
+
+    /// <summary>The retained root the walk reached it from.</summary>
+    public Hash256 Root { get; } = root;
 }

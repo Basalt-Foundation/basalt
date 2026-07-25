@@ -68,7 +68,7 @@ public sealed class RocksDbTriePruner
             // establish which one it is instead of guessing. If the node is readable from the live store
             // it exists and the pinned snapshot simply cannot see it, which is a visibility problem. If it
             // is absent from both, it was deleted or never written, which is a durability problem.
-            throw new MissingTrieNodeDiagnosisException(ex.Hash, LiveStoreHas(ex.Hash), ex);
+            throw new MissingTrieNodeDiagnosisException(ex.Hash, ex.Root, LiveStoreHas(ex.Hash), ex);
         }
 
         // Enumerate the snapshot and partition into keep/delete.
@@ -181,10 +181,10 @@ internal sealed class SnapshotTrieNodeStore : ITrieNodeStore
 /// A missing retained node, with the answer to the one question that separates a snapshot-visibility bug
 /// from a durability bug: was the node readable from the live store at the moment the sweep failed.
 /// </summary>
-public sealed class MissingTrieNodeDiagnosisException(Hash256 hash, bool presentInLiveStore, Exception inner)
+public sealed class MissingTrieNodeDiagnosisException(Hash256 hash, Hash256 root, bool presentInLiveStore, Exception inner)
     : InvalidOperationException(
-        $"Trie prune aborted: node {hash.ToHexString()} is referenced by a retained root but missing from the "
-        + $"pinned snapshot. Present in the live store: {presentInLiveStore}. "
+        $"Trie prune aborted: node {hash.ToHexString()} is referenced by retained root {root.ToHexString()} "
+        + $"but missing from the pinned snapshot. Present in the live store: {presentInLiveStore}. "
         + (presentInLiveStore
             ? "The node exists, so the snapshot cannot see it: a visibility fault, not a lost node."
             : "The node is absent from the live store too: it was deleted or never written."),
@@ -192,6 +192,9 @@ public sealed class MissingTrieNodeDiagnosisException(Hash256 hash, bool present
 {
     /// <summary>The node that could not be read.</summary>
     public Hash256 Hash { get; } = hash;
+
+    /// <summary>The retained root the walk reached it from.</summary>
+    public Hash256 Root { get; } = root;
 
     /// <summary>Whether the live store could read the node when the sweep failed.</summary>
     public bool PresentInLiveStore { get; } = presentInLiveStore;
