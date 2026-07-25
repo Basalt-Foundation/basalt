@@ -193,6 +193,13 @@ public class FaucetDiagnosticTests
         var recipientAddress = Address.FromHexString("0x0000000000000000000000000000000000000001");
         var dripAmount = UInt256.Parse("100000000000000000000");
 
+        // BlockBuilder enforces the EIP-1559 base fee, which TransactionValidator does not, so
+        // pay exactly what FaucetEndpoint pays: the higher of MinGasPrice and the block base fee.
+        // The parent header below carries no base fee, so BaseFeeCalculator falls back to
+        // InitialBaseFee for this block.
+        var baseFee = _chainParams.InitialBaseFee;
+        var faucetGasPrice = _chainParams.MinGasPrice > baseFee ? _chainParams.MinGasPrice : baseFee;
+
         var unsignedTx = new Transaction
         {
             Type = TransactionType.Transfer,
@@ -201,7 +208,7 @@ public class FaucetDiagnosticTests
             To = recipientAddress,
             Value = dripAmount,
             GasLimit = _chainParams.TransferGasCost,
-            GasPrice = _chainParams.MinGasPrice,
+            GasPrice = faucetGasPrice,
             Data = [],
             Priority = 0,
             ChainId = _chainParams.ChainId,
