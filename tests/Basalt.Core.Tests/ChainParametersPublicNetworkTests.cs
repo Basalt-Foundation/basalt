@@ -35,4 +35,14 @@ public class ChainParametersPublicNetworkTests
     [Fact]
     public void Incentivized_testnet_id_is_4242()
         => ChainParameters.IncentivizedTestnetChainId.Should().Be(4242u);
+
+    [Fact]
+    public void FromConfiguration_4242_is_a_valid_public_network()
+    {
+        var p = ChainParameters.FromConfiguration(4242, "basalt-incentivized-testnet");
+
+        p.IsPublicNetwork.Should().BeTrue();
+        p.DexAdminAddress.Should().NotBeNull(); // required by the public-network validation
+        p.Invoking(x => x.Validate()).Should().NotThrow();
+    }
 }

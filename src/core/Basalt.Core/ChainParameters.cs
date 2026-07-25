@@ -349,6 +349,24 @@ public sealed record ChainParameters
                 TwapWindowBlocks = 3600,
                 MaxPoolCreationsPerBlock = 20,
             },
+            IncentivizedTestnetChainId => new ChainParameters
+            {
+                // Public incentivized testnet: testnet-scale parameters, and a DexAdminAddress so it passes
+                // the public-network validation (IsPublicNetwork requires one).
+                ChainId = chainId,
+                NetworkName = networkName,
+                BlockTimeMs = 2000,
+                InitialBaseFee = new UInt256(100_000_000),
+                ValidatorSetSize = 32,
+                MinValidatorStake = UInt256.Parse("10000000000000000000000"),
+                EpochLength = 500,
+                UnbondingPeriod = 43_200,
+                InactivityThresholdPercent = 50,
+                NullifierWindowBlocks = 128,
+                DexAdminAddress = MakeDexGovernanceAddress(),
+                TwapWindowBlocks = 3600,
+                MaxPoolCreationsPerBlock = 20,
+            },
             _ => new ChainParameters
             {
                 ChainId = chainId,
