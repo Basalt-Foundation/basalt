@@ -171,13 +171,79 @@ try
     var stakingState = new StakingState();
     stakingStateForShutdown = stakingState;
     Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null;
-    var validatorAddresses = new[]
+    // The genesis validator set. It defaults to the deterministic devnet addresses, whose private keys
+    // are published in the devnet compose, which is fine for a devnet and disqualifying for anything
+    // else: a network staking four addresses that anyone can sign for is not a network anyone should
+    // trust. BASALT_GENESIS_VALIDATORS lets a real deployment stake the keys its operators actually
+    // hold. It must list every validator, in the same order on every node, because leader election
+    // walks this set: a node whose own address is absent proposes blocks that everyone else rejects as
+    // coming from a non-leader, and the chain limps along on view timeouts instead of failing loudly.
+    var genesisValidatorsEnv = Environment.GetEnvironmentVariable("BASALT_GENESIS_VALIDATORS");
+    Address[] validatorAddresses;
+    if (!string.IsNullOrWhiteSpace(genesisValidatorsEnv))
     {
-        Address.FromHexString("0x0000000000000000000000000000000000000100"),
-        Address.FromHexString("0x0000000000000000000000000000000000000101"),
-        Address.FromHexString("0x0000000000000000000000000000000000000102"),
-        Address.FromHexString("0x0000000000000000000000000000000000000103"),
-    };
+        try
+        {
+            validatorAddresses = genesisValidatorsEnv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Address.FromHexString)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "BASALT_GENESIS_VALIDATORS is not a comma-separated list of hex addresses");
+            return 1;
+        }
+
+        if (validatorAddresses.Length == 0)
+        {
+            Log.Fatal("BASALT_GENESIS_VALIDATORS was set but lists no addresses");
+            return 1;
+        }
+
+        if (validatorAddresses.Distinct().Count() != validatorAddresses.Length)
+        {
+            Log.Fatal("BASALT_GENESIS_VALIDATORS contains a duplicate address");
+            return 1;
+        }
+
+        if (chainParams.IsPublicNetwork && config.IsConsensusMode
+            && config.ValidatorAddress is { } ownAddress
+            && !validatorAddresses.Contains(Address.FromHexString(ownAddress)))
+        {
+            // Catch the mismatch at startup rather than letting it show up as a slow chain.
+            Log.Fatal(
+                "This validator's address {Own} is not in BASALT_GENESIS_VALIDATORS. It could never be "
+                + "elected leader and the chain would stall on view timeouts.", ownAddress);
+            return 1;
+        }
+
+        Log.Information("Genesis validator set from environment: {Count} validators", validatorAddresses.Length);
+    }
+    else
+    {
+        if (chainParams.IsPublicNetwork)
+        {
+            Log.Fatal(
+                "A public network must set BASALT_GENESIS_VALIDATORS. The built-in set is the devnet one, "
+                + "whose private keys are public.");
+            return 1;
+        }
+
+        validatorAddresses = new[]
+        {
+            Address.FromHexString("0x0000000000000000000000000000000000000100"),
+            Address.FromHexString("0x0000000000000000000000000000000000000101"),
+            Address.FromHexString("0x0000000000000000000000000000000000000102"),
+            Address.FromHexString("0x0000000000000000000000000000000000000103"),
+        };
+    }
+
+    // Genesis validators need a stake to be counted, so fund whatever set we ended up with.
+    foreach (var validatorAddr in validatorAddresses)
+    {
+        genesisBalances[validatorAddr] = UInt256.Parse("200000000000000000000000");
+    }
     foreach (var validatorAddr in validatorAddresses)
     {
         stakingState.RegisterValidator(validatorAddr, UInt256.Parse("200000000000000000000000"));
