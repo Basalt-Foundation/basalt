@@ -77,8 +77,22 @@ try
             TriePruneWindowSize = pruneWindow,
             TriePruneIntervalBlocks = pruneInterval,
         };
-        Log.Information("Trie pruning enabled via env: window={Window} blocks, interval={Interval} blocks",
-            pruneWindow, pruneInterval);
+        // Only a consensus node builds the pruner (NodeCoordinator.SetupBlockProduction), and only a
+        // consensus node runs the sweep loop. Announcing "enabled" on a standalone or RPC node would tell
+        // an operator their archive is reclaiming disk when nothing is, which is the dangerous direction
+        // to be wrong in: the disk fills silently.
+        if (config.IsConsensusMode)
+        {
+            Log.Information("Trie pruning enabled via env: window={Window} blocks, interval={Interval} blocks",
+                pruneWindow, pruneInterval);
+        }
+        else
+        {
+            Log.Warning(
+                "BASALT_ENABLE_TRIE_PRUNING is set but this node is not in consensus mode, so nothing will "
+                + "prune: the sweep loop only runs on a validator. This node's trie_nodes will grow without "
+                + "bound. Plan disk accordingly, or run this node as a validator.");
+        }
     }
 
     // B4: Refuse BASALT_DEBUG=1 on public networks — debug mode enables AllowAnyOrigin CORS
