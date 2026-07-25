@@ -138,6 +138,29 @@ public sealed class BlockApplier
         if (receipts != null)
             block.Receipts = receipts;
 
+        // Materialise the post-block state root.
+        //
+        // This is not just a check. ComputeStateRoot is what flushes pending storage-trie changes back
+        // into account states and writes the resulting nodes, including the root itself. Without it the
+        // applying node never creates a node for this block's state root: the header carries the root the
+        // proposer computed, and the applier simply never materialises it. Historical state in the
+        // retention window was therefore not walkable, which is what wedged trie pruning permanently.
+        //
+        // The cost is bounded: TrieStateDb caches the root and returns it directly when nothing has been
+        // written since the last computation, so an empty block pays almost nothing.
+        var computedStateRoot = stateDb.ComputeStateRoot();
+        if (computedStateRoot != block.Header.StateRoot)
+        {
+            // Report, do not reject. This path is reached only after the block is BFT-agreed, so refusing
+            // it here would halt block production on a divergence we have never yet observed. Log loudly
+            // and let the evidence decide whether this should become fatal.
+            _logger.LogCritical(
+                "State root divergence at block #{Number}: computed {Computed}, header {Header}. "
+                + "The block was applied anyway. This must be investigated before enabling trie pruning.",
+                block.Number, computedStateRoot.ToHexString(), block.Header.StateRoot.ToHexString());
+            MetricsEndpoint.RecordStateRootDivergence();
+        }
+
         // Add to chain
         var result = _chainManager.AddBlock(block);
         if (!result.IsSuccess)

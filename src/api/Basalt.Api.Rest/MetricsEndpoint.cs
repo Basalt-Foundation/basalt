@@ -40,6 +40,14 @@ public static class MetricsEndpoint
     /// Record a produced block for TPS calculation.
     /// MEDIUM-6: All shared fields use Interlocked for thread safety.
     /// </summary>
+    /// <summary>
+    /// A block whose executed state root did not match the root in its header. Should stay at zero: any
+    /// non-zero value means applying nodes and the proposer disagree about state.
+    /// </summary>
+    public static void RecordStateRootDivergence() => Interlocked.Increment(ref _stateRootDivergences);
+
+    private static long _stateRootDivergences;
+
     public static void RecordBlock(int txCount, long timestampMs)
     {
         Interlocked.Add(ref _totalTransactionsProcessed, txCount);
@@ -164,6 +172,10 @@ public static class MetricsEndpoint
 
             // Phase 1.6: trie prune metrics. Watch basalt_trie_nodes_scanned plateau to confirm the
             // sweep bounds disk growth; a monotonically rising series means pruning is not keeping up.
+            sb.AppendLine("# HELP basalt_state_root_divergences_total Blocks whose executed state root did not match their header.");
+            sb.AppendLine("# TYPE basalt_state_root_divergences_total counter");
+            sb.Append("basalt_state_root_divergences_total ").AppendLine(Interlocked.Read(ref _stateRootDivergences).ToString());
+
             sb.AppendLine("# HELP basalt_trie_prune_sweeps_total Completed trie prune sweeps.");
             sb.AppendLine("# TYPE basalt_trie_prune_sweeps_total counter");
             sb.Append("basalt_trie_prune_sweeps_total ").AppendLine(Interlocked.Read(ref _triePruneSweepsTotal).ToString());
