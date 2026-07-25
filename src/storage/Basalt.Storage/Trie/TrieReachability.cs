@@ -50,10 +50,7 @@ public static class TrieReachability
             if (nodeHash == Hash256.Zero || !reachable.Add(nodeHash))
                 continue; // empty or already visited (also breaks any cycle)
 
-            var node = store.Get(nodeHash)
-                ?? throw new InvalidOperationException(
-                    $"Trie pruning: node {nodeHash.ToHexString()} referenced by a retained root is missing " +
-                    "from the store. Aborting sweep (deleting nothing).");
+            var node = store.Get(nodeHash) ?? throw new MissingTrieNodeException(nodeHash);
 
             switch (node.NodeType)
             {
@@ -93,4 +90,17 @@ public static class TrieReachability
         if (storageRoot != Hash256.Zero)
             stack.Push((storageRoot, false)); // storage sub-trie: values are raw slots, never accounts
     }
+}
+
+/// <summary>
+/// A node referenced by a retained root is absent from the store being walked. Carries the hash so a
+/// caller can probe other stores and tell apart the two very different causes: a node that is genuinely
+/// gone (deleted, or never written) from one that exists but is invisible through a pinned snapshot.
+/// </summary>
+public sealed class MissingTrieNodeException(Hash256 hash) : InvalidOperationException(
+    $"Trie pruning: node {hash.ToHexString()} referenced by a retained root is missing from the store. " +
+    "Aborting sweep (deleting nothing).")
+{
+    /// <summary>The node that could not be read.</summary>
+    public Hash256 Hash { get; } = hash;
 }

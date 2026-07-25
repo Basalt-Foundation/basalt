@@ -57,7 +57,19 @@ public sealed class RocksDbTriePruner
 
         // Guard 1 + 2 + 3: storage-aware mark over the same pinned snapshot; throws on any missing node.
         var reader = new SnapshotTrieNodeStore(snapshot);
-        var reachable = TrieReachability.CollectReachable(reader, retainedRoots);
+        HashSet<Hash256> reachable;
+        try
+        {
+            reachable = TrieReachability.CollectReachable(reader, retainedRoots);
+        }
+        catch (MissingTrieNodeException ex)
+        {
+            // Two very different faults produce the same symptom here, and the fix differs completely, so
+            // establish which one it is instead of guessing. If the node is readable from the live store
+            // it exists and the pinned snapshot simply cannot see it, which is a visibility problem. If it
+            // is absent from both, it was deleted or never written, which is a durability problem.
+            throw new MissingTrieNodeDiagnosisException(ex.Hash, LiveStoreHas(ex.Hash), ex);
+        }
 
         // Enumerate the snapshot and partition into keep/delete.
         long totalScanned = 0;
@@ -101,6 +113,20 @@ public sealed class RocksDbTriePruner
     /// call outside any consensus/state lock (see class remarks).
     /// </summary>
     public void Compact() => _store.CompactColumnFamily(RocksDbStore.CF.TrieNodes);
+
+    private bool LiveStoreHas(Hash256 hash)
+    {
+        Span<byte> key = stackalloc byte[Hash256.Size];
+        hash.WriteTo(key);
+        try
+        {
+            return _store.Get(RocksDbStore.CF.TrieNodes, key) != null;
+        }
+        catch
+        {
+            return false; // a probe must never mask the original fault
+        }
+    }
 }
 
 /// <summary>Tuning for <see cref="RocksDbTriePruner"/>.</summary>
@@ -149,4 +175,24 @@ internal sealed class SnapshotTrieNodeStore : ITrieNodeStore
 
     public void Delete(Hash256 hash)
         => throw new NotSupportedException("SnapshotTrieNodeStore is read-only.");
+}
+
+/// <summary>
+/// A missing retained node, with the answer to the one question that separates a snapshot-visibility bug
+/// from a durability bug: was the node readable from the live store at the moment the sweep failed.
+/// </summary>
+public sealed class MissingTrieNodeDiagnosisException(Hash256 hash, bool presentInLiveStore, Exception inner)
+    : InvalidOperationException(
+        $"Trie prune aborted: node {hash.ToHexString()} is referenced by a retained root but missing from the "
+        + $"pinned snapshot. Present in the live store: {presentInLiveStore}. "
+        + (presentInLiveStore
+            ? "The node exists, so the snapshot cannot see it: a visibility fault, not a lost node."
+            : "The node is absent from the live store too: it was deleted or never written."),
+        inner)
+{
+    /// <summary>The node that could not be read.</summary>
+    public Hash256 Hash { get; } = hash;
+
+    /// <summary>Whether the live store could read the node when the sweep failed.</summary>
+    public bool PresentInLiveStore { get; } = presentInLiveStore;
 }
