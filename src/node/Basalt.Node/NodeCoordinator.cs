@@ -905,7 +905,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (!result.IsSuccess)
             {
                 _logger.LogWarning("Inbound handshake failed: {Error}", result.Error);
-                connection.Dispose();
+                // Mirror of the outbound path. Disposing leaves the transport's entry and, with it, the
+                // per-IP connection count, which only RemoveConnection decrements. Each failed inbound
+                // handshake would otherwise leak one slot, and after three this peer's IP is refused
+                // outright, so its dials get no response and the mesh never forms.
+                _transport!.DisconnectPeer(connection.PeerId);
                 return;
             }
 
@@ -956,7 +960,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling inbound connection");
-            connection.Dispose();
+            // Same reason as above: the connection is registered with the transport, so it has to be
+            // removed there rather than merely disposed, or its per-IP slot is leaked.
+            _transport?.DisconnectPeer(connection.PeerId);
         }
     }
 
