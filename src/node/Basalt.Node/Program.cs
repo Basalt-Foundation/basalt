@@ -88,10 +88,14 @@ try
         }
         else
         {
-            Log.Warning(
-                "BASALT_ENABLE_TRIE_PRUNING is set but this node is not in consensus mode, so nothing will "
-                + "prune: the sweep loop only runs on a validator. This node's trie_nodes will grow without "
-                + "bound. Plan disk accordingly, or run this node as a validator.");
+            // A sync node prunes from its own loop (see the RPC setup below), so the only mode left with
+            // no sweeper is a standalone node that never syncs and never produces.
+            if (string.IsNullOrEmpty(config.SyncSource))
+            {
+                Log.Warning(
+                    "BASALT_ENABLE_TRIE_PRUNING is set but this node neither produces nor syncs blocks, so "
+                    + "nothing will prune and trie_nodes will grow without bound.");
+            }
         }
     }
 
@@ -560,13 +564,49 @@ try
                 loggerFactory.CreateLogger<BlockApplier>(),
                 syncStateCommit: rpcSyncStateCommit);
 
+            // Phase 1.6 on a sync-only node. Pruning used to be impossible here: the pruner is built by
+            // NodeCoordinator, which an RPC node never runs, so the feature announced itself and then did
+            // nothing while trie_nodes grew without bound. Archive nodes accumulate the most state and
+            // are exactly the ones that need this.
+            //
+            // The sweep is driven from the sync loop's caught-up branch rather than from a background
+            // task. That loop is the only thing that mutates state here, so running the sweep from it is
+            // serialised against block application with no lock at all, and being caught up means it
+            // delays no sync.
+            Action<ulong>? rpcPruneMaintenance = null;
+            if (chainParams.EnableTriePruning && rocksDbStore != null && blockStore != null)
+            {
+                var rpcPruner = new RocksDbTriePruner(rocksDbStore);
+                var pruneLogger = loggerFactory.CreateLogger("TriePrune");
+                ulong lastSweptTip = 0;
+                rpcPruneMaintenance = tip =>
+                {
+                    if (tip < chainParams.TriePruneWindowSize || tip < lastSweptTip + chainParams.TriePruneIntervalBlocks)
+                        return;
+
+                    var retained = TrieRetention.CollectRetainedRoots(blockStore, chainParams.TriePruneWindowSize);
+                    var stats = rpcPruner.Prune(retained);
+                    lastSweptTip = tip;
+                    MetricsEndpoint.RecordTriePrune(stats.TotalScanned, stats.Deleted, stats.Retained, (long)tip);
+                    pruneLogger.LogInformation(
+                        "Trie prune sweep at #{Tip}: scanned {Scanned}, deleted {Deleted}, retained {Retained}",
+                        tip, stats.TotalScanned, stats.Deleted, stats.Retained);
+                    rpcPruner.Compact();
+                };
+
+                Log.Information(
+                    "Trie pruning ENABLED on this sync node: window={Window} blocks, interval={Interval} blocks",
+                    chainParams.TriePruneWindowSize, chainParams.TriePruneIntervalBlocks);
+            }
+
             var rpcSyncService = new BlockSyncService(
                 config.SyncSource!,
                 rpcBlockApplier,
                 chainManager,
                 stateDbRef,
                 chainParams,
-                loggerFactory.CreateLogger<BlockSyncService>());
+                loggerFactory.CreateLogger<BlockSyncService>(),
+                onCaughtUp: rpcPruneMaintenance);
 
             syncStatus = rpcSyncService;
 

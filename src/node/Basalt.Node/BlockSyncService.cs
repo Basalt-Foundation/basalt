@@ -31,6 +31,7 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
     private readonly ChainParameters _chainParams;
     private readonly HttpClient _httpClient;
     private readonly ILogger _logger;
+    private readonly Action<ulong>? _onCaughtUp;
 
     private int _syncLag;
     private int _backoffMs = 1000;
@@ -50,8 +51,10 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
         ChainManager chainManager,
         StateDbRef stateDbRef,
         ChainParameters chainParams,
-        ILogger logger)
+        ILogger logger,
+        Action<ulong>? onCaughtUp = null)
     {
+        _onCaughtUp = onCaughtUp;
         _syncSourceUrl = syncSourceUrl.TrimEnd('/');
         _blockApplier = blockApplier;
         _chainManager = chainManager;
@@ -98,6 +101,24 @@ public sealed class BlockSyncService : ISyncStatus, IAsyncDisposable
                     // Caught up — sleep for one block time, then poll again
                     _backoffMs = 1000; // Reset backoff
                     _consecutiveForkFailures = 0;
+
+                    // Maintenance runs here and nowhere else. This loop is the only thing that mutates
+                    // state on a sync-only node, so work invoked from this branch is serialised against
+                    // block application for free, with no lock to get wrong. Being caught up also means
+                    // it delays nothing: the next batch has not arrived yet.
+                    if (_onCaughtUp is not null)
+                    {
+                        try
+                        {
+                            _onCaughtUp(localTip);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Maintenance must never take sync down with it.
+                            _logger.LogError(ex, "Caught-up maintenance failed at #{Tip}", localTip);
+                        }
+                    }
+
                     await Task.Delay((int)_chainParams.BlockTimeMs, ct);
                     continue;
                 }
