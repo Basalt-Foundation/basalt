@@ -189,6 +189,17 @@ public sealed record ChainParameters
     public uint TriePruneIntervalBlocks { get; init; } = 1000;
 
     /// <summary>
+    /// Fraction of scanned nodes a single sweep may delete before it aborts as implausible (guard 4).
+    ///
+    /// The default is deliberately strict: on a node that has pruned all along, a sweep deleting nearly
+    /// everything means the reachability mark is broken, and refusing to sweep is the only safe answer.
+    /// It has to be raisable because that reading is wrong in one legitimate case: the first sweep on a
+    /// node with a long unpruned history really does delete almost everything, and correctly so. Raise it
+    /// only when you know that is the situation, and put it back afterwards.
+    /// </summary>
+    public double TriePruneMaxDeleteFraction { get; init; } = 0.95;
+
+    /// <summary>
     /// Validates that all chain parameters are within acceptable ranges.
     /// Should be called at node startup to catch misconfigurations early.
     /// </summary>
@@ -208,6 +219,8 @@ public sealed record ChainParameters
         {
             if (TriePruneIntervalBlocks == 0)
                 throw new InvalidOperationException("TriePruneIntervalBlocks must be greater than zero when pruning is enabled.");
+            if (TriePruneMaxDeleteFraction is <= 0 or > 1)
+                throw new InvalidOperationException("TriePruneMaxDeleteFraction must be greater than zero and at most 1.");
             if (TriePruneWindowSize < 1000)
                 throw new InvalidOperationException(
                     $"TriePruneWindowSize ({TriePruneWindowSize}) must be at least the fork rollback depth (1000).");

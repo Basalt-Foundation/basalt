@@ -71,11 +71,20 @@ try
             ? w : chainParams.TriePruneWindowSize;
         var pruneInterval = uint.TryParse(Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_INTERVAL"), out var iv)
             ? iv : chainParams.TriePruneIntervalBlocks;
+        // Raising this is how an operator says "I know this node has a long unpruned backlog, and a
+        // near-total first sweep is expected", which is the one case where guard 4's reading is wrong.
+        var pruneMaxDelete = double.TryParse(
+            Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_MAX_DELETE_FRACTION"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var mdf) ? mdf : chainParams.TriePruneMaxDeleteFraction;
+
         chainParams = chainParams with
         {
             EnableTriePruning = true,
             TriePruneWindowSize = pruneWindow,
             TriePruneIntervalBlocks = pruneInterval,
+            TriePruneMaxDeleteFraction = pruneMaxDelete,
         };
         // Only a consensus node builds the pruner (NodeCoordinator.SetupBlockProduction), and only a
         // consensus node runs the sweep loop. Announcing "enabled" on a standalone or RPC node would tell
@@ -576,7 +585,9 @@ try
             Action<ulong>? rpcPruneMaintenance = null;
             if (chainParams.EnableTriePruning && rocksDbStore != null && blockStore != null)
             {
-                var rpcPruner = new RocksDbTriePruner(rocksDbStore);
+                var rpcPruner = new RocksDbTriePruner(
+                    rocksDbStore,
+                    new TriePrunerOptions { MaxDeleteFraction = chainParams.TriePruneMaxDeleteFraction });
                 var pruneLogger = loggerFactory.CreateLogger("TriePrune");
                 ulong lastSweptTip = 0;
                 rpcPruneMaintenance = tip =>

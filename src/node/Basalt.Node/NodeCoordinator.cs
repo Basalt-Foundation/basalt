@@ -747,7 +747,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         // memory-only mode). When enabled, RunTriePruneLoop sweeps trie_nodes every interval.
         if (_chainParams.EnableTriePruning && _rocksDbStore != null && _blockStore != null)
         {
-            _triePruner = new RocksDbTriePruner(_rocksDbStore);
+            _triePruner = new RocksDbTriePruner(
+                _rocksDbStore,
+                new TriePrunerOptions { MaxDeleteFraction = _chainParams.TriePruneMaxDeleteFraction });
             _logger.LogInformation(
                 "Trie pruning ENABLED: window={Window} blocks, interval={Interval} blocks",
                 _chainParams.TriePruneWindowSize, _chainParams.TriePruneIntervalBlocks);
