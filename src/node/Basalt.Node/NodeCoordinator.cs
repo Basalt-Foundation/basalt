@@ -1587,7 +1587,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (!result.IsSuccess)
                 {
                     _logger.LogWarning("Handshake with {Host}:{Port} failed: {Error}", host, port, result.Error);
-                    connection.Dispose();
+                    // Disposing the connection is not enough: the transport registered it under a
+                    // temporary id derived from the endpoint, and that id is the same on every dial to
+                    // this peer. Leaving the entry behind makes the next attempt collide with it, so a
+                    // single failed handshake would lock this peer out permanently.
+                    _transport.DisconnectPeer(connection.PeerId);
                     continue;
                 }
 

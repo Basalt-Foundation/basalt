@@ -148,11 +148,25 @@ public sealed class TcpTransport : IAsyncDisposable
 
         if (!_connections.TryAdd(tempId, connection))
         {
-            // Decrement the per-IP counter we just incremented since we're not keeping this connection
-            _connectionsPerIp.AddOrUpdate(remoteIp, 0, (_, count) => Math.Max(0, count - 1));
-            connection.Dispose();
-            throw new InvalidOperationException(
-                $"A connection with temporary peer ID {tempId} already exists.");
+            // The temporary id is derived from the endpoint, so it is identical on every dial to this
+            // peer. If the occupant is dead, refusing here would make one stale entry lock the peer out
+            // for the lifetime of the process, which is how a transient failure turns into a permanent
+            // partition. Evict a dead occupant and take its place; only refuse a live one.
+            if (_connections.TryGetValue(tempId, out var existing) && !existing.IsConnected)
+            {
+                _logger.LogInformation(
+                    "Replacing dead connection to {Endpoint} under temporary id {PeerId}", endpoint, tempId);
+                RemoveConnection(tempId);
+            }
+
+            if (!_connections.TryAdd(tempId, connection))
+            {
+                // Decrement the per-IP counter we just incremented since we're not keeping this connection
+                _connectionsPerIp.AddOrUpdate(remoteIp, 0, (_, count) => Math.Max(0, count - 1));
+                connection.Dispose();
+                throw new InvalidOperationException(
+                    $"A connection with temporary peer ID {tempId} already exists.");
+            }
         }
 
         // NET-H01: Track IP mapping for outbound connections so RemoveConnection can decrement
