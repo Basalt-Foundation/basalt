@@ -144,7 +144,15 @@ public sealed class RocksDbTriePrunerTests : IDisposable
         var pruner = new RocksDbTriePruner(_store);
         var act = () => pruner.Prune(new[] { root2 });
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*missing from the store*");
+        // The diagnosis matters as much as the abort. The victim was deleted from the live store, so the
+        // pruner must say so: that is what separates a node that is genuinely gone from one that exists
+        // but is invisible through the pinned snapshot, and the two have opposite fixes.
+        var thrown = act.Should().Throw<MissingTrieNodeDiagnosisException>()
+            .WithMessage("*missing from the pinned snapshot*").Which;
+        thrown.Hash.Should().Be(victim);
+        thrown.PresentInLiveStore.Should().BeFalse();
+        thrown.Root.Should().Be(root2, "the walk must name the retained root it was following");
+
         OnDiskNodeCount().Should().Be(before - 1); // only our manual delete; the sweep deleted nothing
     }
 
