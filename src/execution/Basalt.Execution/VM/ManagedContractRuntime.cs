@@ -53,7 +53,7 @@ public sealed class ManagedContractRuntime : IContractRuntime
             if (ContractRegistry.IsSdkContract(code))
             {
                 var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
-                using var scope = ContractBridge.Setup(ctx, host);
+                using var scope = ContractBridge.Setup(ctx, host, this);
                 Context.IsDeploying = true;
                 // Instantiate the contract — constructor runs and initializes storage
                 _registry.CreateInstance(typeId, ctorArgs);
@@ -181,7 +181,7 @@ public sealed class ManagedContractRuntime : IContractRuntime
     {
         var (typeId, ctorArgs) = ContractRegistry.ParseManifest(code);
 
-        using var scope = ContractBridge.Setup(ctx, host);
+        using var scope = ContractBridge.Setup(ctx, host, this);
 
         // Instantiate the contract (constructor populates in-memory fields + reads storage)
         var contract = _registry.CreateInstance(typeId, ctorArgs);
