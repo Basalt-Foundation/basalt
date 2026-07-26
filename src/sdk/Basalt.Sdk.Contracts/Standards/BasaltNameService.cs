@@ -45,6 +45,8 @@ public partial class BasaltNameService
     private readonly StorageMap<string, string> _contentRecords; // name -> trilith:// content name
     private readonly StorageMap<string, long> _expiries;      // name -> expiry (unix seconds)
     private readonly StorageMap<string, string> _subOwners;   // full subdomain -> delegated owner hex
+    private readonly StorageMap<string, bool> _reserved;      // label -> reserved at launch
+    private readonly StorageValue<long> _reservationDeadline; // unix seconds; reservations lapse after
     private readonly StorageValue<UInt256> _registrationFee;
     private readonly StorageValue<long> _registrationPeriodSeconds;
 
@@ -57,6 +59,8 @@ public partial class BasaltNameService
         _contentRecords = new StorageMap<string, string>("bns_content");
         _expiries = new StorageMap<string, long>("bns_expiry");
         _subOwners = new StorageMap<string, string>("bns_subowners");
+        _reserved = new StorageMap<string, bool>("bns_reserved");
+        _reservationDeadline = new StorageValue<long>("bns_resdeadline");
         _registrationFee = new StorageValue<UInt256>("bns_fee");
         _registrationPeriodSeconds = new StorageValue<long>("bns_regperiod");
         if (Context.IsDeploying)
@@ -226,6 +230,7 @@ public partial class BasaltNameService
         // Only the second level is for sale. Everything under a label comes with it, so registering
         // blog.alice separately would let two parties hold overlapping claims on the same tree.
         Context.Require(!IsSubdomain(name), "BNS: register the label, subdomains come with it");
+        Context.Require(!IsReserved(name), "BNS: name is reserved");
         Context.Require(IsAvailable(name), "BNS: name taken");
         Context.Require(Context.TxValue >= _registrationFee.Get(), "BNS: insufficient fee");
 
@@ -377,6 +382,116 @@ public partial class BasaltNameService
     [BasaltView]
     public string LabelOf(string name) => RegistrableLabel(NormaliseName(name));
 
+
+    /// <summary>
+    /// Governance, the only account allowed to reserve names or hand a reserved name to its claimant.
+    ///
+    /// Hardcoded rather than taken as a constructor argument because BNS is registered at genesis under
+    /// type 0x0101 with a fixed constructor arity, and changing that would invalidate the registration.
+    /// It matches GenesisContractDeployer.Addresses.Governance (0x1003).
+    /// </summary>
+    private static string GovernanceHex()
+    {
+        var bytes = new byte[20];
+        bytes[18] = 0x10;
+        bytes[19] = 0x03;
+        return Convert.ToHexString(bytes);
+    }
+
+    private void RequireGovernance()
+        => Context.Require(Convert.ToHexString(Context.Caller) == GovernanceHex(), "BNS: governance only");
+
+    /// <summary>
+    /// Whether a label is currently reserved, meaning nobody may register it.
+    ///
+    /// Reservations are deliberately temporary. A registry that holds well-known names forever is a
+    /// registry with a permanently empty shelf, so once the deadline passes an unclaimed reservation
+    /// simply stops applying and the name becomes ordinary.
+    /// </summary>
+    [BasaltView]
+    public bool IsReserved(string name)
+    {
+        var label = RegistrableLabel(NormaliseName(name));
+        if (!_reserved.Get(label))
+            return false;
+
+        var deadline = _reservationDeadline.Get();
+        return deadline == 0 || NowSeconds() <= deadline;
+    }
+
+    /// <summary>The unix second at which unclaimed reservations lapse (0 when unset).</summary>
+    [BasaltView]
+    public long ReservationDeadline() => _reservationDeadline.Get();
+
+    /// <summary>
+    /// Sets the moment reservations lapse. Governance only, and it must be set before any name can be
+    /// reserved, so an operator cannot accidentally create a permanent hold by forgetting this call.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetReservationDeadline(long unixSeconds)
+    {
+        RequireGovernance();
+        Context.Require(unixSeconds > NowSeconds(), "BNS: deadline must be in the future");
+        _reservationDeadline.Set(unixSeconds);
+        Context.Emit(new ReservationDeadlineSetEvent { Deadline = unixSeconds });
+    }
+
+    /// <summary>
+    /// Reserves one label so no one can register it before the deadline.
+    ///
+    /// This exists so that a launch does not hand every recognisable name to whoever scripts the fastest
+    /// transaction. Reserved names are held by the registry and by nobody: they are not owned, not for
+    /// sale, and released free to whoever proves they should have them.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void ReserveName(string name)
+    {
+        RequireGovernance();
+        Context.Require(_reservationDeadline.Get() > 0, "BNS: set the reservation deadline first");
+
+        var label = RegistrableLabel(NormaliseName(name));
+        Context.Require(IsAvailable(label), "BNS: name already registered");
+        _reserved.Set(label, true);
+        Context.Emit(new NameReservedEvent { Name = DisplayName(label) });
+    }
+
+    /// <summary>
+    /// Hands a reserved name to the account that proved it should have it, free of charge.
+    ///
+    /// The proof is not made here and is not a trademark judgement, which nobody running a registry is
+    /// equipped to render. It is control of the matching DNS name, shown by a TXT record naming the
+    /// claiming address, which anyone can re-check for themselves. <paramref name="evidence"/> records
+    /// where that proof lives, so the assignment is auditable after the fact rather than taken on trust.
+    ///
+    /// Governance can therefore witness a proof that exists. It cannot invent one, because the record it
+    /// points at is public and someone will look.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void ClaimReserved(string name, byte[] owner, string evidence)
+    {
+        RequireGovernance();
+        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+        Context.Require(!string.IsNullOrEmpty(evidence), "BNS: evidence required");
+        Context.Require(evidence.Length <= 256, "BNS: evidence too long");
+
+        var label = RegistrableLabel(NormaliseName(name));
+        Context.Require(_reserved.Get(label), "BNS: name is not reserved");
+        Context.Require(IsAvailable(label), "BNS: name already registered");
+
+        var ownerHex = Convert.ToHexString(owner);
+        _owners.Set(label, ownerHex);
+        _addresses.Set(label, ownerHex);
+        _expiries.Set(label, NowSeconds() + RegistrationPeriodSeconds());
+        _reserved.Delete(label);
+
+        Context.Emit(new ReservedNameClaimedEvent
+        {
+            Name = DisplayName(label),
+            Owner = new Address(owner),
+            Evidence = evidence,
+        });
+    }
+
     /// <summary>The name's expiry in unix seconds (0 if never registered).</summary>
     [BasaltView]
     public long ExpiryOf(string name) => _expiries.Get(RegistrableLabel(NormaliseName(name)));
@@ -495,4 +610,30 @@ public sealed class SubdomainDelegatedEvent
 {
     public string Name { get; set; } = "";
     public Address Owner { get; set; }
+}
+
+/// <summary>A label was reserved so it cannot be registered before the deadline.</summary>
+[BasaltEvent]
+public class NameReservedEvent
+{
+    public string Name { get; set; } = "";
+}
+
+/// <summary>The moment unclaimed reservations lapse was set.</summary>
+[BasaltEvent]
+public class ReservationDeadlineSetEvent
+{
+    public long Deadline { get; set; }
+}
+
+/// <summary>
+/// A reserved name was handed to its claimant. Evidence points at the public proof of control, so the
+/// assignment can be checked by anyone rather than believed.
+/// </summary>
+[BasaltEvent]
+public class ReservedNameClaimedEvent
+{
+    [Indexed] public Address Owner { get; set; }
+    public string Name { get; set; } = "";
+    public string Evidence { get; set; } = "";
 }
