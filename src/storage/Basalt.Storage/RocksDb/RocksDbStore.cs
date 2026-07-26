@@ -46,6 +46,15 @@ public sealed class RocksDbStore : IDisposable
             .SetCreateMissingColumnFamilies(true)
             .SetMaxBackgroundCompactions(compactionThreads)
             .SetMaxBackgroundFlushes(1)
+            // Bounds the write-ahead log. RocksDB cannot delete a WAL file while any column family
+            // still holds data written in it, and metadata, block_index, state, staking and default
+            // each take a few bytes per block. None of them ever fills a 16MB buffer, so none ever
+            // flushes, so every WAL file since the node started is pinned. A soak measured 713MB of WAL
+            // against 45MB of real data, growing about 14KB per block and never falling.
+            //
+            // Setting a ceiling is the mechanism for exactly this: once total WAL passes it, RocksDB
+            // flushes whichever column families are holding the oldest files so they can be dropped.
+            .SetMaxTotalWalSize(128UL * 1024 * 1024)
             .IncreaseParallelism(Math.Min(cores, 4));
 
         // M-01: Per-CF options tuned for each access pattern.
