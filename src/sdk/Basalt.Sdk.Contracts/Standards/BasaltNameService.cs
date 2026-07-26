@@ -18,6 +18,15 @@ namespace Basalt.Sdk.Contracts.Standards;
 [BasaltContract]
 public partial class BasaltNameService
 {
+    /// <summary>The one top-level domain this registry serves.</summary>
+    private const string Tld = "bslt";
+
+    /// <summary>Longest a single label may be, matching DNS.</summary>
+    private const int MaxLabelLength = 63;
+
+    /// <summary>Longest a full name may be, excluding the TLD.</summary>
+    private const int MaxNameLength = 64;
+
     /// <summary>Required scheme prefix for a content record value.</summary>
     private const string ContentUriPrefix = "trilith://";
 
@@ -35,6 +44,7 @@ public partial class BasaltNameService
     private readonly StorageMap<string, string> _reverse;     // address hex -> name
     private readonly StorageMap<string, string> _contentRecords; // name -> trilith:// content name
     private readonly StorageMap<string, long> _expiries;      // name -> expiry (unix seconds)
+    private readonly StorageMap<string, string> _subOwners;   // full subdomain -> delegated owner hex
     private readonly StorageValue<UInt256> _registrationFee;
     private readonly StorageValue<long> _registrationPeriodSeconds;
 
@@ -46,6 +56,7 @@ public partial class BasaltNameService
         _reverse = new StorageMap<string, string>("bns_rev");
         _contentRecords = new StorageMap<string, string>("bns_content");
         _expiries = new StorageMap<string, long>("bns_expiry");
+        _subOwners = new StorageMap<string, string>("bns_subowners");
         _registrationFee = new StorageValue<UInt256>("bns_fee");
         _registrationPeriodSeconds = new StorageValue<long>("bns_regperiod");
         if (Context.IsDeploying)
@@ -54,6 +65,101 @@ public partial class BasaltNameService
             _registrationPeriodSeconds.Set(DefaultRegistrationPeriodSeconds);
         }
     }
+
+
+    /// <summary>
+    /// Puts a name into the single form everything else uses: lowercase, no <c>.bslt</c> suffix.
+    ///
+    /// Both <c>alice</c> and <c>alice.bslt</c> are accepted and mean the same registration, because a
+    /// registry that treats them as two names guarantees someone eventually owns one and not the other.
+    /// The suffix is presentation, so it is not stored: keys stay short and <c>alice.bslt.bslt</c> cannot
+    /// exist.
+    ///
+    /// Rejects anything that is not a valid name outright rather than normalising it into something the
+    /// caller did not ask for. Silent coercion in a naming system is how people end up owning a name they
+    /// did not mean to buy.
+    /// </summary>
+    private static string NormaliseName(string input)
+    {
+        Context.Require(!string.IsNullOrEmpty(input), "BNS: name required");
+
+        var lowered = ToLowerAscii(input);
+
+        // Strip one trailing ".bslt", and only one.
+        var suffix = "." + Tld;
+        if (lowered.Length > suffix.Length && lowered.EndsWith(suffix, StringComparison.Ordinal))
+            lowered = lowered.Substring(0, lowered.Length - suffix.Length);
+
+        Context.Require(lowered.Length > 0, "BNS: name required");
+        Context.Require(lowered.Length <= MaxNameLength, "BNS: name too long");
+        ValidateLabels(lowered);
+        return lowered;
+    }
+
+    /// <summary>Lowercases ASCII letters. Names are ASCII by construction, checked in ValidateLabels.</summary>
+    private static string ToLowerAscii(string value)
+    {
+        var chars = value.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] >= 'A' && chars[i] <= 'Z')
+                chars[i] = (char)(chars[i] + 32);
+        }
+
+        return new string(chars);
+    }
+
+    /// <summary>
+    /// Every label must be ASCII letters, digits or hyphens, must not start or end with a hyphen, and must
+    /// be non-empty. This is the DNS rule, kept deliberately: a name that cannot be written in a URL or
+    /// read aloud is not a human-readable name, and mixed scripts are how homograph attacks start.
+    /// </summary>
+    private static void ValidateLabels(string name)
+    {
+        var start = 0;
+        for (int i = 0; i <= name.Length; i++)
+        {
+            if (i != name.Length && name[i] != '.')
+                continue;
+
+            var length = i - start;
+            Context.Require(length > 0, "BNS: empty label");
+            Context.Require(length <= MaxLabelLength, "BNS: label too long");
+            Context.Require(name[start] != '-', "BNS: label starts with hyphen");
+            Context.Require(name[i - 1] != '-', "BNS: label ends with hyphen");
+
+            for (int j = start; j < i; j++)
+            {
+                var c = name[j];
+                var ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                Context.Require(ok, "BNS: label has an invalid character");
+            }
+
+            start = i + 1;
+        }
+    }
+
+    /// <summary>
+    /// The registrable part of a name, meaning its rightmost label. Ownership of <c>blog.alice</c> is
+    /// ownership of <c>alice</c>: only the second level is bought, everything under it comes with it.
+    /// </summary>
+    private static string RegistrableLabel(string normalised)
+    {
+        var lastDot = normalised.LastIndexOf('.');
+        return lastDot < 0 ? normalised : normalised.Substring(lastDot + 1);
+    }
+
+    /// <summary>Whether a normalised name names a subdomain rather than a registrable label.</summary>
+    private static bool IsSubdomain(string normalised) => normalised.IndexOf('.') >= 0;
+
+    /// <summary>
+    /// The form a person sees and types, which is the normalised name with the TLD put back.
+    ///
+    /// Storage is canonical without it and everything user-facing is canonical with it. Emitting the
+    /// stored form instead would leak an implementation detail into every event and reverse lookup, and
+    /// leave callers unsure which of the two spellings is the real name.
+    /// </summary>
+    private static string DisplayName(string normalised) => normalised + "." + Tld;
 
     /// <summary>Current block time in unix seconds (block timestamps are unix milliseconds).</summary>
     private static long NowSeconds() => Context.BlockTimestamp / 1000;
@@ -73,21 +179,40 @@ public partial class BasaltNameService
     /// <summary>Whether a name is expired and past its grace period (so anyone may take it).</summary>
     private bool IsExpiredPastGrace(string name)
     {
-        var expiry = _expiries.Get(name);
+        // A subdomain has no life of its own: it lives and dies with the label that was bought.
+        var expiry = _expiries.Get(RegistrableLabel(name));
         return expiry != 0 && NowSeconds() > expiry + GracePeriodSeconds;
     }
 
     /// <summary>Whether a name can be registered: never taken, or expired past its grace period.</summary>
     private bool IsAvailable(string name) =>
-        string.IsNullOrEmpty(_owners.Get(name)) || IsExpiredPastGrace(name);
+        string.IsNullOrEmpty(_owners.Get(RegistrableLabel(name))) || IsExpiredPastGrace(name);
 
-    /// <summary>Requires the caller to be the current, non-past-grace owner of the name.</summary>
+    /// <summary>
+    /// Requires the caller to control this name. For a registrable label that means owning it. For a
+    /// subdomain it means owning the label above it, or holding an explicit delegation for exactly this
+    /// subdomain. Either way the parent's expiry governs, so a lapsed registration takes its whole tree
+    /// with it and a delegate cannot outlive the person who delegated.
+    /// </summary>
     private void RequireLiveOwner(string name)
     {
-        var ownerHex = _owners.Get(name);
+        var label = RegistrableLabel(name);
+        var ownerHex = _owners.Get(label);
         Context.Require(!string.IsNullOrEmpty(ownerHex), "BNS: name not found");
         Context.Require(!IsExpiredPastGrace(name), "BNS: name expired");
-        Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
+
+        var callerHex = Convert.ToHexString(Context.Caller);
+        if (ownerHex == callerHex)
+            return;
+
+        if (IsSubdomain(name))
+        {
+            var delegated = _subOwners.Get(name);
+            if (!string.IsNullOrEmpty(delegated) && delegated == callerHex)
+                return;
+        }
+
+        Context.Require(false, "BNS: not owner");
     }
 
     /// <summary>
@@ -97,8 +222,10 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void Register(string name)
     {
-        Context.Require(!string.IsNullOrEmpty(name), "BNS: name required");
-        Context.Require(name.Length <= 64, "BNS: name too long");
+        name = NormaliseName(name);
+        // Only the second level is for sale. Everything under a label comes with it, so registering
+        // blog.alice separately would let two parties hold overlapping claims on the same tree.
+        Context.Require(!IsSubdomain(name), "BNS: register the label, subdomains come with it");
         Context.Require(IsAvailable(name), "BNS: name taken");
         Context.Require(Context.TxValue >= _registrationFee.Get(), "BNS: insufficient fee");
 
@@ -111,7 +238,7 @@ public partial class BasaltNameService
         _addresses.Set(name, callerHex);
         _expiries.Set(name, NowSeconds() + RegistrationPeriodSeconds());
 
-        Context.Emit(new NameRegisteredEvent { Name = name, Owner = Context.Caller });
+        Context.Emit(new NameRegisteredEvent { Name = DisplayName(name), Owner = Context.Caller });
     }
 
     /// <summary>
@@ -122,6 +249,7 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void Renew(string name)
     {
+        name = NormaliseName(name);
         Context.Require(!string.IsNullOrEmpty(_owners.Get(name)), "BNS: name not found");
         Context.Require(!IsExpiredPastGrace(name), "BNS: name expired past grace");
         Context.Require(Context.TxValue >= _registrationFee.Get(), "BNS: insufficient fee");
@@ -132,7 +260,7 @@ public partial class BasaltNameService
         var newExpiry = baseTime + RegistrationPeriodSeconds();
         _expiries.Set(name, newExpiry);
 
-        Context.Emit(new NameRenewedEvent { Name = name, NewExpiry = newExpiry });
+        Context.Emit(new NameRenewedEvent { Name = DisplayName(name), NewExpiry = newExpiry });
     }
 
     /// <summary>
@@ -142,6 +270,8 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void Reclaim(string name)
     {
+        name = NormaliseName(name);
+        Context.Require(!IsSubdomain(name), "BNS: reclaim the label, not a subdomain");
         Context.Require(IsExpiredPastGrace(name), "BNS: name not expired past grace");
 
         var oldOwnerHex = _owners.Get(name);
@@ -152,7 +282,7 @@ public partial class BasaltNameService
         if (!string.IsNullOrEmpty(oldOwnerHex) && _reverse.Get(oldOwnerHex) == name)
             _reverse.Delete(oldOwnerHex);
 
-        Context.Emit(new NameReclaimedEvent { Name = name });
+        Context.Emit(new NameReclaimedEvent { Name = DisplayName(name) });
     }
 
     /// <summary>
@@ -162,6 +292,7 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void SetContentRecord(string name, string contentUri)
     {
+        name = NormaliseName(name);
         RequireLiveOwner(name);
         Context.Require(!string.IsNullOrEmpty(contentUri), "BNS: content uri required");
         Context.Require(contentUri.Length <= ContentUriMaxLength, "BNS: content uri too long");
@@ -169,34 +300,92 @@ public partial class BasaltNameService
             contentUri.StartsWith(ContentUriPrefix, StringComparison.Ordinal), "BNS: content uri must be trilith://");
 
         _contentRecords.Set(name, contentUri);
-        Context.Emit(new ContentRecordSetEvent { Name = name, ContentUri = contentUri });
+        Context.Emit(new ContentRecordSetEvent { Name = DisplayName(name), ContentUri = contentUri });
     }
 
     /// <summary>Clear the content record for a name you own.</summary>
     [BasaltEntrypoint]
     public void ClearContentRecord(string name)
     {
+        name = NormaliseName(name);
         RequireLiveOwner(name);
         _contentRecords.Delete(name);
-        Context.Emit(new ContentRecordSetEvent { Name = name, ContentUri = "" });
+        Context.Emit(new ContentRecordSetEvent { Name = DisplayName(name), ContentUri = "" });
     }
 
     /// <summary>Resolve a name to its <c>trilith://</c> content name, or empty if unset or expired past grace.</summary>
     [BasaltView]
     public string ResolveContent(string name)
     {
+        name = NormaliseName(name);
         if (IsExpiredPastGrace(name)) return "";
         return _contentRecords.Get(name) ?? "";
     }
 
+
+    /// <summary>
+    /// Hand control of one subdomain to another account, revocably.
+    ///
+    /// Without this, "subdomains are supported" only means the owner can set more records under their own
+    /// name. Delegation is what makes a subdomain useful to someone else, and it is deliberately narrow:
+    /// exactly one subdomain, no inheritance to deeper levels, revocable at any time by the label's owner,
+    /// and dead the moment the parent registration lapses. A delegate can publish, never sell or outlive.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetSubdomainOwner(string name, byte[] newOwner)
+    {
+        name = NormaliseName(name);
+        Context.Require(IsSubdomain(name), "BNS: not a subdomain");
+        Context.Require(newOwner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+
+        // Only the label's owner delegates. A delegate cannot re-delegate, which would otherwise let a
+        // subdomain escape the person who created it.
+        var ownerHex = _owners.Get(RegistrableLabel(name));
+        Context.Require(!string.IsNullOrEmpty(ownerHex), "BNS: name not found");
+        Context.Require(!IsExpiredPastGrace(name), "BNS: name expired");
+        Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
+
+        _subOwners.Set(name, Convert.ToHexString(newOwner));
+        Context.Emit(new SubdomainDelegatedEvent { Name = DisplayName(name), Owner = new Address(newOwner) });
+    }
+
+    /// <summary>Take a delegated subdomain back. Owner-only, and it takes effect immediately.</summary>
+    [BasaltEntrypoint]
+    public void ClearSubdomainOwner(string name)
+    {
+        name = NormaliseName(name);
+        Context.Require(IsSubdomain(name), "BNS: not a subdomain");
+
+        var ownerHex = _owners.Get(RegistrableLabel(name));
+        Context.Require(!string.IsNullOrEmpty(ownerHex), "BNS: name not found");
+        Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
+
+        _subOwners.Delete(name);
+        Context.Emit(new SubdomainDelegatedEvent { Name = DisplayName(name), Owner = Address.Zero });
+    }
+
+    /// <summary>The account a subdomain is delegated to, or empty when it is not delegated.</summary>
+    [BasaltView]
+    public byte[] SubdomainOwner(string name)
+    {
+        name = NormaliseName(name);
+        var hex = _subOwners.Get(name);
+        return string.IsNullOrEmpty(hex) ? [] : Convert.FromHexString(hex);
+    }
+
+    /// <summary>The registrable label a name belongs to, with the TLD stripped and case normalised.</summary>
+    [BasaltView]
+    public string LabelOf(string name) => RegistrableLabel(NormaliseName(name));
+
     /// <summary>The name's expiry in unix seconds (0 if never registered).</summary>
     [BasaltView]
-    public long ExpiryOf(string name) => _expiries.Get(name);
+    public long ExpiryOf(string name) => _expiries.Get(RegistrableLabel(NormaliseName(name)));
 
     /// <summary>Resolve a name to its target address.</summary>
     [BasaltView]
     public byte[] Resolve(string name)
     {
+        name = NormaliseName(name);
         Context.Require(!IsExpiredPastGrace(name), "BNS: name expired");
         var hex = _addresses.Get(name);
         Context.Require(!string.IsNullOrEmpty(hex), "BNS: name not found");
@@ -207,6 +396,7 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void SetAddress(string name, byte[] target)
     {
+        name = NormaliseName(name);
         RequireLiveOwner(name);
         _addresses.Set(name, Convert.ToHexString(target));
     }
@@ -215,8 +405,9 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void SetReverse(string name)
     {
+        name = NormaliseName(name);
         RequireLiveOwner(name);
-        _reverse.Set(Convert.ToHexString(Context.Caller), name);
+        _reverse.Set(Convert.ToHexString(Context.Caller), DisplayName(name));
     }
 
     /// <summary>Reverse-resolve an address to a name.</summary>
@@ -230,6 +421,8 @@ public partial class BasaltNameService
     [BasaltEntrypoint]
     public void TransferName(string name, byte[] newOwner)
     {
+        name = NormaliseName(name);
+        Context.Require(!IsSubdomain(name), "BNS: transfer the label, subdomains follow it");
         RequireLiveOwner(name);
         var ownerHex = _owners.Get(name);
 
@@ -244,7 +437,7 @@ public partial class BasaltNameService
 
         Context.Emit(new NameTransferredEvent
         {
-            Name = name,
+            Name = DisplayName(name),
             PreviousOwner = Context.Caller,
             NewOwner = newOwner,
         });
@@ -254,8 +447,9 @@ public partial class BasaltNameService
     [BasaltView]
     public byte[] OwnerOf(string name)
     {
+        name = NormaliseName(name);
         if (IsExpiredPastGrace(name)) return new byte[20];
-        var hex = _owners.Get(name);
+        var hex = _owners.Get(RegistrableLabel(name));
         if (string.IsNullOrEmpty(hex)) return new byte[20];
         return Convert.FromHexString(hex);
     }
@@ -294,4 +488,11 @@ public class NameRenewedEvent
 public class NameReclaimedEvent
 {
     public string Name { get; set; } = "";
+}
+
+/// <summary>A subdomain was delegated to an account, or the delegation was cleared (Owner is zero).</summary>
+public sealed class SubdomainDelegatedEvent
+{
+    public string Name { get; set; } = "";
+    public Address Owner { get; set; }
 }
