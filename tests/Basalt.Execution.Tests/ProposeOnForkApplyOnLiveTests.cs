@@ -186,4 +186,81 @@ public class ProposeOnForkApplyOnLiveTests
             parent = block.Header;
         }
     }
+
+
+    /// <summary>
+    /// A batch of blocks applied together must reach the state they reach one at a time.
+    ///
+    /// Replaying history uses the batch path: execute every block on one fork, compute the root once at
+    /// the end, then swap. Following the chain live uses the other, computing after each block. Since
+    /// computing the root is also what folds storage roots into accounts, the two differ in how often
+    /// that fold happens, and a node that replays must still arrive where a node that followed did.
+    /// </summary>
+    [Fact]
+    public void Applying_blocks_as_a_batch_reaches_the_same_state_as_one_at_a_time()
+    {
+        var (senderKey, sender) = NewAccount();
+        var proposer = new Address(Enumerable.Repeat((byte)0x77, 20).ToArray());
+
+        // Build the blocks once, so both sides replay exactly the same history.
+        var source = LiveState(sender);
+        GenesisContractDeployer.DeployAll(source, _chainParams.ChainId);
+        var builder = new BlockBuilder(_chainParams);
+        var executor = new TransactionExecutor(_chainParams);
+        var parent = Genesis(source);
+
+        var blocks = new List<Block>();
+        for (ulong nonce = 0; nonce < 5; nonce++)
+        {
+            var tx = Transaction.Sign(new Transaction
+            {
+                Type = TransactionType.ContractCall,
+                Nonce = nonce,
+                Sender = sender,
+                To = NameService(),
+                Value = new UInt256(1_000_000_000),
+                GasLimit = 2_000_000,
+                GasPrice = _chainParams.InitialBaseFee * new UInt256(2),
+                Data = RegisterCall("batch" + nonce),
+                ChainId = _chainParams.ChainId,
+            }, senderKey);
+
+            var fork = source.Fork();
+            Block block = builder.BuildBlockWithDex([tx], [], fork, parent, proposer);
+            block.Transactions.Should().ContainSingle();
+
+            for (int i = 0; i < block.Transactions.Count; i++)
+                executor.Execute(block.Transactions[i], source, block.Header, i);
+            source.ComputeStateRoot();
+
+            blocks.Add(block);
+            parent = block.Header;
+        }
+
+        // One at a time, folding after each block, the way a node following the chain does.
+        var live = LiveState(sender);
+        GenesisContractDeployer.DeployAll(live, _chainParams.ChainId);
+        foreach (var block in blocks)
+        {
+            for (int i = 0; i < block.Transactions.Count; i++)
+                executor.Execute(block.Transactions[i], live, block.Header, i);
+            live.ComputeStateRoot();
+        }
+
+        // As one batch, folding once at the end, the way replaying history does.
+        var replay = LiveState(sender);
+        GenesisContractDeployer.DeployAll(replay, _chainParams.ChainId);
+        foreach (var block in blocks)
+        {
+            for (int i = 0; i < block.Transactions.Count; i++)
+                executor.Execute(block.Transactions[i], replay, block.Header, i);
+
+            // Folding per block, which is what BlockApplier.ExecuteBlock now does. Deferring it to the
+            // end of the batch is what made replay land somewhere else.
+            replay.ComputeStateRoot();
+        }
+
+        replay.ComputeStateRoot().Should().Be(live.ComputeStateRoot(),
+            "a node replaying history has to arrive where a node that followed it live did");
+    }
 }

@@ -137,6 +137,15 @@ public sealed class BlockApplier
             }
         }
 
+        // Materialise this block's state before moving to the next.
+        //
+        // Computing the root is also what folds each contract's storage root into its account, and the
+        // batch path used to defer that to the end of the batch while the live path did it per block.
+        // The two then landed on different states from the same blocks, so a node replaying history
+        // refused at its first batch and could never join. Folding here makes both paths agree by
+        // construction rather than by coincidence.
+        stateDb.ComputeStateRoot();
+
         // Run DEX settlement (TWAP carry-forward + limit order matching)
         if (_blockBuilder != null)
         {
