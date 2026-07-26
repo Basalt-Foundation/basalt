@@ -86,20 +86,16 @@ bug on a validator's own catch-up sync, which shares the same replay path.
   `BlockApplier` restores on both refusal paths, the execution failure and the state-root gate. They
   live on the verifier rather than in the fork, so without this a refused batch kept them consumed and
   every retry replayed as a duplicate.
-- **5. Replay before enabling: run, and it failed.** An RPC node given an empty data directory replays
-  the chain in batches and refuses at the first one, ending #100, on a state-root divergence. A negative
-  control on the commit before any of this work reproduces it exactly, same expected and computed roots,
-  so it predates COMPL-C01 and is not caused by it.
+- **5. Replay before enabling: passed.** It failed on the first attempt: a node with an empty data
+  directory refused its first batch, ending #100, and never left genesis. A negative control on the
+  commit before this work reproduced it exactly, so it predated COMPL-C01 rather than being caused by
+  it. The cause was the batch path folding storage roots once at the end of a batch while the live path
+  folded per block, so the two reached different states from the same blocks, and any node starting
+  from nothing could never join. `ExecuteBlock` now folds per block. Re-run: an RPC node replays the
+  chain from an empty volume, no divergence, and catches up live.
 
-  It had never been seen because an RPC node that has followed since genesis applies blocks one at a
-  time through `ApplyBlock`. Replaying history uses `ApplyBatch`, a different path, and nothing had
-  exercised it from an empty state until this prerequisite asked for exactly that.
+COMPL-C01 is done. The RPC executor takes the compliance engine, and an RPC node runs the same checks a
+validator does. The asymmetry this note was written about is closed.
 
-COMPL-C01 is wired but must not be considered complete. The RPC executor takes the compliance engine and
-an RPC node runs the same checks a validator does, and points 1 through 4 hold. Point 5 is the gate, it
-has not passed, and the batch replay divergence has to be resolved before this is relied on.
-
-## Decision
-
-- COMPL-C02: done (`Program.cs` binds both registries to Governance 0x1003, guarded-method tests added).
-- COMPL-C01: deferred. Tracked here with the prerequisites above. Not wired naively.
+The gate earned its keep: it was asked for to protect compliance and it caught a defect that had nothing
+to do with compliance and would have stopped any new node from joining the network.
