@@ -507,6 +507,41 @@ try
         return Microsoft.AspNetCore.Http.Results.Ok(response);
     });
 
+    // Compliance lives above the mode switch because a replaying node needs it too.
+    //
+    // It used to be built inside the validator case, so an RPC or standalone node had no verifier at
+    // all. That mattered less than it sounds while nothing registered a proof requirement, and it is
+    // the thing COMPL-C01 has to undo: the nullifier retention window is advanced once per block, and
+    // a node that never advances it replays a legitimate transaction as a duplicate.
+        // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
+        var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
+        var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
+        {
+            // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
+            var storageKey = "scr_vk:" + schemaId.ToHexString();
+            var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
+            var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
+            if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
+                return null;
+            var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
+            if (string.IsNullOrEmpty(hexVk))
+                return null;
+            try { return Convert.FromHexString(hexVk); }
+            catch { return null; }
+        });
+        // H9: No MockKycProvider in consensus mode — only governance-approved
+        // providers can issue attestations on mainnet/testnet.
+        // COMPL-C02: bind both registries to the Governance system-contract address (0x1003) so their
+        // admin guards enforce that only Governance can approve KYC providers or edit the sanctions
+        // list. The parameterless ctors leave the guard address null, which DISABLES that access
+        // control (any/null caller passes). No consensus path calls those admin methods today, so this
+        // is defense-in-depth for when a governance handler is wired, with no runtime behavior change.
+        var governanceAddress = Basalt.Execution.GenesisContractDeployer.Addresses.Governance.ToArray();
+        var complianceEngine = new Basalt.Compliance.ComplianceEngine(
+            new Basalt.Compliance.IdentityRegistry(governanceAddress),
+            new Basalt.Compliance.SanctionsList(governanceAddress),
+            zkVerifier);
+
     switch (config.ResolvedMode)
     {
         case NodeMode.Validator:
@@ -516,35 +551,6 @@ try
             var slashingEngine = new SlashingEngine(
                 stakingState,
                 app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
-
-            // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
-            var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
-            var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
-            {
-                // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
-                var storageKey = "scr_vk:" + schemaId.ToHexString();
-                var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
-                var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
-                if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
-                    return null;
-                var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
-                if (string.IsNullOrEmpty(hexVk))
-                    return null;
-                try { return Convert.FromHexString(hexVk); }
-                catch { return null; }
-            });
-            // H9: No MockKycProvider in consensus mode — only governance-approved
-            // providers can issue attestations on mainnet/testnet.
-            // COMPL-C02: bind both registries to the Governance system-contract address (0x1003) so their
-            // admin guards enforce that only Governance can approve KYC providers or edit the sanctions
-            // list. The parameterless ctors leave the guard address null, which DISABLES that access
-            // control (any/null caller passes). No consensus path calls those admin methods today, so this
-            // is defense-in-depth for when a governance handler is wired, with no runtime behavior change.
-            var governanceAddress = Basalt.Execution.GenesisContractDeployer.Addresses.Governance.ToArray();
-            var complianceEngine = new Basalt.Compliance.ComplianceEngine(
-                new Basalt.Compliance.IdentityRegistry(governanceAddress),
-                new Basalt.Compliance.SanctionsList(governanceAddress),
-                zkVerifier);
 
             var coordinator = new NodeCoordinator(
                 config, chainParams, chainManager, mempool, stateDbRef, validator, wsHandler,
@@ -637,7 +643,8 @@ try
                 stakingPersistence: stakingPersistence,
                 wsHandler,
                 loggerFactory.CreateLogger<BlockApplier>(),
-                syncStateCommit: rpcSyncStateCommit);
+                syncStateCommit: rpcSyncStateCommit,
+                complianceVerifier: complianceEngine);
 
             // Phase 1.6 on a sync-only node. Pruning used to be impossible here: the pruner is built by
             // NodeCoordinator, which an RPC node never runs, so the feature announced itself and then did

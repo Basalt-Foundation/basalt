@@ -69,6 +69,19 @@ Do all of these together, then wire the shared engine into the RPC and standalon
 Point 1 is a consensus-safety change worth validating on the testnet soak. Point 2 also fixes a latent
 bug on a validator's own catch-up sync, which shares the same replay path.
 
+### Progress
+
+- **1. State-root gate on replay: done.** Both paths now refuse rather than accept. `ApplyBatch` already
+  refused; `ApplyBlock` logged and applied anyway, and now returns a failure. Verified on a fresh testnet
+  where the roots agree and no block is refused. This was blocked until the divergence it kept reporting
+  was traced to a stale account cache in `FlatStateDb` and fixed.
+- **2. Nullifier window on replay: done.** `BlockApplier` takes the verifier and calls
+  `ResetNullifiers(block.Number)` before each block's transactions, in the order finalization uses. The
+  engine moved above the mode switch so a replaying node has one at all, rather than being built inside
+  the validator case.
+- **3, 4, 5: open.** The verifier is still NOT wired into the RPC or standalone executor, which is the
+  final step and stays unsafe until these are done.
+
 ## Decision
 
 - COMPL-C02: done (`Program.cs` binds both registries to Governance 0x1003, guarded-method tests added).

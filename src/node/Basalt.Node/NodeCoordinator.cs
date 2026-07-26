@@ -787,7 +787,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _chainParams, _chainManager, _mempool, _txExecutor, _blockBuilder,
             _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
             _wsHandler, _loggerFactory.CreateLogger<BlockApplier>(),
-            syncStateCommit: syncStateCommit);
+            syncStateCommit: syncStateCommit,
+            // A validator replays too, on its own catch-up sync, and that path shares the applier.
+            complianceVerifier: _complianceVerifier);
 
         // Phase 1.6: background trie pruner, off by default. Requires disk-backed stores (null in
         // memory-only mode). When enabled, RunTriePruneLoop sweeps trie_nodes every interval.

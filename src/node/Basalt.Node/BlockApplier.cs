@@ -56,6 +56,17 @@ public sealed class BlockApplier
     private readonly Func<IStateDatabase, Hash256, IStateDatabase>? _syncStateCommit;
 
     /// <summary>
+    /// Present so replay advances the nullifier retention window the way finalization does.
+    ///
+    /// COMPL-07 prunes nullifiers outside the window once per block, and it was called from exactly one
+    /// place, the consensus callback. Replay never called it, so on a replaying node the set grew without
+    /// bound and its window never applied. A nullifier the proposer had legitimately forgotten would read
+    /// as a duplicate, and a transaction that finalized as success would replay as failure, which is a
+    /// state divergence dressed as a compliance decision.
+    /// </summary>
+    private readonly IComplianceVerifier? _complianceVerifier;
+
+    /// <summary>
     /// Fired when an epoch transition occurs. The caller (NodeCoordinator) can hook this
     /// to rewire consensus-specific components (leader selector, consensus engine).
     /// Provides the new ValidatorSet and the block number at which the transition occurred.
@@ -75,7 +86,8 @@ public sealed class BlockApplier
         IStakingPersistence? stakingPersistence,
         WebSocketHandler wsHandler,
         ILogger logger,
-        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null)
+        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null,
+        IComplianceVerifier? complianceVerifier = null)
     {
         _chainParams = chainParams;
         _chainManager = chainManager;
@@ -90,6 +102,7 @@ public sealed class BlockApplier
         _wsHandler = wsHandler;
         _logger = logger;
         _syncStateCommit = syncStateCommit;
+        _complianceVerifier = complianceVerifier;
     }
 
     /// <summary>
@@ -99,6 +112,9 @@ public sealed class BlockApplier
     /// </summary>
     public List<TransactionReceipt>? ExecuteBlock(Block block, IStateDatabase stateDb)
     {
+        // Before the block's transactions, matching the order finalization uses.
+        _complianceVerifier?.ResetNullifiers(block.Number);
+
         List<TransactionReceipt>? receipts = null;
 
         if (block.Transactions.Count > 0)
