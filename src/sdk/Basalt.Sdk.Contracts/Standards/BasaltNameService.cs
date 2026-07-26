@@ -913,14 +913,14 @@ public partial class BasaltNameService
 }
 
 [BasaltEvent]
-public class NameRegisteredEvent
+public partial class NameRegisteredEvent
 {
     [Indexed] public byte[] Owner { get; set; } = null!;
     public string Name { get; set; } = "";
 }
 
 [BasaltEvent]
-public class NameTransferredEvent
+public partial class NameTransferredEvent
 {
     public string Name { get; set; } = "";
     [Indexed] public byte[] PreviousOwner { get; set; } = null!;
@@ -928,27 +928,28 @@ public class NameTransferredEvent
 }
 
 [BasaltEvent]
-public class ContentRecordSetEvent
+public partial class ContentRecordSetEvent
 {
     public string Name { get; set; } = "";
     public string ContentUri { get; set; } = "";
 }
 
 [BasaltEvent]
-public class NameRenewedEvent
+public partial class NameRenewedEvent
 {
     public string Name { get; set; } = "";
     public long NewExpiry { get; set; }
 }
 
 [BasaltEvent]
-public class NameReclaimedEvent
+public partial class NameReclaimedEvent
 {
     public string Name { get; set; } = "";
 }
 
 /// <summary>A subdomain was delegated to an account, or the delegation was cleared (Owner is zero).</summary>
-public sealed class SubdomainDelegatedEvent
+[BasaltEvent]
+public sealed partial class SubdomainDelegatedEvent
 {
     public string Name { get; set; } = "";
     public Address Owner { get; set; }
@@ -956,14 +957,14 @@ public sealed class SubdomainDelegatedEvent
 
 /// <summary>A label was reserved so it cannot be registered before the deadline.</summary>
 [BasaltEvent]
-public class NameReservedEvent
+public partial class NameReservedEvent
 {
     public string Name { get; set; } = "";
 }
 
 /// <summary>The moment unclaimed reservations lapse was set.</summary>
 [BasaltEvent]
-public class ReservationDeadlineSetEvent
+public partial class ReservationDeadlineSetEvent
 {
     public long Deadline { get; set; }
 }
@@ -973,7 +974,7 @@ public class ReservationDeadlineSetEvent
 /// assignment can be checked by anyone rather than believed.
 /// </summary>
 [BasaltEvent]
-public class ReservedNameClaimedEvent
+public partial class ReservedNameClaimedEvent
 {
     [Indexed] public Address Owner { get; set; }
     public string Name { get; set; } = "";
@@ -982,7 +983,7 @@ public class ReservedNameClaimedEvent
 
 /// <summary>An account was authorised to attest DNS records, or had that authorisation withdrawn.</summary>
 [BasaltEvent]
-public class AttesterSetEvent
+public partial class AttesterSetEvent
 {
     [Indexed] public Address Attester { get; set; }
     public bool Authorised { get; set; }
@@ -990,7 +991,7 @@ public class AttesterSetEvent
 
 /// <summary>One attester reported the record proving a claim. Tally is how many now agree.</summary>
 [BasaltEvent]
-public class ClaimAttestedEvent
+public partial class ClaimAttestedEvent
 {
     [Indexed] public Address Owner { get; set; }
     public string Name { get; set; } = "";
@@ -1001,7 +1002,7 @@ public class ClaimAttestedEvent
 
 /// <summary>The per-account registration cap was changed.</summary>
 [BasaltEvent]
-public class RegistrationLimitSetEvent
+public partial class RegistrationLimitSetEvent
 {
     public int MaxPerWindow { get; set; }
     public long WindowSeconds { get; set; }

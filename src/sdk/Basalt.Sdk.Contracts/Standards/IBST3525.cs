@@ -32,7 +32,7 @@ public interface IBST3525
 }
 
 [BasaltEvent]
-public sealed class TransferValueEvent
+public sealed partial class TransferValueEvent
 {
     [Indexed] public ulong FromTokenId { get; init; }
     [Indexed] public ulong ToTokenId { get; init; }
@@ -40,7 +40,7 @@ public sealed class TransferValueEvent
 }
 
 [BasaltEvent]
-public sealed class SftTransferEvent
+public sealed partial class SftTransferEvent
 {
     [Indexed] public byte[] From { get; init; } = [];
     [Indexed] public byte[] To { get; init; } = [];
@@ -48,7 +48,7 @@ public sealed class SftTransferEvent
 }
 
 [BasaltEvent]
-public sealed class ApproveValueEvent
+public sealed partial class ApproveValueEvent
 {
     [Indexed] public ulong TokenId { get; init; }
     [Indexed] public byte[] Operator { get; init; } = [];
@@ -56,7 +56,7 @@ public sealed class ApproveValueEvent
 }
 
 [BasaltEvent]
-public sealed class SftApprovalEvent
+public sealed partial class SftApprovalEvent
 {
     [Indexed] public byte[] Owner { get; init; } = [];
     [Indexed] public byte[] Approved { get; init; } = [];
@@ -64,7 +64,7 @@ public sealed class SftApprovalEvent
 }
 
 [BasaltEvent]
-public sealed class SftMintEvent
+public sealed partial class SftMintEvent
 {
     [Indexed] public byte[] To { get; init; } = [];
     public ulong TokenId { get; init; }

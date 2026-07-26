@@ -58,7 +58,7 @@ public sealed class Attestation
 /// Event emitted when a DID is registered.
 /// </summary>
 [BasaltEvent]
-public sealed class DIDRegisteredEvent
+public sealed partial class DIDRegisteredEvent
 {
     [Indexed] public string DID { get; init; } = "";
     [Indexed] public byte[] Controller { get; init; } = [];
@@ -68,7 +68,7 @@ public sealed class DIDRegisteredEvent
 /// Event emitted when an attestation is added.
 /// </summary>
 [BasaltEvent]
-public sealed class AttestationAddedEvent
+public sealed partial class AttestationAddedEvent
 {
     [Indexed] public string DID { get; init; } = "";
     public string CredentialType { get; init; } = "";
@@ -80,7 +80,7 @@ public sealed class AttestationAddedEvent
 /// Event emitted when an attestation is revoked.
 /// </summary>
 [BasaltEvent]
-public sealed class AttestationRevokedEvent
+public sealed partial class AttestationRevokedEvent
 {
     [Indexed] public string DID { get; init; } = "";
     public string AttestationId { get; init; } = "";

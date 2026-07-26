@@ -44,7 +44,7 @@ public interface INftTransferPolicy
 /// Event emitted when a policy is added to a token.
 /// </summary>
 [BasaltEvent]
-public sealed class PolicyAddedEvent
+public sealed partial class PolicyAddedEvent
 {
     [Indexed] public byte[] Token { get; init; } = [];
     [Indexed] public byte[] Policy { get; init; } = [];
@@ -54,7 +54,7 @@ public sealed class PolicyAddedEvent
 /// Event emitted when a policy is removed from a token.
 /// </summary>
 [BasaltEvent]
-public sealed class PolicyRemovedEvent
+public sealed partial class PolicyRemovedEvent
 {
     [Indexed] public byte[] Token { get; init; } = [];
     [Indexed] public byte[] Policy { get; init; } = [];
@@ -64,7 +64,7 @@ public sealed class PolicyRemovedEvent
 /// Event emitted when a transfer is denied by a policy.
 /// </summary>
 [BasaltEvent]
-public sealed class TransferDeniedEvent
+public sealed partial class TransferDeniedEvent
 {
     [Indexed] public byte[] Token { get; init; } = [];
     [Indexed] public byte[] Policy { get; init; } = [];

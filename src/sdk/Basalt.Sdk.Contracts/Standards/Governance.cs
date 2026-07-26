@@ -453,7 +453,7 @@ public partial class Governance
 }
 
 [BasaltEvent]
-public class ProposalCreatedEvent
+public partial class ProposalCreatedEvent
 {
     [Indexed] public ulong ProposalId { get; set; }
     [Indexed] public byte[] Proposer { get; set; } = null!;
@@ -463,7 +463,7 @@ public class ProposalCreatedEvent
 }
 
 [BasaltEvent]
-public class VoteCastEvent
+public partial class VoteCastEvent
 {
     [Indexed] public ulong ProposalId { get; set; }
     [Indexed] public byte[] Voter { get; set; } = null!;
@@ -472,27 +472,27 @@ public class VoteCastEvent
 }
 
 [BasaltEvent]
-public class ProposalQueuedEvent
+public partial class ProposalQueuedEvent
 {
     [Indexed] public ulong ProposalId { get; set; }
     public ulong TimelockExpiry { get; set; }
 }
 
 [BasaltEvent]
-public class ProposalExecutedEvent
+public partial class ProposalExecutedEvent
 {
     [Indexed] public ulong ProposalId { get; set; }
     public bool Passed { get; set; }
 }
 
 [BasaltEvent]
-public class ProposalCanceledEvent
+public partial class ProposalCanceledEvent
 {
     [Indexed] public ulong ProposalId { get; set; }
 }
 
 [BasaltEvent]
-public class DelegateChangedEvent
+public partial class DelegateChangedEvent
 {
     [Indexed] public byte[] Delegator { get; set; } = null!;
     [Indexed] public byte[] Delegatee { get; set; } = null!;

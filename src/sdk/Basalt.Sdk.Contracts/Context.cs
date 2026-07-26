@@ -77,8 +77,13 @@ public static class Context
 
     /// <summary>
     /// Emit a contract event.
+    ///
+    /// The <see cref="IBasaltEvent"/> constraint is what guarantees the event reaches a receipt with its
+    /// fields. The generator implements it for every type marked <see cref="BasaltEventAttribute"/>, so
+    /// the constraint costs nothing to satisfy and makes an unencodable event a compile error here
+    /// rather than an empty log nobody notices.
     /// </summary>
-    public static void Emit<TEvent>(TEvent evt) where TEvent : class
+    public static void Emit<TEvent>(TEvent evt) where TEvent : class, IBasaltEvent
     {
         EventEmitted?.Invoke(typeof(TEvent).Name, evt);
     }
@@ -86,7 +91,7 @@ public static class Context
     /// <summary>
     /// Event handler for emitted events (set by the runtime).
     /// </summary>
-    public static Action<string, object>? EventEmitted { get; set; }
+    public static Action<string, IBasaltEvent>? EventEmitted { get; set; }
 
     // ---- Native Transfer ----
 

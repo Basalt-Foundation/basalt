@@ -25,7 +25,7 @@ public interface IBSTVC
 }
 
 [BasaltEvent]
-public sealed class CredentialIssuedEvent
+public sealed partial class CredentialIssuedEvent
 {
     [Indexed] public byte[] CredentialHash { get; init; } = [];
     [Indexed] public byte[] Issuer { get; init; } = [];
@@ -34,7 +34,7 @@ public sealed class CredentialIssuedEvent
 }
 
 [BasaltEvent]
-public sealed class CredentialRevokedEvent
+public sealed partial class CredentialRevokedEvent
 {
     [Indexed] public byte[] CredentialHash { get; init; } = [];
     [Indexed] public byte[] Issuer { get; init; } = [];
@@ -42,7 +42,7 @@ public sealed class CredentialRevokedEvent
 }
 
 [BasaltEvent]
-public sealed class CredentialSuspendedEvent
+public sealed partial class CredentialSuspendedEvent
 {
     [Indexed] public byte[] CredentialHash { get; init; } = [];
     [Indexed] public byte[] Issuer { get; init; } = [];
@@ -50,7 +50,7 @@ public sealed class CredentialSuspendedEvent
 }
 
 [BasaltEvent]
-public sealed class CredentialReinstatedEvent
+public sealed partial class CredentialReinstatedEvent
 {
     [Indexed] public byte[] CredentialHash { get; init; } = [];
     [Indexed] public byte[] Issuer { get; init; } = [];

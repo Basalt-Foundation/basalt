@@ -81,10 +81,14 @@ public static class ContractBridge
         Context.IsDeploying = false; // Default to false; Deploy() sets true after Setup()
 
         // Wire event handler
-        Context.EventEmitted = (eventName, eventData) =>
+        //
+        // The event encodes itself, so the payload that reaches the receipt is the one the contract
+        // declared. This used to log the type name and discard every field, which meant a transfer
+        // recorded that a transfer had happened without saying who received what.
+        Context.EventEmitted = (eventName, evt) =>
         {
             var sig = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(eventName));
-            host.EmitEvent(sig, [], System.Text.Encoding.UTF8.GetBytes(eventName));
+            host.EmitEvent(sig, evt.ToLogTopics(), evt.ToLogData());
         };
 
         // Wire native transfer
@@ -202,7 +206,7 @@ public static class ContractBridge
         public ulong PreviousGasRemaining;
         public int PreviousCallDepth;
         public bool PreviousIsDeploying;
-        public Action<string, object>? PreviousEventEmitted;
+        public Action<string, IBasaltEvent>? PreviousEventEmitted;
         public Action<byte[], UInt256>? PreviousNativeTransferHandler;
         public Func<byte[], string, object?[], object?>? PreviousCrossContractCallHandler;
         public Func<byte[], string, byte[], object?>? PreviousEncodedCrossContractCallHandler;

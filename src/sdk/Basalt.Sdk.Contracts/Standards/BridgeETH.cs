@@ -444,7 +444,7 @@ public partial class BridgeETH
 // --- Events ---
 
 [BasaltEvent]
-public class DepositLockedEvent
+public partial class DepositLockedEvent
 {
     [Indexed] public ulong Nonce { get; set; }
     [Indexed] public byte[] Sender { get; set; } = null!;
@@ -454,19 +454,19 @@ public class DepositLockedEvent
 }
 
 [BasaltEvent]
-public class DepositConfirmedEvent
+public partial class DepositConfirmedEvent
 {
     [Indexed] public ulong Nonce { get; set; }
 }
 
 [BasaltEvent]
-public class DepositFinalizedEvent
+public partial class DepositFinalizedEvent
 {
     [Indexed] public ulong Nonce { get; set; }
 }
 
 [BasaltEvent]
-public class WithdrawalUnlockedEvent
+public partial class WithdrawalUnlockedEvent
 {
     [Indexed] public ulong Nonce { get; set; }
     [Indexed] public byte[] Recipient { get; set; } = null!;
@@ -474,38 +474,38 @@ public class WithdrawalUnlockedEvent
 }
 
 [BasaltEvent]
-public class RelayerAddedEvent
+public partial class RelayerAddedEvent
 {
     [Indexed] public byte[] RelayerPublicKey { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class RelayerRemovedEvent
+public partial class RelayerRemovedEvent
 {
     [Indexed] public byte[] RelayerPublicKey { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class ThresholdUpdatedEvent
+public partial class ThresholdUpdatedEvent
 {
     public uint OldThreshold { get; set; }
     public uint NewThreshold { get; set; }
 }
 
 [BasaltEvent]
-public class BridgePausedEvent
+public partial class BridgePausedEvent
 {
     [Indexed] public byte[] Admin { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class BridgeUnpausedEvent
+public partial class BridgeUnpausedEvent
 {
     [Indexed] public byte[] Admin { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class DepositCancelledEvent
+public partial class DepositCancelledEvent
 {
     [Indexed] public ulong Nonce { get; set; }
     [Indexed] public byte[] Sender { get; set; } = null!;

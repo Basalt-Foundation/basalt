@@ -588,7 +588,7 @@ public partial class OracleNetwork
 // ===================== Events =====================
 
 [BasaltEvent]
-public class FeedCreatedEvent
+public partial class FeedCreatedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     public string Name { get; set; } = "";
@@ -599,7 +599,7 @@ public class FeedCreatedEvent
 }
 
 [BasaltEvent]
-public class FeedUpdatedEvent
+public partial class FeedUpdatedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     public ulong HeartbeatBlocks { get; set; }
@@ -607,32 +607,32 @@ public class FeedUpdatedEvent
 }
 
 [BasaltEvent]
-public class FeedPausedEvent
+public partial class FeedPausedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
 }
 
 [BasaltEvent]
-public class FeedUnpausedEvent
+public partial class FeedUnpausedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
 }
 
 [BasaltEvent]
-public class ReporterRegisteredEvent
+public partial class ReporterRegisteredEvent
 {
     [Indexed] public byte[] Reporter { get; set; } = null!;
     public UInt256 Stake { get; set; }
 }
 
 [BasaltEvent]
-public class ReporterUnregisteredEvent
+public partial class ReporterUnregisteredEvent
 {
     [Indexed] public byte[] Reporter { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class RoundOpenedEvent
+public partial class RoundOpenedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     [Indexed] public ulong Round { get; set; }
@@ -640,7 +640,7 @@ public class RoundOpenedEvent
 }
 
 [BasaltEvent]
-public class ValueSubmittedEvent
+public partial class ValueSubmittedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     [Indexed] public ulong Round { get; set; }
@@ -648,7 +648,7 @@ public class ValueSubmittedEvent
 }
 
 [BasaltEvent]
-public class RoundFinalizedEvent
+public partial class RoundFinalizedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     [Indexed] public ulong Round { get; set; }
@@ -659,7 +659,7 @@ public class RoundFinalizedEvent
 }
 
 [BasaltEvent]
-public class ReporterSlashedEvent
+public partial class ReporterSlashedEvent
 {
     [Indexed] public ulong FeedId { get; set; }
     [Indexed] public ulong Round { get; set; }
@@ -670,7 +670,7 @@ public class ReporterSlashedEvent
 }
 
 [BasaltEvent]
-public class FeesClaimedEvent
+public partial class FeesClaimedEvent
 {
     [Indexed] public byte[] Reporter { get; set; } = null!;
     public UInt256 Amount { get; set; }

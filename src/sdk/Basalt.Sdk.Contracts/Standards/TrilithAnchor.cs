@@ -134,7 +134,7 @@ public partial class TrilithAnchor
 }
 
 [BasaltEvent]
-public class AnchoredEvent
+public partial class AnchoredEvent
 {
     [Indexed] public byte[] Submitter { get; set; } = null!;
     public byte[] Digest { get; set; } = null!;

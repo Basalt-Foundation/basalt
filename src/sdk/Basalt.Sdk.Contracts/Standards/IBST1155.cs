@@ -34,7 +34,7 @@ public interface IBST1155
 /// Transfer event for BST-1155 single transfer.
 /// </summary>
 [BasaltEvent]
-public sealed class TransferSingleEvent
+public sealed partial class TransferSingleEvent
 {
     [Indexed] public byte[] Operator { get; init; } = [];
     [Indexed] public byte[] From { get; init; } = [];
@@ -47,7 +47,7 @@ public sealed class TransferSingleEvent
 /// Transfer event for BST-1155 batch transfer.
 /// </summary>
 [BasaltEvent]
-public sealed class TransferBatchEvent
+public sealed partial class TransferBatchEvent
 {
     [Indexed] public byte[] Operator { get; init; } = [];
     [Indexed] public byte[] From { get; init; } = [];
@@ -60,7 +60,7 @@ public sealed class TransferBatchEvent
 /// Approval event for BST-1155.
 /// </summary>
 [BasaltEvent]
-public sealed class ApprovalForAllEvent
+public sealed partial class ApprovalForAllEvent
 {
     [Indexed] public byte[] Owner { get; init; } = [];
     [Indexed] public byte[] Operator { get; init; } = [];

@@ -23,7 +23,7 @@ public interface IBST4626 : IBST20
 }
 
 [BasaltEvent]
-public sealed class VaultDepositEvent
+public sealed partial class VaultDepositEvent
 {
     [Indexed] public byte[] Caller { get; init; } = [];
     public UInt256 Assets { get; init; }
@@ -31,7 +31,7 @@ public sealed class VaultDepositEvent
 }
 
 [BasaltEvent]
-public sealed class VaultWithdrawEvent
+public sealed partial class VaultWithdrawEvent
 {
     [Indexed] public byte[] Caller { get; init; } = [];
     public UInt256 Assets { get; init; }
@@ -39,7 +39,7 @@ public sealed class VaultWithdrawEvent
 }
 
 [BasaltEvent]
-public sealed class VaultHarvestEvent
+public sealed partial class VaultHarvestEvent
 {
     [Indexed] public byte[] Caller { get; init; } = [];
     public UInt256 YieldAmount { get; init; }

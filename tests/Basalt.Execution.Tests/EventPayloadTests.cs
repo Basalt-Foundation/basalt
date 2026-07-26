@@ -81,8 +81,7 @@ public class EventPayloadTests
     /// A transfer log has to say who received what. Without the amount and the recipient a log records
     /// only that some transfer happened, which no explorer, indexer, or audit can work from.
     /// </summary>
-    [Fact(Skip = "Known gap: the bridge discards the event object and logs its type name. " +
-                "Fixing it changes the receipts root, so it is a consensus change awaiting a decision.")]
+    [Fact]
     public void A_transfer_log_carries_the_recipient_and_the_amount()
     {
         byte[] code = DeployToken();
@@ -120,5 +119,67 @@ public class EventPayloadTests
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The log has to be decodable in declaration order, since that order is all an ABI gives a reader.
+    /// Checking that the bytes merely contain the values would pass on a payload assembled in any order
+    /// at all, which nobody could parse.
+    /// </summary>
+    [Fact]
+    public void The_fields_decode_in_declaration_order()
+    {
+        byte[] code = DeployToken();
+
+        var ctx = Context(TokenAddr, HolderAddr);
+        new ManagedContractRuntime().Execute(code, TransferCall(RecipientAddr, SendAmount), ctx);
+
+        var reader = new BasaltReader(ctx.EmittedLogs[0].Data!);
+        reader.ReadBytes().ToArray().Should().Equal(HolderAddr.ToArray(), "From comes first");
+        reader.ReadBytes().ToArray().Should().Equal(RecipientAddr.ToArray(), "To comes second");
+        reader.ReadUInt256().Should().Be(SendAmount, "Amount comes last");
+    }
+
+    /// <summary>
+    /// Indexed fields become topics so a reader can filter without decoding every log in a block. Each
+    /// topic is the hash of the field's encoding, so a caller filtering on an address hashes it the same
+    /// way and matches.
+    /// </summary>
+    [Fact]
+    public void Indexed_fields_become_topics_a_reader_can_match_on()
+    {
+        byte[] code = DeployToken();
+
+        var ctx = Context(TokenAddr, HolderAddr);
+        new ManagedContractRuntime().Execute(code, TransferCall(RecipientAddr, SendAmount), ctx);
+
+        Hash256[] topics = ctx.EmittedLogs[0].Topics;
+        topics.Should().HaveCount(2, "From and To are the indexed fields of a transfer");
+
+        var buffer = new byte[64];
+        var writer = new BasaltWriter(buffer);
+        writer.WriteBytes(RecipientAddr.ToArray());
+        Hash256 expected = Basalt.Crypto.Blake3Hasher.Hash(buffer[..writer.Position]);
+
+        topics[1].Should().Be(expected, "a reader hashes the address the same way to find its transfers");
+    }
+
+    /// <summary>
+    /// Two transfers that differ only in amount must produce different data and the same topics, which
+    /// is what makes topics an index rather than a copy of the record.
+    /// </summary>
+    [Fact]
+    public void The_same_parties_share_topics_while_the_data_differs()
+    {
+        byte[] code = DeployToken();
+
+        var first = Context(TokenAddr, HolderAddr);
+        new ManagedContractRuntime().Execute(code, TransferCall(RecipientAddr, SendAmount), first);
+
+        var second = Context(TokenAddr, HolderAddr);
+        new ManagedContractRuntime().Execute(code, TransferCall(RecipientAddr, new UInt256(1)), second);
+
+        second.EmittedLogs[0].Topics.Should().Equal(first.EmittedLogs[0].Topics);
+        second.EmittedLogs[0].Data.Should().NotEqual(first.EmittedLogs[0].Data);
     }
 }
