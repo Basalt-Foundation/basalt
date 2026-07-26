@@ -245,7 +245,19 @@ public sealed class FlatStateDb : IStateDatabase
 
     public Hash256 ComputeStateRoot()
     {
-        return _trie.ComputeStateRoot();
+        var root = _trie.ComputeStateRoot();
+
+        // Computing the root is also what folds each contract's storage root back into its account
+        // record, and the trie writes those records itself. This cache does not see that, so an account
+        // read afterwards would hand back a stale StorageRoot, and the storage trie rebuilt from it
+        // would be the one from before the last block.
+        //
+        // Dropping the touched contracts is enough: the next read reloads the account the trie actually
+        // holds. Dropping rather than updating keeps one owner for the value.
+        foreach (var (contract, _) in _dirtyStorageKeys)
+            _accountCache.Remove(contract);
+
+        return root;
     }
 
     /// <summary>
