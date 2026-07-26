@@ -499,11 +499,35 @@ public partial class BasaltNameService
     /// Governance can therefore witness a proof that exists. It cannot invent one, because the record it
     /// points at is public and someone will look.
     /// </summary>
+    /// <summary>
+    /// Rejects an owner nobody could hold the name with.
+    ///
+    /// The zero address is the case that matters, and it has to be refused here rather than tidied up
+    /// later: assignment deletes the reservation, so a name handed to an address with no key is gone for
+    /// good. A placeholder left in a DNS template must not be able to burn a name forever.
+    /// </summary>
+    private static void RequireAssignableOwner(byte[] owner)
+    {
+        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+
+        var isZero = true;
+        for (int i = 0; i < owner.Length; i++)
+        {
+            if (owner[i] != 0)
+            {
+                isZero = false;
+                break;
+            }
+        }
+
+        Context.Require(!isZero, "BNS: owner must not be the zero address");
+    }
+
     [BasaltEntrypoint]
     public void ClaimReserved(string name, byte[] owner, string evidence)
     {
         RequireGovernance();
-        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+        RequireAssignableOwner(owner);
         Context.Require(!string.IsNullOrEmpty(evidence), "BNS: evidence required");
         Context.Require(evidence.Length <= 256, "BNS: evidence too long");
 
@@ -680,7 +704,7 @@ public partial class BasaltNameService
     {
         var callerHex = Convert.ToHexString(Context.Caller);
         Context.Require(_attesters.Get(callerHex), "BNS: not an attester");
-        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+        RequireAssignableOwner(owner);
         Context.Require(!string.IsNullOrEmpty(evidence), "BNS: evidence required");
         Context.Require(evidence.Length <= 256, "BNS: evidence too long");
 

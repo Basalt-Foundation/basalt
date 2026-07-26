@@ -165,4 +165,27 @@ public class BasaltNameServiceAttestationTests
         attested[0].Evidence.Should().Contain("_bslt-claim.google.com");
         attested[0].Tally.Should().Be(1);
     }
+
+    // A name assigned to an address nobody holds is gone for good: the assignment deletes the
+    // reservation, and there is no key to move it with. A placeholder left in a DNS template must not be
+    // able to burn google.bslt forever, so the chain refuses it rather than trusting attesters to.
+    [Fact]
+    public void The_zero_address_is_refused_because_the_loss_would_be_permanent()
+    {
+        Setup(threshold: 2);
+
+        _host.SetCaller(_attesters[0]);
+        _host.Invoking(h => h.Call(() => _bns.AttestClaim("google.bslt", new byte[20], Evidence)))
+            .Should().Throw<Exception>().WithMessage("*zero address*");
+    }
+
+    [Fact]
+    public void Governance_cannot_hand_a_reserved_name_to_the_zero_address_either()
+    {
+        Setup(threshold: 2);
+
+        _host.SetCaller(_governance);
+        _host.Invoking(h => h.Call(() => _bns.ClaimReserved("google", new byte[20], Evidence)))
+            .Should().Throw<Exception>().WithMessage("*zero address*");
+    }
 }
