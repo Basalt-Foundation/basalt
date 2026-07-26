@@ -1,3 +1,4 @@
+using Basalt.Crypto;
 using Basalt.Core;
 
 namespace Basalt.Sdk.Contracts.Standards;
@@ -47,6 +48,12 @@ public partial class BasaltNameService
     private readonly StorageMap<string, string> _subOwners;   // full subdomain -> delegated owner hex
     private readonly StorageMap<string, bool> _reserved;      // label -> reserved at launch
     private readonly StorageValue<long> _reservationDeadline; // unix seconds; reservations lapse after
+    private readonly StorageMap<string, long> _commitments;   // commitment hex -> block second it was made
+    private readonly StorageMap<string, bool> _attesters;     // attester hex -> authorised
+    private readonly StorageValue<int> _attesterCount;
+    private readonly StorageValue<int> _attestationThreshold; // how many must agree
+    private readonly StorageMap<string, bool> _attested;      // "label|owner|attester" -> has attested
+    private readonly StorageMap<string, int> _attestationTally; // "label|owner" -> agreeing attesters
     private readonly StorageValue<UInt256> _registrationFee;
     private readonly StorageValue<long> _registrationPeriodSeconds;
 
@@ -61,6 +68,12 @@ public partial class BasaltNameService
         _subOwners = new StorageMap<string, string>("bns_subowners");
         _reserved = new StorageMap<string, bool>("bns_reserved");
         _reservationDeadline = new StorageValue<long>("bns_resdeadline");
+        _commitments = new StorageMap<string, long>("bns_commits");
+        _attesters = new StorageMap<string, bool>("bns_attesters");
+        _attesterCount = new StorageValue<int>("bns_attcount");
+        _attestationThreshold = new StorageValue<int>("bns_attthresh");
+        _attested = new StorageMap<string, bool>("bns_attested");
+        _attestationTally = new StorageMap<string, int>("bns_atttally");
         _registrationFee = new StorageValue<UInt256>("bns_fee");
         _registrationPeriodSeconds = new StorageValue<long>("bns_regperiod");
         if (Context.IsDeploying)
@@ -492,6 +505,206 @@ public partial class BasaltNameService
         });
     }
 
+
+    /// <summary>Shortest a commitment must sit before it can be revealed.</summary>
+    private const long MinCommitmentAgeSeconds = 60;
+
+    /// <summary>Longest a commitment stays usable, after which it must be made again.</summary>
+    private const long MaxCommitmentAgeSeconds = 86_400;
+
+    /// <summary>
+    /// The commitment for a registration, which is what a client sends first.
+    ///
+    /// It binds the name, the account that will own it, and a secret only the registrant knows. Binding
+    /// the owner is the part that matters: without it, someone watching the reveal could replay the same
+    /// name and secret from their own account and take the name in the same block.
+    /// </summary>
+    [BasaltView]
+    public byte[] MakeCommitment(string name, byte[] owner, byte[] secret)
+    {
+        var normalised = NormaliseName(name);
+        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+        Context.Require(secret is { Length: 32 }, "BNS: secret must be 32 bytes");
+
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes(normalised);
+        var buffer = new byte[nameBytes.Length + 20 + 32];
+        nameBytes.CopyTo(buffer, 0);
+        owner.CopyTo(buffer, nameBytes.Length);
+        secret.CopyTo(buffer, nameBytes.Length + 20);
+        return Blake3Hasher.Hash(buffer).ToArray();
+    }
+
+    /// <summary>
+    /// Records a commitment, which says nothing about which name is being registered.
+    ///
+    /// Registering in one step is a race anyone can win by watching the mempool: the name is visible in
+    /// the pending transaction, and whoever pays more gas takes it. Committing first and revealing later
+    /// removes the information a front-runner needs, because the commitment is a hash and the name only
+    /// appears once the claim is already anchored to an earlier block.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void Commit(byte[] commitment)
+    {
+        Context.Require(commitment is { Length: 32 }, "BNS: commitment must be 32 bytes");
+
+        var key = Convert.ToHexString(commitment);
+        var existing = _commitments.Get(key);
+        // Re-committing an unexpired commitment would reset its clock, which would let someone keep a
+        // claim alive indefinitely without ever revealing it.
+        Context.Require(existing == 0 || NowSeconds() > existing + MaxCommitmentAgeSeconds,
+            "BNS: commitment already pending");
+
+        _commitments.Set(key, NowSeconds());
+    }
+
+    /// <summary>
+    /// Registers a name previously committed to, proving the commitment by revealing its secret.
+    ///
+    /// The commitment must be old enough that it could not have been made in reaction to this
+    /// transaction, and young enough that stale commitments do not accumulate forever. It is consumed
+    /// either way, so a secret is good for exactly one registration.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void RegisterCommitted(string name, byte[] secret)
+    {
+        var normalised = NormaliseName(name);
+        Context.Require(!IsSubdomain(normalised), "BNS: register the label, subdomains come with it");
+        Context.Require(!IsReserved(normalised), "BNS: name is reserved");
+        Context.Require(IsAvailable(normalised), "BNS: name taken");
+        Context.Require(Context.TxValue >= _registrationFee.Get(), "BNS: insufficient fee");
+
+        var commitment = MakeCommitment(normalised, Context.Caller, secret);
+        var key = Convert.ToHexString(commitment);
+        var madeAt = _commitments.Get(key);
+        Context.Require(madeAt != 0, "BNS: no matching commitment");
+
+        var age = NowSeconds() - madeAt;
+        Context.Require(age >= MinCommitmentAgeSeconds, "BNS: commitment too new");
+        Context.Require(age <= MaxCommitmentAgeSeconds, "BNS: commitment expired");
+
+        _commitments.Delete(key);
+
+        if (!string.IsNullOrEmpty(_owners.Get(normalised)))
+            _contentRecords.Delete(normalised);
+
+        var callerHex = Convert.ToHexString(Context.Caller);
+        _owners.Set(normalised, callerHex);
+        _addresses.Set(normalised, callerHex);
+        _expiries.Set(normalised, NowSeconds() + RegistrationPeriodSeconds());
+
+        Context.Emit(new NameRegisteredEvent { Name = DisplayName(normalised), Owner = Context.Caller });
+    }
+
+
+    /// <summary>
+    /// Authorises an account to attest that a DNS record exists. Governance only.
+    ///
+    /// An attester's job is narrow and mechanical: resolve a TXT record and report what is there. It is
+    /// not a judgement, which is the point, because a fact that several independent parties can check
+    /// the same way does not need anyone's opinion.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetAttester(byte[] attester, bool authorised)
+    {
+        RequireGovernance();
+        Context.Require(attester is { Length: 20 }, "BNS: attester must be a 20-byte address");
+
+        var key = Convert.ToHexString(attester);
+        var current = _attesters.Get(key);
+        if (current == authorised)
+            return;
+
+        _attesters.Set(key, authorised);
+        _attesterCount.Set(_attesterCount.Get() + (authorised ? 1 : -1));
+        Context.Emit(new AttesterSetEvent { Attester = new Address(attester), Authorised = authorised });
+    }
+
+    /// <summary>
+    /// How many attesters must independently report the same record before a name is handed over.
+    ///
+    /// Governance sets the bar and then cannot reach past it: it can say how many must agree, but not
+    /// what they see. A threshold above the number of attesters is refused, since it would make every
+    /// claim permanently unsatisfiable rather than merely strict.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetAttestationThreshold(int threshold)
+    {
+        RequireGovernance();
+        Context.Require(threshold > 0, "BNS: threshold must be positive");
+        Context.Require(threshold <= _attesterCount.Get(), "BNS: threshold exceeds attester count");
+        _attestationThreshold.Set(threshold);
+    }
+
+    /// <summary>Number of attesters that have agreed on a claim so far.</summary>
+    [BasaltView]
+    public int AttestationCount(string name, byte[] owner)
+    {
+        var label = RegistrableLabel(NormaliseName(name));
+        return _attestationTally.Get(label + "|" + Convert.ToHexString(owner));
+    }
+
+    /// <summary>The number of agreeing attesters a claim needs (0 when unset).</summary>
+    [BasaltView]
+    public int AttestationThreshold() => _attestationThreshold.Get();
+
+    /// <summary>
+    /// Reports that the DNS record proving control of this name names this address.
+    ///
+    /// The name is assigned automatically once enough attesters agree, so no one decides: the record
+    /// either exists and independent observers see it, or it does not. Each attester counts once per
+    /// claim, so a single compromised attester cannot reach the threshold alone.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void AttestClaim(string name, byte[] owner, string evidence)
+    {
+        var callerHex = Convert.ToHexString(Context.Caller);
+        Context.Require(_attesters.Get(callerHex), "BNS: not an attester");
+        Context.Require(owner is { Length: 20 }, "BNS: owner must be a 20-byte address");
+        Context.Require(!string.IsNullOrEmpty(evidence), "BNS: evidence required");
+        Context.Require(evidence.Length <= 256, "BNS: evidence too long");
+
+        var threshold = _attestationThreshold.Get();
+        Context.Require(threshold > 0, "BNS: attestation threshold not set");
+
+        var label = RegistrableLabel(NormaliseName(name));
+        Context.Require(_reserved.Get(label), "BNS: name is not reserved");
+        Context.Require(IsAvailable(label), "BNS: name already registered");
+
+        var ownerHex = Convert.ToHexString(owner);
+        var claimKey = label + "|" + ownerHex;
+        var attesterKey = claimKey + "|" + callerHex;
+        Context.Require(!_attested.Get(attesterKey), "BNS: already attested");
+
+        _attested.Set(attesterKey, true);
+        var tally = _attestationTally.Get(claimKey) + 1;
+        _attestationTally.Set(claimKey, tally);
+
+        Context.Emit(new ClaimAttestedEvent
+        {
+            Name = DisplayName(label),
+            Owner = new Address(owner),
+            Attester = new Address(Context.Caller),
+            Evidence = evidence,
+            Tally = tally,
+        });
+
+        if (tally < threshold)
+            return;
+
+        _owners.Set(label, ownerHex);
+        _addresses.Set(label, ownerHex);
+        _expiries.Set(label, NowSeconds() + RegistrationPeriodSeconds());
+        _reserved.Delete(label);
+        _attestationTally.Delete(claimKey);
+
+        Context.Emit(new ReservedNameClaimedEvent
+        {
+            Name = DisplayName(label),
+            Owner = new Address(owner),
+            Evidence = evidence,
+        });
+    }
+
     /// <summary>The name's expiry in unix seconds (0 if never registered).</summary>
     [BasaltView]
     public long ExpiryOf(string name) => _expiries.Get(RegistrableLabel(NormaliseName(name)));
@@ -636,4 +849,23 @@ public class ReservedNameClaimedEvent
     [Indexed] public Address Owner { get; set; }
     public string Name { get; set; } = "";
     public string Evidence { get; set; } = "";
+}
+
+/// <summary>An account was authorised to attest DNS records, or had that authorisation withdrawn.</summary>
+[BasaltEvent]
+public class AttesterSetEvent
+{
+    [Indexed] public Address Attester { get; set; }
+    public bool Authorised { get; set; }
+}
+
+/// <summary>One attester reported the record proving a claim. Tally is how many now agree.</summary>
+[BasaltEvent]
+public class ClaimAttestedEvent
+{
+    [Indexed] public Address Owner { get; set; }
+    public string Name { get; set; } = "";
+    public Address Attester { get; set; }
+    public string Evidence { get; set; } = "";
+    public int Tally { get; set; }
 }
