@@ -1,6 +1,7 @@
 using Basalt.Core;
 using Basalt.Crypto;
 using Basalt.Storage;
+using Basalt.Storage.Trie;
 using FluentAssertions;
 using Xunit;
 
@@ -23,9 +24,16 @@ public class BuildVersusApplyTests
         return (privateKey, Ed25519Signer.DeriveAddress(publicKey));
     }
 
-    private static InMemoryStateDb Funded(params Address[] accounts)
+    /// <summary>
+    /// A trie-backed state, not InMemoryStateDb.
+    ///
+    /// InMemoryStateDb computes a root over account records only, and says so: SetStorage does not touch
+    /// StorageRoot, so contract storage is invisible to it. A test written against it cannot see a
+    /// divergence that lives in contract storage, which is most of them.
+    /// </summary>
+    private static TrieStateDb Funded(params Address[] accounts)
     {
-        var db = new InMemoryStateDb();
+        var db = new TrieStateDb(new InMemoryTrieNodeStore());
         foreach (var a in accounts)
         {
             db.SetAccount(a, new AccountState
@@ -42,7 +50,7 @@ public class BuildVersusApplyTests
         return db;
     }
 
-    private BlockHeader Parent(InMemoryStateDb db) => new()
+    private BlockHeader Parent(TrieStateDb db) => new()
     {
         Number = 0,
         ParentHash = Hash256.Zero,
@@ -148,5 +156,59 @@ public class BuildVersusApplyTests
 
         applyDb.ComputeStateRoot().Should().Be(block.Header.StateRoot,
             "settlement runs on every applied block, so whatever it touches has to be in the proposed root too");
+    }
+
+
+    private static byte[] TokenManifest()
+    {
+        var buffer = new byte[256];
+        var writer = new Basalt.Codec.BasaltWriter(buffer);
+        writer.WriteString("Token");
+        writer.WriteString("TKN");
+        writer.WriteByte(18);
+        writer.WriteUInt256(new UInt256(1_000_000));
+        return VM.ContractRegistry.BuildManifest(0x0001, buffer[..writer.Position]);
+    }
+
+    /// <summary>
+    /// The case a transfer cannot reach: a transaction that writes contract storage.
+    ///
+    /// Both blocks that diverged on the testnet carried one. Account balances live in the world trie and
+    /// contract storage lives in a trie of its own whose root is folded into the account, so a path that
+    /// folds it at a different moment produces a different world root while holding the same data.
+    /// </summary>
+    [Fact]
+    public void A_block_that_writes_contract_storage_applies_to_the_state_its_header_claims()
+    {
+        var (senderKey, sender) = NewAccount();
+        var proposer = new Address(Enumerable.Repeat((byte)0x77, 20).ToArray());
+
+        var buildDb = Funded(sender);
+        var parent = Parent(buildDb);
+
+        var tx = Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.ContractDeploy,
+            Nonce = 0,
+            Sender = sender,
+            To = Address.Zero,
+            Value = UInt256.Zero,
+            GasLimit = 5_000_000,
+            GasPrice = _chainParams.InitialBaseFee * new UInt256(2),
+            Data = TokenManifest(),
+            ChainId = _chainParams.ChainId,
+        }, senderKey);
+
+        var builder = new BlockBuilder(_chainParams);
+        Block block = builder.BuildBlock([tx], buildDb, parent, proposer);
+        block.Transactions.Should().ContainSingle("the deploy has to be included for this to mean anything");
+
+        var applyDb = Funded(sender);
+        var executor = new TransactionExecutor(_chainParams);
+        for (int i = 0; i < block.Transactions.Count; i++)
+            executor.Execute(block.Transactions[i], applyDb, block.Header, i);
+
+        applyDb.ComputeStateRoot().Should().Be(block.Header.StateRoot,
+            "a node applying a block that touched contract storage must reach the published state");
     }
 }
