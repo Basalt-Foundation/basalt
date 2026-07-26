@@ -54,6 +54,10 @@ public partial class BasaltNameService
     private readonly StorageValue<int> _attestationThreshold; // how many must agree
     private readonly StorageMap<string, bool> _attested;      // "label|owner|attester" -> has attested
     private readonly StorageMap<string, int> _attestationTally; // "label|owner" -> agreeing attesters
+    private readonly StorageMap<string, int> _windowCount;    // account hex -> registrations this window
+    private readonly StorageMap<string, long> _windowStart;   // account hex -> when its window opened
+    private readonly StorageValue<int> _maxPerWindow;         // 0 disables the limit
+    private readonly StorageValue<long> _windowSeconds;
     private readonly StorageValue<UInt256> _registrationFee;
     private readonly StorageValue<long> _registrationPeriodSeconds;
 
@@ -74,6 +78,10 @@ public partial class BasaltNameService
         _attestationThreshold = new StorageValue<int>("bns_attthresh");
         _attested = new StorageMap<string, bool>("bns_attested");
         _attestationTally = new StorageMap<string, int>("bns_atttally");
+        _windowCount = new StorageMap<string, int>("bns_wcount");
+        _windowStart = new StorageMap<string, long>("bns_wstart");
+        _maxPerWindow = new StorageValue<int>("bns_wmax");
+        _windowSeconds = new StorageValue<long>("bns_wsecs");
         _registrationFee = new StorageValue<UInt256>("bns_fee");
         _registrationPeriodSeconds = new StorageValue<long>("bns_regperiod");
         if (Context.IsDeploying)
@@ -250,6 +258,8 @@ public partial class BasaltNameService
         // Taking over an expired name: clear the previous holder's content record so it cannot linger.
         if (!string.IsNullOrEmpty(_owners.Get(name)))
             _contentRecords.Delete(name);
+
+        CountRegistration();
 
         var callerHex = Convert.ToHexString(Context.Caller);
         _owners.Set(name, callerHex);
@@ -583,6 +593,7 @@ public partial class BasaltNameService
         Context.Require(age <= MaxCommitmentAgeSeconds, "BNS: commitment expired");
 
         _commitments.Delete(key);
+        CountRegistration();
 
         if (!string.IsNullOrEmpty(_owners.Get(normalised)))
             _contentRecords.Delete(normalised);
@@ -703,6 +714,71 @@ public partial class BasaltNameService
             Owner = new Address(owner),
             Evidence = evidence,
         });
+    }
+
+
+    /// <summary>
+    /// Caps how many names one account may register per window. Zero, the default, means no cap.
+    ///
+    /// Worth being honest about what this buys. It does not stop bulk registration, because an attacker
+    /// can use more accounts. It changes the cost from one script on one account to many accounts each
+    /// funded separately, which on a network where funds are rate-limited at the source is the
+    /// difference between minutes and days. It is a speed bump, and the reservation list is the wall.
+    /// </summary>
+    [BasaltEntrypoint]
+    public void SetRegistrationLimit(int maxPerWindow, long windowSeconds)
+    {
+        RequireGovernance();
+        Context.Require(maxPerWindow >= 0, "BNS: limit cannot be negative");
+        Context.Require(maxPerWindow == 0 || windowSeconds > 0, "BNS: window must be positive");
+        _maxPerWindow.Set(maxPerWindow);
+        _windowSeconds.Set(windowSeconds);
+        Context.Emit(new RegistrationLimitSetEvent { MaxPerWindow = maxPerWindow, WindowSeconds = windowSeconds });
+    }
+
+    /// <summary>How many registrations the caller has left in the current window (-1 when uncapped).</summary>
+    [BasaltView]
+    public int RegistrationsRemaining(byte[] account)
+    {
+        var max = _maxPerWindow.Get();
+        if (max == 0)
+            return -1;
+
+        var key = Convert.ToHexString(account);
+        var started = _windowStart.Get(key);
+        if (started == 0 || NowSeconds() >= started + _windowSeconds.Get())
+            return max;
+
+        var used = _windowCount.Get(key);
+        return used >= max ? 0 : max - used;
+    }
+
+    /// <summary>
+    /// Counts one registration against the caller's window, rolling the window over when it has elapsed.
+    /// Assignments of reserved names do not pass through here: a claimant receiving the name they proved
+    /// they control is not registering names in bulk.
+    /// </summary>
+    private void CountRegistration()
+    {
+        var max = _maxPerWindow.Get();
+        if (max == 0)
+            return;
+
+        var key = Convert.ToHexString(Context.Caller);
+        var window = _windowSeconds.Get();
+        var started = _windowStart.Get(key);
+        var now = NowSeconds();
+
+        if (started == 0 || now >= started + window)
+        {
+            _windowStart.Set(key, now);
+            _windowCount.Set(key, 1);
+            return;
+        }
+
+        var used = _windowCount.Get(key);
+        Context.Require(used < max, "BNS: registration limit reached for this window");
+        _windowCount.Set(key, used + 1);
     }
 
     /// <summary>The name's expiry in unix seconds (0 if never registered).</summary>
@@ -868,4 +944,12 @@ public class ClaimAttestedEvent
     public Address Attester { get; set; }
     public string Evidence { get; set; } = "";
     public int Tally { get; set; }
+}
+
+/// <summary>The per-account registration cap was changed.</summary>
+[BasaltEvent]
+public class RegistrationLimitSetEvent
+{
+    public int MaxPerWindow { get; set; }
+    public long WindowSeconds { get; set; }
 }
