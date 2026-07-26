@@ -55,7 +55,8 @@ public partial class BasaltNameService
     private readonly StorageMap<string, string> _reverse;     // address hex -> name
     private readonly StorageMap<string, string> _contentRecords; // name -> trilith:// content name
     private readonly StorageMap<string, long> _expiries;      // name -> expiry (unix seconds)
-    private readonly StorageMap<string, string> _subOwners;   // full subdomain -> delegated owner hex
+    private readonly StorageMap<string, string> _subOwners;   // "epoch|full subdomain" -> delegated owner hex
+    private readonly StorageMap<string, int> _subEpoch;       // label -> current delegation epoch
     private readonly StorageMap<string, bool> _reserved;      // label -> reserved at launch
     private readonly StorageValue<long> _reservationDeadline; // unix seconds; reservations lapse after
     private readonly StorageMap<string, long> _commitments;   // commitment hex -> block second it was made
@@ -80,6 +81,7 @@ public partial class BasaltNameService
         _contentRecords = new StorageMap<string, string>("bns_content");
         _expiries = new StorageMap<string, long>("bns_expiry");
         _subOwners = new StorageMap<string, string>("bns_subowners");
+        _subEpoch = new StorageMap<string, int>("bns_subepoch");
         _reserved = new StorageMap<string, bool>("bns_reserved");
         _reservationDeadline = new StorageValue<long>("bns_resdeadline");
         _commitments = new StorageMap<string, long>("bns_commits");
@@ -242,7 +244,7 @@ public partial class BasaltNameService
 
         if (IsSubdomain(name))
         {
-            var delegated = _subOwners.Get(name);
+            var delegated = _subOwners.Get(SubdomainKey(name));
             if (!string.IsNullOrEmpty(delegated) && delegated == callerHex)
                 return;
         }
@@ -383,7 +385,7 @@ public partial class BasaltNameService
         Context.Require(!IsExpiredPastGrace(name), "BNS: name expired");
         Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
 
-        _subOwners.Set(name, Convert.ToHexString(newOwner));
+        _subOwners.Set(SubdomainKey(name), Convert.ToHexString(newOwner));
         Context.Emit(new SubdomainDelegatedEvent { Name = DisplayName(name), Owner = new Address(newOwner) });
     }
 
@@ -398,7 +400,7 @@ public partial class BasaltNameService
         Context.Require(!string.IsNullOrEmpty(ownerHex), "BNS: name not found");
         Context.Require(ownerHex == Convert.ToHexString(Context.Caller), "BNS: not owner");
 
-        _subOwners.Delete(name);
+        _subOwners.Delete(SubdomainKey(name));
         Context.Emit(new SubdomainDelegatedEvent { Name = DisplayName(name), Owner = Address.Zero });
     }
 
@@ -407,9 +409,20 @@ public partial class BasaltNameService
     public byte[] SubdomainOwner(string name)
     {
         name = NormaliseName(name);
-        var hex = _subOwners.Get(name);
+        var hex = _subOwners.Get(SubdomainKey(name));
         return string.IsNullOrEmpty(hex) ? [] : Convert.FromHexString(hex);
     }
+
+
+    /// <summary>
+    /// The storage key for a subdomain delegation, scoped to the label's current epoch.
+    ///
+    /// Transferring a name bumps the epoch, which retires every delegation the previous owner made in
+    /// one write. Without that, someone who sells a name keeps whatever subdomains they had handed out,
+    /// and the buyer has no way to find them all to revoke them.
+    /// </summary>
+    private string SubdomainKey(string normalised)
+        => _subEpoch.Get(RegistrableLabel(normalised)) + "|" + normalised;
 
     /// <summary>The registrable label a name belongs to, with the TLD stripped and case normalised.</summary>
     [BasaltView]
@@ -880,6 +893,7 @@ public partial class BasaltNameService
     {
         name = NormaliseName(name);
         Context.Require(!IsSubdomain(name), "BNS: transfer the label, subdomains follow it");
+        RequireAssignableOwner(newOwner);
         RequireLiveOwner(name);
         var ownerHex = _owners.Get(name);
 
@@ -891,6 +905,10 @@ public partial class BasaltNameService
         var oldReverse = _reverse.Get(ownerHex);
         if (oldReverse == name)
             _reverse.Delete(ownerHex);
+
+        // Retires every subdomain the previous owner delegated, in one write. Without this a seller keeps
+        // whatever subdomains they handed out, and the buyer has no way to enumerate them to revoke them.
+        _subEpoch.Set(name, _subEpoch.Get(name) + 1);
 
         Context.Emit(new NameTransferredEvent
         {
