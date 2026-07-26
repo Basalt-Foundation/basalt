@@ -86,11 +86,18 @@ bug on a validator's own catch-up sync, which shares the same replay path.
   `BlockApplier` restores on both refusal paths, the execution failure and the state-root gate. They
   live on the verifier rather than in the fork, so without this a refused batch kept them consumed and
   every retry replayed as a duplicate.
-- **5. Replay before enabling: done.** An RPC node syncs from genesis on every start, so bringing one up
-  against the running testnet with the verifier wired is the replay this asked for.
+- **5. Replay before enabling: run, and it failed.** An RPC node given an empty data directory replays
+  the chain in batches and refuses at the first one, ending #100, on a state-root divergence. A negative
+  control on the commit before any of this work reproduces it exactly, same expected and computed roots,
+  so it predates COMPL-C01 and is not caused by it.
 
-COMPL-C01 is wired: the RPC executor takes the compliance engine, and an RPC node now runs the same
-checks a validator does.
+  It had never been seen because an RPC node that has followed since genesis applies blocks one at a
+  time through `ApplyBlock`. Replaying history uses `ApplyBatch`, a different path, and nothing had
+  exercised it from an empty state until this prerequisite asked for exactly that.
+
+COMPL-C01 is wired but must not be considered complete. The RPC executor takes the compliance engine and
+an RPC node runs the same checks a validator does, and points 1 through 4 hold. Point 5 is the gate, it
+has not passed, and the batch replay divergence has to be resolved before this is relied on.
 
 ## Decision
 
