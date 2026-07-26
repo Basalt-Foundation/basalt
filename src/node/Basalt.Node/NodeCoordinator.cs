@@ -351,60 +351,74 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void SetupValidatorSet()
     {
-        // For devnet: Build validator set from peer configuration
-        // Each validator's PeerId is derived from their public key
-        // In Phase 1, we use the validator index to assign identities
+        // The validator set is derived from who is actually staked at genesis, and indexed by address
+        // ascending, which is the same ordering EpochManager uses when it rebuilds the set each epoch.
+        //
+        // It used to build peer entries from index-derived placeholder addresses (0x…0100 + index) while
+        // giving only itself its real address. That happens to be correct on the devnet, whose validator
+        // addresses were chosen to be exactly those placeholders, and is wrong everywhere else: with real
+        // keys no peer could ever be matched to its slot, so a node resolved 1 of 4 identities, treated
+        // every peer as a non-validator, and the chain crawled on view timeouts.
         var validators = new List<ValidatorInfo>();
 
-        // Add self
-        var selfAddress = Address.FromHexString(_config.ValidatorAddress.Length > 0
-            ? _config.ValidatorAddress
-            : $"0x{_config.ValidatorIndex:X40}");
-        var selfStake = _stakingState?.GetStakeInfo(selfAddress)?.TotalStake ?? (UInt256)100_000;
+        var staked = _stakingState?.GetActiveValidators() ?? [];
+        var addresses = staked.Select(v => v.Address).ToList();
 
-        validators.Add(new ValidatorInfo
+        if (addresses.Count == 0)
         {
-            PeerId = _localPeerId,
-            PublicKey = _publicKey,
-            BlsPublicKey = _localBlsPublicKey,
-            Address = selfAddress,
-            Index = _config.ValidatorIndex,
-            Stake = selfStake,
-        });
+            // No staking state (unit tests, or a node started without genesis staking). Fall back to the
+            // old index-derived shape so those paths keep working.
+            addresses = Enumerable.Range(0, _config.Peers.Length + 1)
+                .Select(i => Address.FromHexString($"0x{i + 0x0100:X40}"))
+                .ToList();
+            _logger.LogWarning("No staked validators found; falling back to placeholder validator addresses");
+        }
 
-        // For a 4-validator devnet, we need all validators in the set.
-        // Other validators' identities will be learned during handshake.
-        // For now, create placeholder entries that will be updated.
-        var totalValidators = _config.Peers.Length + 1;
-        for (int i = 0; i < totalValidators; i++)
+        addresses.Sort((a, b) => a.CompareTo(b));
+
+        var selfAddress = _config.ValidatorAddress.Length > 0
+            ? Address.FromHexString(_config.ValidatorAddress)
+            : Address.FromHexString($"0x{_config.ValidatorIndex:X40}");
+
+        for (int index = 0; index < addresses.Count; index++)
         {
-            if (i == _config.ValidatorIndex)
+            var address = addresses[index];
+            var stake = _stakingState?.GetStakeInfo(address)?.TotalStake ?? (UInt256)100_000;
+
+            if (address.Equals(selfAddress))
+            {
+                validators.Add(new ValidatorInfo
+                {
+                    PeerId = _localPeerId,
+                    PublicKey = _publicKey,
+                    BlsPublicKey = _localBlsPublicKey,
+                    Address = address,
+                    Index = index,
+                    Stake = stake,
+                });
                 continue;
+            }
 
-            // Placeholder — real PeerId will be set after handshake
-            // Use deterministic placeholder based on index
-            // Byte 31 = 1 ensures the key is never all-zeros (invalid for BLS12-381)
+            // Placeholder identity until the handshake reveals the real one. Only the address matters
+            // here: BindPeerToValidatorSlot looks the peer up by the address derived from the key it
+            // proved it holds, so the placeholder keys are never trusted for anything.
+            // Byte 31 = 1 keeps the key valid for BLS12-381 (never all zeros).
             var placeholderKey = new byte[32];
-            placeholderKey[0] = (byte)i;
+            placeholderKey[0] = (byte)index;
             placeholderKey[31] = 1;
             var pk = Ed25519Signer.GetPublicKey(placeholderKey);
-            var addr = $"0x{i + 0x0100:X40}";
-            var peerAddress = Address.FromHexString(addr);
-            var peerStake = _stakingState?.GetStakeInfo(peerAddress)?.TotalStake ?? (UInt256)100_000;
 
             validators.Add(new ValidatorInfo
             {
                 PeerId = PeerId.FromPublicKey(pk),
                 PublicKey = pk,
                 BlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(placeholderKey)),
-                Address = peerAddress,
-                Index = i,
-                Stake = peerStake,
+                Address = address,
+                Index = index,
+                Stake = stake,
             });
         }
 
-        // Sort by index for deterministic leader selection
-        validators.Sort((a, b) => a.Index.CompareTo(b.Index));
         _validatorSet = new ValidatorSet(validators);
 
         _logger.LogInformation("Validator set: {Count} validators, quorum: {Quorum}",
