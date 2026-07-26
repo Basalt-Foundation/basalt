@@ -1,3 +1,4 @@
+using Basalt.Codec;
 using Basalt.Core;
 using Basalt.Sdk.Contracts;
 using Basalt.Storage;
@@ -33,6 +34,7 @@ public sealed class BasaltTestHost : IDisposable
 
         // Wire up cross-contract call handler
         Context.CrossContractCallHandler = HandleCrossContractCall;
+        Context.EncodedCrossContractCallHandler = HandleEncodedCrossContractCall;
     }
 
     /// <summary>
@@ -176,6 +178,58 @@ public sealed class BasaltTestHost : IDisposable
         try
         {
             return method.Invoke(contract, args);
+        }
+        catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException != null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            return null; // unreachable
+        }
+    }
+
+    /// <summary>
+    /// The same dispatch for a caller whose arguments were encoded before the call, which is how
+    /// governance executes a proposal it stored earlier.
+    ///
+    /// The bytes are decoded against the target method's own parameter list, so a proposal that encoded
+    /// its arguments differently from what the method takes fails here rather than executing something
+    /// nobody voted for.
+    /// </summary>
+    private object? HandleEncodedCrossContractCall(byte[] targetAddress, string methodName, byte[] encodedArgs)
+    {
+        var key = Convert.ToHexString(targetAddress);
+        if (!_deployedContracts.TryGetValue(key, out var contract))
+            throw new ContractRevertException($"Contract not found at {key}");
+
+        var method = contract.GetType().GetMethod(methodName)
+            ?? throw new ContractRevertException($"Method '{methodName}' not found on contract");
+
+        var parameters = method.GetParameters();
+        var decoded = new object?[parameters.Length];
+        var reader = new BasaltReader(encodedArgs);
+
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            var type = parameters[i].ParameterType;
+            decoded[i] =
+                type == typeof(bool) ? reader.ReadBool() :
+                type == typeof(byte) ? reader.ReadByte() :
+                type == typeof(ushort) ? reader.ReadUInt16() :
+                type == typeof(uint) ? reader.ReadUInt32() :
+                type == typeof(int) ? reader.ReadInt32() :
+                type == typeof(ulong) ? reader.ReadUInt64() :
+                type == typeof(long) ? reader.ReadInt64() :
+                type == typeof(string) ? reader.ReadString() :
+                type == typeof(byte[]) ? reader.ReadBytes().ToArray() :
+                type == typeof(Address) ? reader.ReadAddress() :
+                type == typeof(Hash256) ? reader.ReadHash256() :
+                type == typeof(UInt256) ? (object)reader.ReadUInt256() :
+                throw new ContractRevertException(
+                    $"Encoded cross-contract argument type not supported: {type.Name}");
+        }
+
+        try
+        {
+            return method.Invoke(contract, decoded);
         }
         catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException != null)
         {

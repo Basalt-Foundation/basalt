@@ -24,6 +24,7 @@ public partial class Governance
     private readonly StorageMap<string, string> _proposalTypes;
     private readonly StorageMap<string, string> _targets;
     private readonly StorageMap<string, string> _callMethods;
+    private readonly StorageMap<string, string> _callArgs;
 
     // Timelock
     private readonly StorageMap<string, ulong> _timelockExpiry;
@@ -62,6 +63,7 @@ public partial class Governance
         _proposalTypes = new StorageMap<string, string>("gov_type");
         _targets = new StorageMap<string, string>("gov_target");
         _callMethods = new StorageMap<string, string>("gov_method");
+        _callArgs = new StorageMap<string, string>("gov_args");
         _timelockExpiry = new StorageMap<string, ulong>("gov_tl");
         _timelockDelay = new StorageValue<ulong>("gov_tl_delay");
         _delegates = new StorageMap<string, string>("gov_del");
@@ -96,7 +98,7 @@ public partial class Governance
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
         Context.Require(votingPeriodBlocks > 0, "GOV: voting period must be > 0");
 
-        return CreateProposalInternal(description, votingPeriodBlocks, "text", [], "");
+        return CreateProposalInternal(description, votingPeriodBlocks, "text", [], "", []);
     }
 
     /// <summary>
@@ -105,14 +107,15 @@ public partial class Governance
     [BasaltEntrypoint]
     public ulong CreateExecutableProposal(
         string description, ulong votingPeriodBlocks,
-        byte[] targetContract, string methodName)
+        byte[] targetContract, string methodName, byte[] callArgs)
     {
         Context.Require(!string.IsNullOrEmpty(description), "GOV: description required");
         Context.Require(votingPeriodBlocks > 0, "GOV: voting period must be > 0");
         Context.Require(targetContract.Length > 0, "GOV: target required");
         Context.Require(!string.IsNullOrEmpty(methodName), "GOV: method required");
 
-        return CreateProposalInternal(description, votingPeriodBlocks, "executable", targetContract, methodName);
+        return CreateProposalInternal(
+            description, votingPeriodBlocks, "executable", targetContract, methodName, callArgs);
     }
 
     /// <summary>
@@ -294,7 +297,12 @@ public partial class Governance
             if (!string.IsNullOrEmpty(targetHex) && !string.IsNullOrEmpty(method))
             {
                 var target = Convert.FromHexString(targetHex);
-                Context.CallContract(target, method);
+
+                // The arguments voters approved, executed exactly as written. Calling with none was the
+                // old behaviour, and it meant governance could only ever reach methods that took none,
+                // which is close to no method worth governing.
+                var encodedArgs = Convert.FromHexString(_callArgs.Get(key) ?? "");
+                Context.CallContractEncoded(target, method, encodedArgs);
             }
         }
 
@@ -369,7 +377,7 @@ public partial class Governance
 
     private ulong CreateProposalInternal(
         string description, ulong votingPeriodBlocks,
-        string proposalType, byte[] targetContract, string methodName)
+        string proposalType, byte[] targetContract, string methodName, byte[] callArgs)
     {
         // C-8: Enforce proposal threshold — proposer must have sufficient stake
         var threshold = _proposalThreshold.Get();
@@ -400,6 +408,7 @@ public partial class Governance
         {
             _targets.Set(key, Convert.ToHexString(targetContract));
             _callMethods.Set(key, methodName);
+            _callArgs.Set(key, Convert.ToHexString(callArgs));
         }
 
         Context.Emit(new ProposalCreatedEvent
