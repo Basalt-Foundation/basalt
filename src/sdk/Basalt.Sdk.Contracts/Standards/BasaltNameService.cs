@@ -40,6 +40,16 @@ public partial class BasaltNameService
     /// <summary>Default registration/renewal term (365 days).</summary>
     private const long DefaultRegistrationPeriodSeconds = 31_536_000;
 
+    /// <summary>
+    /// Names one account may register per year unless governance votes otherwise.
+    ///
+    /// A hundred is high enough that no ordinary user will ever notice it and low enough that taking a
+    /// meaningful share of the namespace needs many accounts rather than one loop. It is a default, not
+    /// a ceiling on the design: Governance is a real vote, with proposals and delegation, so changing it
+    /// is a decision the network makes rather than one an operator makes alone.
+    /// </summary>
+    private const int DefaultMaxRegistrationsPerWindow = 100;
+
     private readonly StorageMap<string, string> _owners;      // name -> owner hex
     private readonly StorageMap<string, string> _addresses;   // name -> target hex
     private readonly StorageMap<string, string> _reverse;     // address hex -> name
@@ -729,24 +739,43 @@ public partial class BasaltNameService
     public void SetRegistrationLimit(int maxPerWindow, long windowSeconds)
     {
         RequireGovernance();
-        Context.Require(maxPerWindow >= 0, "BNS: limit cannot be negative");
-        Context.Require(maxPerWindow == 0 || windowSeconds > 0, "BNS: window must be positive");
+        // -1 removes the cap. 0 is not "no cap" because 0 is also what unset storage reads as, and a
+        // cap that silently disappears when nobody set it is the failure mode worth designing out.
+        Context.Require(maxPerWindow == -1 || maxPerWindow > 0, "BNS: limit must be positive, or -1 to remove it");
+        Context.Require(maxPerWindow == -1 || windowSeconds > 0, "BNS: window must be positive");
         _maxPerWindow.Set(maxPerWindow);
         _windowSeconds.Set(windowSeconds);
         Context.Emit(new RegistrationLimitSetEvent { MaxPerWindow = maxPerWindow, WindowSeconds = windowSeconds });
+    }
+
+    /// <summary>
+    /// The cap in force. Falls back to the default when unset, because the genesis deploy path builds
+    /// system contracts with Context.IsDeploying false, so a constructor default would never be stored
+    /// and the namespace would open uncapped without anyone choosing that.
+    /// </summary>
+    private int MaxRegistrationsPerWindow()
+    {
+        var stored = _maxPerWindow.Get();
+        return stored != 0 ? stored : DefaultMaxRegistrationsPerWindow;
+    }
+
+    private long RegistrationWindowSeconds()
+    {
+        var stored = _windowSeconds.Get();
+        return stored > 0 ? stored : DefaultRegistrationPeriodSeconds;
     }
 
     /// <summary>How many registrations the caller has left in the current window (-1 when uncapped).</summary>
     [BasaltView]
     public int RegistrationsRemaining(byte[] account)
     {
-        var max = _maxPerWindow.Get();
-        if (max == 0)
+        var max = MaxRegistrationsPerWindow();
+        if (max < 0)
             return -1;
 
         var key = Convert.ToHexString(account);
         var started = _windowStart.Get(key);
-        if (started == 0 || NowSeconds() >= started + _windowSeconds.Get())
+        if (started == 0 || NowSeconds() >= started + RegistrationWindowSeconds())
             return max;
 
         var used = _windowCount.Get(key);
@@ -760,12 +789,12 @@ public partial class BasaltNameService
     /// </summary>
     private void CountRegistration()
     {
-        var max = _maxPerWindow.Get();
-        if (max == 0)
+        var max = MaxRegistrationsPerWindow();
+        if (max < 0)
             return;
 
         var key = Convert.ToHexString(Context.Caller);
-        var window = _windowSeconds.Get();
+        var window = RegistrationWindowSeconds();
         var started = _windowStart.Get(key);
         var now = NowSeconds();
 

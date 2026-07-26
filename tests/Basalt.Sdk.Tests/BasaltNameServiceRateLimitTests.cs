@@ -46,13 +46,34 @@ public class BasaltNameServiceRateLimitTests
         _host.Call(() => _bns.Register(name));
     }
 
+    // The default has to hold without anyone setting it, because the genesis deploy path never runs the
+    // constructor's init block, so a cap that only exists when configured would not exist at launch.
     [Fact]
-    public void Uncapped_by_default()
+    public void A_hundred_a_year_applies_without_anyone_configuring_it()
     {
+        _host.Call(() => _bns.RegistrationsRemaining(_squatter)).Should().Be(100);
+
+        Register(_squatter, "one");
+        _host.Call(() => _bns.RegistrationsRemaining(_squatter)).Should().Be(99);
+    }
+
+    [Fact]
+    public void Governance_can_remove_the_cap_explicitly()
+    {
+        Limit(-1, 0);
+
         for (int i = 0; i < 5; i++)
             Register(_squatter, $"name{i}");
 
         _host.Call(() => _bns.RegistrationsRemaining(_squatter)).Should().Be(-1);
+    }
+
+    [Fact]
+    public void Zero_is_refused_because_it_is_indistinguishable_from_unset()
+    {
+        _host.SetCaller(_governance);
+        _host.Invoking(h => h.Call(() => _bns.SetRegistrationLimit(0, 3600)))
+            .Should().Throw<Exception>().WithMessage("*must be positive*");
     }
 
     [Fact]
@@ -137,5 +158,22 @@ public class BasaltNameServiceRateLimitTests
         _host.SetCaller(_governance);
         _host.Invoking(h => h.Call(() => _bns.SetRegistrationLimit(5, 0)))
             .Should().Throw<Exception>().WithMessage("*window must be positive*");
+    }
+
+    [Fact]
+    public void The_default_window_is_the_registration_term()
+    {
+        // A hundred a year, so the cap and the term a name is held for line up.
+        for (int i = 0; i < 100; i++)
+            Register(_squatter, $"n{i}");
+
+        _host.SetCaller(_squatter);
+        Context.TxValue = RegistrationFee;
+        _host.Invoking(h => h.Call(() => _bns.Register("one-too-many")))
+            .Should().Throw<Exception>().WithMessage("*limit reached*");
+
+        _host.SetBlockTimestamp(StartMs + 31_536_000_000);
+        Register(_squatter, "next-year");
+        _host.Call(() => _bns.OwnerOf("next-year")).Should().BeEquivalentTo(_squatter);
     }
 }
