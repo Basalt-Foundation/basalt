@@ -47,6 +47,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Compliance
     private readonly IComplianceVerifier? _complianceVerifier;
 
+    /// <summary>Shared with the compliance key lookup so a catch-up sync resolves against its fork.</summary>
+    private readonly ExecutionStateRef? _executionState;
+
     // B1: Staking persistence
     private readonly Basalt.Consensus.Staking.IStakingPersistence? _stakingPersistence;
     private WeightedLeaderSelector? _leaderSelector;
@@ -207,6 +210,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
         IComplianceVerifier? complianceVerifier = null,
+        ExecutionStateRef? executionState = null,
         Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null,
         RocksDbStore? rocksDbStore = null)
     {
@@ -227,6 +231,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _stakingState = stakingState;
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
+        _executionState = executionState;
         _stakingPersistence = stakingPersistence;
         _rocksDbStore = rocksDbStore;
     }
@@ -789,7 +794,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _wsHandler, _loggerFactory.CreateLogger<BlockApplier>(),
             syncStateCommit: syncStateCommit,
             // A validator replays too, on its own catch-up sync, and that path shares the applier.
-            complianceVerifier: _complianceVerifier);
+            complianceVerifier: _complianceVerifier,
+            executionState: _executionState,
+            complianceEngine: _complianceVerifier as Basalt.Compliance.ComplianceEngine);
 
         // Phase 1.6: background trie pruner, off by default. Requires disk-backed stores (null in
         // memory-only mode). When enabled, RunTriePruneLoop sweeps trie_nodes every interval.

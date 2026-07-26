@@ -515,12 +515,16 @@ try
     // a node that never advances it replays a legitimate transaction as a duplicate.
         // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
         var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
-        var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
+        // Points key lookups at whatever state is executing. Canonical by default, the fork while a sync
+    // batch replays, which is the only way a key registered earlier in the same batch is visible.
+    var executionState = new ExecutionStateRef(stateDbRef);
+
+    var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
         {
             // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
             var storageKey = "scr_vk:" + schemaId.ToHexString();
             var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
-            var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
+            var raw = executionState.Current.GetStorage(schemaRegistryAddress, slot);
             if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
                 return null;
             var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
@@ -558,6 +562,7 @@ try
                 blockStore, receiptStore,
                 stakingState, slashingEngine,
                 complianceEngine,
+                executionState,
                 stakingPersistence,
                 rocksDbStore);
 
@@ -620,7 +625,15 @@ try
             IContractRuntime rpcContractRuntime = config.UseSandbox
                 ? new Basalt.Execution.VM.Sandbox.SandboxedContractRuntime(new Basalt.Execution.VM.Sandbox.SandboxConfiguration())
                 : new ManagedContractRuntime();
-            var rpcTxExecutor = new TransactionExecutor(chainParams, rpcContractRuntime, stakingState);
+            // COMPL-C01: an RPC node runs the same compliance checks as a validator.
+            //
+            // It ran without a verifier, so the two disagreed about which transactions succeed. That was
+            // harmless only while nothing registered a proof requirement, and it is the asymmetry this
+            // whole note was written about. The four prerequisites are in place: the state root is
+            // checked on replay, the nullifier window advances per block, key lookups resolve against
+            // the state being executed, and consumed nullifiers roll back with a refused batch.
+            var rpcTxExecutor = new TransactionExecutor(
+                chainParams, rpcContractRuntime, stakingState, complianceEngine);
             var rpcBlockBuilder = new BlockBuilder(chainParams, rpcTxExecutor, loggerFactory.CreateLogger<BlockBuilder>());
 
             // H4: after a sync batch, persist the batch's new trie nodes to CF.TrieNodes and adopt a
@@ -644,7 +657,9 @@ try
                 wsHandler,
                 loggerFactory.CreateLogger<BlockApplier>(),
                 syncStateCommit: rpcSyncStateCommit,
-                complianceVerifier: complianceEngine);
+                complianceVerifier: complianceEngine,
+                executionState: executionState,
+                complianceEngine: complianceEngine);
 
             // Phase 1.6 on a sync-only node. Pruning used to be impossible here: the pruner is built by
             // NodeCoordinator, which an RPC node never runs, so the feature announced itself and then did

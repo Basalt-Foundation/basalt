@@ -66,6 +66,12 @@ public sealed class BlockApplier
     /// </summary>
     private readonly IComplianceVerifier? _complianceVerifier;
 
+    /// <summary>Points compliance lookups at the state being executed rather than at canonical.</summary>
+    private readonly ExecutionStateRef? _executionState;
+
+    /// <summary>Used to roll consumed nullifiers back with a batch that gets refused.</summary>
+    private readonly Basalt.Compliance.ComplianceEngine? _complianceEngine;
+
     /// <summary>
     /// Fired when an epoch transition occurs. The caller (NodeCoordinator) can hook this
     /// to rewire consensus-specific components (leader selector, consensus engine).
@@ -87,7 +93,9 @@ public sealed class BlockApplier
         WebSocketHandler wsHandler,
         ILogger logger,
         Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null,
-        IComplianceVerifier? complianceVerifier = null)
+        IComplianceVerifier? complianceVerifier = null,
+        ExecutionStateRef? executionState = null,
+        Basalt.Compliance.ComplianceEngine? complianceEngine = null)
     {
         _chainParams = chainParams;
         _chainManager = chainManager;
@@ -103,6 +111,8 @@ public sealed class BlockApplier
         _logger = logger;
         _syncStateCommit = syncStateCommit;
         _complianceVerifier = complianceVerifier;
+        _executionState = executionState;
+        _complianceEngine = complianceEngine;
     }
 
     /// <summary>
@@ -299,6 +309,14 @@ public sealed class BlockApplier
         var forkBaseHeight = _chainManager.LatestBlockNumber;
         var applied = 0;
 
+        // Compliance resolves verifying keys out of contract storage, and a key registered by an
+        // earlier block in this batch lives on the fork, not on canonical, until phase 3 swaps it.
+        using var _executionScope = _executionState?.Use(forkedState);
+
+        // Nullifiers live on the verifier and not in the fork, so a refused batch would otherwise keep
+        // them consumed and every retry would replay as a duplicate.
+        var nullifierSnapshot = _complianceEngine?.SnapshotNullifiers();
+
         // Phase 1: Execute all blocks on forked state
         var phase1Complete = true;
         foreach (var (block, raw, bitmap) in blocks)
@@ -322,7 +340,10 @@ public sealed class BlockApplier
         // swap, splitting chain height from state). This is an execution failure, not a divergence, so it
         // is already logged at Warning above; just abort the batch.
         if (!phase1Complete)
+        {
+            _complianceEngine?.RestoreNullifiers(nullifierSnapshot);
             return 0;
+        }
 
         // Phase 1.5: State-root gate (soundness). Verify our recomputed state matches the finalized chain
         // BEFORE advancing the chain. The replay path used the single-arg AddBlock, so ChainManager's
@@ -351,6 +372,11 @@ public sealed class BlockApplier
                     blocks[^1].Block.Number, expectedRoot.ToHexString(), computedRoot.ToHexString(),
                     _chainManager.LatestBlockNumber);
             }
+
+            // The fork is discarded here, so the nullifiers consumed on it go back too. Both the benign
+            // race and the real divergence retry, and a retry that saw its own proofs as replays would
+            // never succeed.
+            _complianceEngine?.RestoreNullifiers(nullifierSnapshot);
             return 0;
         }
 

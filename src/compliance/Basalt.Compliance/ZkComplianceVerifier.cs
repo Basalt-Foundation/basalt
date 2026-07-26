@@ -37,6 +37,30 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     public int NullifierCount { get { lock (_lock) return _usedNullifiers.Count; } }
 
     /// <summary>
+    /// Snapshots the consumed nullifiers so a batch that is discarded does not leave them consumed.
+    ///
+    /// Nullifiers live here and not inside the state fork a sync batch executes on, so a batch refused
+    /// at the state-root gate would roll back its state and keep its nullifiers. The retry would then
+    /// see every proof in that batch as a replay and fail forever. Taking a snapshot before the batch
+    /// and restoring it on failure is what makes the two roll back together.
+    /// </summary>
+    public IReadOnlyDictionary<Hash256, ulong> SnapshotNullifiers()
+    {
+        lock (_lock) return new Dictionary<Hash256, ulong>(_usedNullifiers);
+    }
+
+    /// <summary>Restores a snapshot taken by <see cref="SnapshotNullifiers"/>.</summary>
+    public void RestoreNullifiers(IReadOnlyDictionary<Hash256, ulong> snapshot)
+    {
+        lock (_lock)
+        {
+            _usedNullifiers.Clear();
+            foreach (var (nullifier, block) in snapshot)
+                _usedNullifiers[nullifier] = block;
+        }
+    }
+
+    /// <summary>
     /// Add a nullifier directly for a specific block number (testing only).
     /// </summary>
     public void TrackNullifier(Hash256 nullifier, ulong blockNumber)

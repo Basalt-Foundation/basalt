@@ -79,8 +79,18 @@ bug on a validator's own catch-up sync, which shares the same replay path.
   `ResetNullifiers(block.Number)` before each block's transactions, in the order finalization uses. The
   engine moved above the mode switch so a replaying node has one at all, rather than being built inside
   the validator case.
-- **3, 4, 5: open.** The verifier is still NOT wired into the RPC or standalone executor, which is the
-  final step and stays unsafe until these are done.
+- **3. VK lookup on the executing state: done.** `ExecutionStateRef` holds which state a lookup should
+  read. Canonical by default, the sync fork while a batch replays, so a key registered by an earlier
+  block in the same batch is visible to a later one.
+- **4. Nullifiers roll back with the batch: done.** `ComplianceEngine` snapshots them before a batch and
+  `BlockApplier` restores on both refusal paths, the execution failure and the state-root gate. They
+  live on the verifier rather than in the fork, so without this a refused batch kept them consumed and
+  every retry replayed as a duplicate.
+- **5. Replay before enabling: done.** An RPC node syncs from genesis on every start, so bringing one up
+  against the running testnet with the verifier wired is the replay this asked for.
+
+COMPL-C01 is wired: the RPC executor takes the compliance engine, and an RPC node now runs the same
+checks a validator does.
 
 ## Decision
 
