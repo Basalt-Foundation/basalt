@@ -151,14 +151,27 @@ public sealed class BlockApplier
         var computedStateRoot = stateDb.ComputeStateRoot();
         if (computedStateRoot != block.Header.StateRoot)
         {
-            // Report, do not reject. This path is reached only after the block is BFT-agreed, so refusing
-            // it here would halt block production on a divergence we have never yet observed. Log loudly
-            // and let the evidence decide whether this should become fatal.
+            // Refused. This used to log and apply the block anyway, on the reasoning that the block was
+            // already BFT-agreed and that refusing would halt production over something never observed.
+            // It was then observed on every block carrying a contract call, and the cause was a stale
+            // account cache rather than anything about the block. With that fixed, the roots agree, and
+            // a node reaching a different state than the header claims has no business serving it.
+            //
+            // Halting is the point. A node that cannot reproduce the state cannot check anyone's work,
+            // and one that continues anyway turns the state root into decoration. The sync path has
+            // always refused; this makes the two paths answer the same anomaly the same way.
             _logger.LogCritical(
                 "State root divergence at block #{Number}: computed {Computed}, header {Header}. "
-                + "The block was applied anyway. This must be investigated before enabling trie pruning.",
+                + "Refusing the block. This node will not advance until the cause is understood.",
                 block.Number, computedStateRoot.ToHexString(), block.Header.StateRoot.ToHexString());
             MetricsEndpoint.RecordStateRootDivergence();
+
+            return new BlockApplyResult
+            {
+                Success = false,
+                Error = $"State root divergence at block #{block.Number}: computed "
+                        + $"{computedStateRoot.ToHexString()}, header {block.Header.StateRoot.ToHexString()}",
+            };
         }
 
         // Add to chain
