@@ -62,6 +62,38 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// share the same instance.
     /// M11: Passes configurable handshake timeout from ChainParameters.
     /// </summary>
+
+    /// <summary>
+    /// Binds a handshaked peer to its slot in the validator set, identified by the address derived from
+    /// the key it just proved it holds.
+    ///
+    /// This used to parse an index out of the peer's hostname ("validator-3"), which works only because
+    /// the devnet's addresses happen to sort into the same order as their hostnames. The canonical index
+    /// is the position in the set sorted by address ascending (EpochManager), so with real keys the two
+    /// orders diverge, every node writes peer identities into the wrong slots, and nodes then disagree
+    /// about who leads which view. The symptom is not an error but a slow chain: repeated view timeouts
+    /// and "proposal from non-leader", with blocks still trickling out.
+    ///
+    /// Using the address also means identity comes from the handshake itself rather than from a name the
+    /// peer chose, so a peer cannot claim someone else's slot by calling itself validator-0.
+    /// </summary>
+    private void BindPeerToValidatorSlot(PeerId peerId, PublicKey peerPublicKey, BlsPublicKey? peerBlsPublicKey, string context)
+    {
+        var peerAddress = Ed25519Signer.DeriveAddress(peerPublicKey);
+        var validator = _validatorSet?.GetByAddress(peerAddress);
+        if (validator is null)
+        {
+            // Not a genesis validator, which is normal for a plain peer.
+            _logger.LogDebug("Peer {PeerId} at {Address} is not in the validator set", peerId, peerAddress.ToHexString());
+            return;
+        }
+
+        _validatorSet!.UpdateValidatorIdentity(validator.Index, peerId, peerPublicKey, peerBlsPublicKey);
+        _logger.LogInformation(
+            "Bound validator {Index} ({Address}) to {PeerId} ({Context})",
+            validator.Index, peerAddress.ToHexString(), peerId, context);
+    }
+
     private HandshakeProtocol CreateHandshake() => new(
         _config.ChainId,
         _privateKey,
@@ -935,12 +967,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _episub!.OnPeerConnected(result.PeerId);
 
             // Update validator set with real PeerId (replaces placeholder)
-            // PeerHost comes from the peer's Hello.ListenAddress (Docker hostname, e.g. "validator-1")
-            if (TryParseValidatorIndex(result.PeerHost, out var peerValidatorIndex))
-            {
-                _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
-                _logger.LogInformation("Updated validator {Index} identity (inbound): {PeerId}", peerValidatorIndex, result.PeerId);
-            }
+            BindPeerToValidatorSlot(result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey, "inbound");
 
             _logger.LogInformation("Peer {PeerId} connected (inbound) from {Host}, best block: #{BestBlock}",
                 result.PeerId, result.PeerHost, result.PeerBestBlock);
@@ -1623,11 +1650,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 _episub!.OnPeerConnected(result.PeerId);
 
                 // Update validator set with real PeerId (replaces placeholder)
-                if (TryParseValidatorIndex(host, out var peerValidatorIndex))
-                {
-                    _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
-                    _logger.LogInformation("Updated validator {Index} identity: {PeerId}", peerValidatorIndex, result.PeerId);
-                }
+                BindPeerToValidatorSlot(result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey, "outbound");
 
                 _logger.LogInformation("Connected to peer {PeerId} at {Host}:{Port}, best block: #{BestBlock}",
                     result.PeerId, host, port, result.PeerBestBlock);
