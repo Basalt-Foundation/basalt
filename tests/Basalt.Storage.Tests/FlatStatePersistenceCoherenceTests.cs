@@ -39,24 +39,23 @@ public class FlatStatePersistenceCoherenceTests
     };
 
     /// <summary>
-    /// A trivial persistence layer holding the same contract as the RocksDB one: the account set is
-    /// replaced, storage is upserted and removed by name. Whether the store is RocksDB or a dictionary
-    /// is not what any of this turns on.
+    /// A trivial persistence layer holding the same contract as the RocksDB one: what is stored after a
+    /// flush is exactly the accounts handed to it, and no storage. Whether the store is RocksDB or a
+    /// dictionary is not what any of this turns on.
     /// </summary>
     private sealed class DictionaryPersistence : IFlatStatePersistence
     {
         private readonly Dictionary<Address, AccountState> _accounts = [];
         private readonly Dictionary<(Address, Hash256), byte[]> _storage = [];
 
-        public void Flush(
-            IReadOnlyDictionary<Address, AccountState> accounts,
-            IReadOnlyDictionary<(Address, Hash256), byte[]> storage,
-            IReadOnlyCollection<(Address, Hash256)> deletedStorage)
+        /// <summary>Seeds storage the way a build that still persisted it would have left it.</summary>
+        public void SeedStorage((Address, Hash256) key, byte[] value) => _storage[key] = value;
+
+        public void Flush(IReadOnlyDictionary<Address, AccountState> accounts)
         {
             _accounts.Clear();
+            _storage.Clear();
             foreach (var (address, state) in accounts) _accounts[address] = state;
-            foreach (var (key, value) in storage) _storage[key] = value;
-            foreach (var key in deletedStorage) _storage.Remove(key);
         }
 
         public (IEnumerable<(Address, AccountState)> Accounts,
@@ -178,6 +177,10 @@ public class FlatStatePersistenceCoherenceTests
         live.CompactDeletedSets();
         live.FlushToPersistence();
 
+        // What a build that persisted storage would have left on disk: the value, and no record of the
+        // deletion, because CompactDeletedSets discarded it several blocks before anything flushed.
+        persistence.SeedStorage((Contract, Slot(1)), [0xAA]);
+
         var restarted = new FlatStateDb(new TrieStateDb(store, root), persistence);
         restarted.LoadFromPersistence();
 
@@ -210,6 +213,8 @@ public class FlatStatePersistenceCoherenceTests
         live.ClearDirtyTracking();
         live.CompactDeletedSets();
         live.FlushToPersistence();
+
+        persistence.SeedStorage((Contract, Slot(1)), [0xAA]);
 
         var restarted = new FlatStateDb(new TrieStateDb(store, root), persistence);
         restarted.LoadFromPersistence();

@@ -26,13 +26,6 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
     private readonly HashSet<Address> _dirtyAccounts;
-    /// <summary>
-    /// Storage slots an older build persisted, queued for removal on the next flush. Storage is no
-    /// longer written or reloaded, so these are inert, but leaving them would keep a node one restart
-    /// away from reading them again under any build that reloads storage.
-    /// </summary>
-    private readonly HashSet<(Address, Hash256)> _staleStorageOnDisk = [];
-    private static readonly Dictionary<(Address, Hash256), byte[]> EmptyStorage = [];
     private readonly IFlatStatePersistence? _persistence;
     private readonly ILogger? _logger;
 
@@ -404,18 +397,10 @@ public sealed class FlatStateDb : IStateDatabase
             return;
         }
 
-        // Storage is not persisted at all. See LoadFromPersistence for why: a deletion cannot survive to
-        // the flush that would apply it, so a persisted slot outlives the chain's decision to remove it.
-        // Anything an older build left behind is deleted here, once.
-        var storageToDelete = new List<(Address, Hash256)>(_deletedStorage);
-        storageToDelete.AddRange(_staleStorageOnDisk);
-
-        // The account set is replaced rather than merged, so a record this cache has dropped cannot
-        // outlive it. That is the contract, not an optimisation: an entry the fold dropped, or one a
-        // freshly swapped-in cache never held, is exactly what this instance can no longer speak for.
-        _persistence.Flush(_accountCache, EmptyStorage, storageToDelete);
-
-        _staleStorageOnDisk.Clear();
+        // The persisted state becomes exactly this cache, with no storage at all. An entry the fold
+        // dropped, or one a freshly swapped-in cache never held, is precisely what this instance can no
+        // longer speak for, so a replacing write is the only kind it can honestly make.
+        _persistence.Flush(_accountCache);
 
         // After flush, compact deletion sets — the persisted store has the deletions
         // applied, and the trie's Delete() also removed the keys from the trie structure.
@@ -490,10 +475,9 @@ public sealed class FlatStateDb : IStateDatabase
         // What the reload bought was a warm read cache after a restart, which the trie repopulates on
         // demand anyway. That is a transient cost. Reading a slot the chain deleted is a state root
         // nobody else computes.
-        foreach (var (key, _) in storage)
-            _staleStorageOnDisk.Add(key);
+        var storageOnDisk = storage.Count();
 
-        return (dropped, _staleStorageOnDisk.Count);
+        return (dropped, storageOnDisk);
     }
 
     /// <summary>

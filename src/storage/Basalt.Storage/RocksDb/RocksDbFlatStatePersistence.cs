@@ -19,45 +19,33 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         _store = store;
     }
 
-    public void Flush(
-        IReadOnlyDictionary<Address, AccountState> accounts,
-        IReadOnlyDictionary<(Address, Hash256), byte[]> storage,
-        IReadOnlyCollection<(Address, Hash256)> deletedStorage)
+    public void Flush(IReadOnlyDictionary<Address, AccountState> accounts)
     {
         using var batch = _store.CreateWriteBatch();
+
+        // Everything already there goes, then the accounts are written. That is the contract: what is on
+        // disk afterwards is exactly what the cache holds, and no storage at all.
+        //
+        // Clearing unconditionally rather than from a list the caller supplies is the point. The
+        // instance that reads what is on disk is often not the instance that writes, because a sync batch
+        // swaps in a fresh state, so anything that depended on one remembering what it had seen simply
+        // never ran on the nodes that sync.
+        foreach (var (key, _) in _store.Iterate(RocksDbStore.CF.State))
+        {
+            if (key.Length == 0) continue;
+            if (key[0] == AccountPrefix || key[0] == StoragePrefix)
+                batch.Delete(RocksDbStore.CF.State, key);
+        }
 
         // Allocate fresh key/value arrays per Put call — RocksDbSharp's WriteBatch
         // may store references until Commit(), so reusing buffers risks overwriting
         // earlier entries in the batch.
-
-        // Clear the account set before writing it, so what is on disk afterwards is exactly what the
-        // cache holds. See IFlatStatePersistence.Flush: a caller that drops entries cannot name what it
-        // is no longer responsible for, so an upsert would keep every superseded record forever.
-        foreach (var (key, _) in _store.Iterate(RocksDbStore.CF.State))
-        {
-            if (key.Length == 1 + Address.Size && key[0] == AccountPrefix)
-                batch.Delete(RocksDbStore.CF.State, key);
-        }
-
-        // Write live account and storage entries
         foreach (var (address, state) in accounts)
         {
             var accountKey = MakeAccountKey(address);
             var stateBuffer = new byte[137];
             EncodeAccountStateInto(state, stateBuffer);
             batch.Put(RocksDbStore.CF.State, accountKey, stateBuffer);
-        }
-
-        foreach (var ((contract, slot), value) in storage)
-        {
-            var storageKey = MakeStorageKey(contract, slot);
-            batch.Put(RocksDbStore.CF.State, storageKey, value);
-        }
-
-        foreach (var (contract, slot) in deletedStorage)
-        {
-            var storageKey = MakeStorageKey(contract, slot);
-            batch.Delete(RocksDbStore.CF.State, storageKey);
         }
 
         batch.Commit();
