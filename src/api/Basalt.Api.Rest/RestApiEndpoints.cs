@@ -134,7 +134,12 @@ public static class RestApiEndpoints
                     });
 
                 var tx = request.ToTransaction();
-                var validationResult = validator.Validate(tx, stateDb, GetCurrentBaseFee());
+                // Submission is admission, so a future nonce is queued rather than refused. The mempool
+                // only ever offers the contiguous run from the on-chain nonce, and block building still
+                // demands the exact next one, so holding an early arrival costs nothing and saves the
+                // sender a block of latency per action.
+                var validationResult = validator.Validate(
+                    tx, stateDb, GetCurrentBaseFee(), skipSignature: false, allowFutureNonce: true);
                 if (!validationResult.IsSuccess)
                 {
                     return Microsoft.AspNetCore.Http.Results.BadRequest(new ErrorResponse
