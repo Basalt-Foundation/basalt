@@ -32,7 +32,26 @@ public sealed class TransactionValidator
     /// Validate a transaction, optionally skipping signature verification
     /// (for transactions already verified at mempool admission).
     /// </summary>
+    /// <summary>
+    /// How far ahead of the account's nonce a transaction may be when entering the mempool.
+    ///
+    /// Block building needs the exact next nonce, but admission does not: the mempool already groups by
+    /// sender, sorts by nonce and serves only the contiguous run from the on-chain nonce, stopping at
+    /// the first gap. Refusing a future nonce outright meant a sender had to wait for one transaction to
+    /// be mined before offering the next, so anything wanting two actions in a row paid a block of
+    /// latency per action.
+    ///
+    /// Bounded because a queue nobody can fill is a queue anyone can flood. Beyond this the sender is
+    /// asking us to hold transactions that may never become valid.
+    /// </summary>
+    public const ulong MaxNonceLookahead = 64;
+
     public BasaltResult Validate(Transaction tx, IStateDatabase stateDb, UInt256 baseFee, bool skipSignature)
+        => Validate(tx, stateDb, baseFee, skipSignature, allowFutureNonce: false);
+
+    /// <param name="allowFutureNonce">True at mempool admission, false when building a block.</param>
+    public BasaltResult Validate(
+        Transaction tx, IStateDatabase stateDb, UInt256 baseFee, bool skipSignature, bool allowFutureNonce)
     {
         if (!skipSignature)
         {
@@ -53,8 +72,20 @@ public sealed class TransactionValidator
         // Step 4: Check nonce
         var account = stateDb.GetAccount(tx.Sender);
         var expectedNonce = account?.Nonce ?? 0;
-        if (tx.Nonce != expectedNonce)
+        if (tx.Nonce < expectedNonce)
+            return BasaltResult.Error(BasaltErrorCode.InvalidNonce,
+                $"Nonce {tx.Nonce} is already used; account is at {expectedNonce}.");
+
+        if (allowFutureNonce)
+        {
+            if (tx.Nonce > expectedNonce + MaxNonceLookahead)
+                return BasaltResult.Error(BasaltErrorCode.InvalidNonce,
+                    $"Nonce {tx.Nonce} is more than {MaxNonceLookahead} ahead of {expectedNonce}.");
+        }
+        else if (tx.Nonce != expectedNonce)
+        {
             return BasaltResult.Error(BasaltErrorCode.InvalidNonce, $"Expected nonce {expectedNonce}, got {tx.Nonce}.");
+        }
 
         // Step 5: Check balance (value + max gas cost)
         // MED-03 R3: Use checked arithmetic to prevent UInt256 overflow.
