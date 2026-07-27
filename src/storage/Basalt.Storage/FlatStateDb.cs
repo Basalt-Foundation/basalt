@@ -243,17 +243,26 @@ public sealed class FlatStateDb : IStateDatabase
         _trie.DeleteStorage(contract, key);
     }
 
-    public Hash256 ComputeStateRoot()
+    public Hash256 ComputeStateRoot() => FoldStorageRootsIntoAccounts();
+
+    /// <summary>
+    /// Folds each contract's storage root back into its account record and returns the resulting state
+    /// root, dropping any cached account the fold has just superseded.
+    ///
+    /// The fold happens inside the trie, which writes those records itself, so this cache never sees it
+    /// and would keep handing back a storage root from before. Anything rebuilt from it is a
+    /// transaction behind, which cost a block of registrations that reported success and wrote nothing.
+    ///
+    /// Both callers go through here rather than each remembering to invalidate. That is the whole point:
+    /// the first fix did it in ComputeStateRoot only, and Fork had the identical defect and kept it.
+    /// </summary>
+    private Hash256 FoldStorageRootsIntoAccounts()
     {
         var root = _trie.ComputeStateRoot();
 
-        // Computing the root is also what folds each contract's storage root back into its account
-        // record, and the trie writes those records itself. This cache does not see that, so an account
-        // read afterwards would hand back a stale StorageRoot, and the storage trie rebuilt from it
-        // would be the one from before the last block.
-        //
-        // Dropping the touched contracts is enough: the next read reloads the account the trie actually
-        // holds. Dropping rather than updating keeps one owner for the value.
+        // Dropping rather than updating keeps one owner for the value: the next read reloads whatever
+        // the trie actually holds. _dirtyStorageKeys is never cleared, so this covers every contract
+        // this database has ever written to, which is a superset of what the fold touched.
         foreach (var (contract, _) in _dirtyStorageKeys)
             _accountCache.Remove(contract);
 
@@ -302,18 +311,13 @@ public sealed class FlatStateDb : IStateDatabase
         //
         // Account cache IS copied — it's tiny (~50 entries for active accounts) and
         // avoids hundreds of RocksDB trie reads during sync block execution.
-        // Forking the inner trie computes its root, and computing the root is what folds each contract's
-        // storage root back into its account record. Those records are rewritten inside the trie, so a
-        // copy of this cache taken naively carries the storage roots from before the fold. The fork then
-        // rebuilds a contract's storage trie from a root a transaction behind and loses whatever the
-        // previous transaction in the same block wrote, while still reporting success.
-        //
-        // Dropping the touched contracts is enough: the fork reloads them from the trie it was built on.
-        var accounts = new Dictionary<Address, AccountState>(_accountCache);
-        foreach (var (contract, _) in _dirtyStorageKeys)
-            accounts.Remove(contract);
+        // Fold first, so the cache this copies no longer holds storage roots the fold has superseded.
+        // Forking the trie would compute the root anyway; doing it here means the copy is taken after.
+        FoldStorageRootsIntoAccounts();
 
-        return new FlatStateDb((TrieStateDb)_trie.Fork(), accounts);
+        return new FlatStateDb(
+            (TrieStateDb)_trie.Fork(),
+            new Dictionary<Address, AccountState>(_accountCache));
     }
 
     /// <summary>
