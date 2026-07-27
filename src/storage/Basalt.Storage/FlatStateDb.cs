@@ -35,6 +35,13 @@ public sealed class FlatStateDb : IStateDatabase
     /// next start reloads that record and it wins over the trie on every read.
     /// </summary>
     private readonly HashSet<Address> _evictedAccounts;
+    /// <summary>
+    /// Storage slots an older build persisted, queued for removal on the next flush. Storage is no
+    /// longer written or reloaded, so these are inert, but leaving them would keep a node one restart
+    /// away from reading them again under any build that reloads storage.
+    /// </summary>
+    private readonly HashSet<(Address, Hash256)> _staleStorageOnDisk = [];
+    private static readonly Dictionary<(Address, Hash256), byte[]> EmptyStorage = [];
     private readonly IFlatStatePersistence? _persistence;
     private readonly ILogger? _logger;
 
@@ -277,17 +284,19 @@ public sealed class FlatStateDb : IStateDatabase
     {
         var root = _trie.ComputeStateRoot();
 
-        // Dropping rather than updating keeps one owner for the value: the next read reloads whatever
-        // the trie actually holds. This covers every contract written since the last time the tracking
-        // sets were cleared, which is a superset of what the fold touched.
+        // Drop exactly the accounts the fold rewrote, which the trie names rather than this class
+        // guessing. Inferring it from the dirty-key set was a standing hazard: that set is cleared per
+        // block by ClearDirtyTracking, so what looked like a safe superset was only ever a superset by
+        // the grace of the order those two calls happen in.
         //
-        // A dropped entry has to be remembered until the next flush. The persisted copy is written from
-        // whatever the cache still holds, so an entry that is simply gone leaves its old record behind on
-        // disk, and the next start reloads it and reads it in preference to the trie.
-        foreach (var (contract, _) in _dirtyStorageKeys)
+        // Dropping rather than updating keeps one owner for the value: the next read reloads whatever the
+        // trie actually holds. A dropped entry then has to be remembered until the next flush, because
+        // the persisted copy is written from whatever the cache still holds, so an entry that is simply
+        // gone leaves its old record behind on disk for the next start to reload.
+        foreach (var contract in _trie.LastFoldRewrote)
         {
-            if (_accountCache.Remove(contract))
-                _evictedAccounts.Add(contract);
+            _accountCache.Remove(contract);
+            _evictedAccounts.Add(contract);
         }
 
         return root;
@@ -419,8 +428,20 @@ public sealed class FlatStateDb : IStateDatabase
                 evicted.Add(address);
         }
 
-        _persistence.Flush(_accountCache, _storageCache, evicted, _deletedStorage);
+        // Storage is not persisted at all. See LoadFromPersistence for why: a deletion cannot survive to
+        // the flush that would apply it, so a persisted slot outlives the chain's decision to remove it.
+        // Anything an older build left behind is deleted here, once.
+        var storageToDelete = new List<(Address, Hash256)>(_deletedStorage);
+        storageToDelete.AddRange(_staleStorageOnDisk);
+
+        _persistence.Flush(
+            _accountCache,
+            EmptyStorage,
+            evicted,
+            storageToDelete);
+
         _evictedAccounts.Clear();
+        _staleStorageOnDisk.Clear();
 
         // After flush, compact deletion sets — the persisted store has the deletions
         // applied, and the trie's Delete() also removed the keys from the trie structure.
@@ -479,19 +500,27 @@ public sealed class FlatStateDb : IStateDatabase
                 + "they will be read from the trie instead.", dropped, total);
         }
 
-        foreach (var (key, value) in storage)
+        // Storage is not reloaded, and whatever is on disk is queued for removal on the next flush.
+        //
+        // Validating it the way accounts are validated is not affordable: there can be hundreds of
+        // thousands of slots and each check is a trie read. Trusting it is not an option either, because
+        // a deletion does not survive to the flush that would apply it. DeleteStorage records the slot in
+        // _deletedStorage, the trie forgets it immediately, and CompactDeletedSets runs every block to
+        // keep those sets from growing without bound, so by shutdown there is nothing left to tell the
+        // persisted copy about. Its record stays, and reloading it hands back a value for a slot the trie
+        // says is empty. TWAP prunes storage on every block, so this is not a rare shape.
+        //
+        // What the reload bought was a warm read cache after a restart, which the trie repopulates on
+        // demand anyway. That is a transient cost. Reading a slot the chain deleted is a state root
+        // nobody else computes.
+        foreach (var (key, _) in storage)
+            _staleStorageOnDisk.Add(key);
+
+        if (_staleStorageOnDisk.Count > 0)
         {
-            if (_storageCache.TryAdd(key, value))
-            {
-                // Maintain per-address index for DeleteAccount support
-                var (contract, slot) = key;
-                if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
-                {
-                    slots = new HashSet<Hash256>();
-                    _storageSlotsIndex[contract] = slots;
-                }
-                slots.Add(slot);
-            }
+            _logger?.LogInformation(
+                "Ignoring {Count} persisted storage slots and clearing them on the next flush; storage is "
+                + "read from the trie.", _staleStorageOnDisk.Count);
         }
 
         return dropped;

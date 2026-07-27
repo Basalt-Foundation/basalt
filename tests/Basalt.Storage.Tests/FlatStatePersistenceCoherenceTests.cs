@@ -150,6 +150,81 @@ public class FlatStatePersistenceCoherenceTests
     }
 
     /// <summary>
+    /// A storage slot the chain deleted must not come back after a restart.
+    ///
+    /// DeleteStorage records the slot so the next flush can remove the persisted copy, and the trie
+    /// forgets it immediately. But CompactDeletedSets runs on every block, to stop those sets growing
+    /// without bound, so by the time anything flushes there is nothing left to tell the persisted copy
+    /// about. Its record stays. Reloading it hands back a value for a slot the trie says is empty, and
+    /// the node reads one thing while hashing another.
+    ///
+    /// TWAP prunes storage on every block, so this is the common case rather than a corner of it.
+    /// </summary>
+    [Fact]
+    public void A_deleted_storage_slot_does_not_come_back_after_a_restart()
+    {
+        var store = new InMemoryTrieNodeStore();
+        var persistence = new DictionaryPersistence();
+
+        var live = new FlatStateDb(new TrieStateDb(store), persistence);
+        live.SetAccount(Contract, ContractAccount());
+        live.SetStorage(Contract, Slot(1), [0xAA]);
+        live.ComputeStateRoot();
+        live.FlushToPersistence();
+
+        // The chain removes the slot, and the block that did it finishes the way every block finishes.
+        live.DeleteStorage(Contract, Slot(1));
+        var root = live.ComputeStateRoot();
+        live.ClearDirtyTracking();
+        live.CompactDeletedSets();
+        live.FlushToPersistence();
+
+        var restarted = new FlatStateDb(new TrieStateDb(store, root), persistence);
+        restarted.LoadFromPersistence();
+
+        restarted.GetStorage(Contract, Slot(1)).Should().BeNull(
+            "the slot was deleted from the trie, so a restart must not read a value for it");
+    }
+
+    /// <summary>
+    /// The same deletion, judged by the state root, which is what a peer checks.
+    ///
+    /// A resurrected slot is invisible to a write, because SetStorage reaches the trie whatever the cache
+    /// held. It shows up when something reads before deciding, which is what a contract does: the name
+    /// service reads the owner slot to find out whether a name is taken. So the write below is made to
+    /// depend on the read, the way a call does.
+    /// </summary>
+    [Fact]
+    public void A_restart_after_a_deletion_reaches_the_same_root_as_a_node_that_never_stopped()
+    {
+        var store = new InMemoryTrieNodeStore();
+        var persistence = new DictionaryPersistence();
+
+        var live = new FlatStateDb(new TrieStateDb(store), persistence);
+        live.SetAccount(Contract, ContractAccount());
+        live.SetStorage(Contract, Slot(1), [0xAA]);
+        live.ComputeStateRoot();
+        live.FlushToPersistence();
+
+        live.DeleteStorage(Contract, Slot(1));
+        var root = live.ComputeStateRoot();
+        live.ClearDirtyTracking();
+        live.CompactDeletedSets();
+        live.FlushToPersistence();
+
+        var restarted = new FlatStateDb(new TrieStateDb(store, root), persistence);
+        restarted.LoadFromPersistence();
+        var neverStopped = new FlatStateDb(new TrieStateDb(store, root));
+
+        // Read, then write what the read decided.
+        restarted.SetStorage(Contract, Slot(2), restarted.GetStorage(Contract, Slot(1)) ?? [0x00]);
+        neverStopped.SetStorage(Contract, Slot(2), neverStopped.GetStorage(Contract, Slot(1)) ?? [0x00]);
+
+        restarted.ComputeStateRoot().Should().Be(neverStopped.ComputeStateRoot(),
+            "a restarted node and one that never stopped hold the same data, so they owe each other the same root");
+    }
+
+    /// <summary>
     /// A database that has been told it cannot vouch for its state must not write that state down.
     ///
     /// Refusing a block happens after executing it, so the mutations are already on the state while the

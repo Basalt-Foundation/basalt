@@ -24,6 +24,19 @@ public sealed class TrieStateDb : IStateDatabase
     /// </summary>
     private Hash256? _cachedStateRoot;
 
+    /// <summary>
+    /// Accounts the last <see cref="ComputeStateRoot"/> rewrote to carry a new storage root.
+    ///
+    /// The fold is the one path that changes an account record without going through
+    /// <see cref="SetAccount"/>, so it is the one path a cache in front of this class cannot see. Naming
+    /// exactly who was rewritten lets that cache drop exactly those, instead of inferring it from a set
+    /// of dirty keys that other code is free to clear.
+    /// </summary>
+    private readonly List<Address> _lastFoldRewrote = [];
+
+    /// <summary>Accounts the last fold rewrote. See <see cref="_lastFoldRewrote"/>.</summary>
+    public IReadOnlyList<Address> LastFoldRewrote => _lastFoldRewrote;
+
     public TrieStateDb(ITrieNodeStore nodeStore) : this(nodeStore, Hash256.Zero) { }
 
     public TrieStateDb(ITrieNodeStore nodeStore, Hash256 stateRoot)
@@ -79,9 +92,15 @@ public sealed class TrieStateDb : IStateDatabase
 
     public Hash256 ComputeStateRoot()
     {
-        // Fast path: if no writes have occurred since last computation, return cached root.
+        // Fast path: if no writes have occurred since last computation, return cached root. Nothing is
+        // rewritten, so nothing needs dropping from a cache in front of this class.
         if (_cachedStateRoot.HasValue)
+        {
+            _lastFoldRewrote.Clear();
             return _cachedStateRoot.Value;
+        }
+
+        _lastFoldRewrote.Clear();
 
         // Flush any pending storage trie changes into account states.
         // Only write back accounts whose StorageRoot actually changed —
@@ -103,6 +122,7 @@ public sealed class TrieStateDb : IStateDatabase
                 };
                 var key = AddressToKey(address);
                 _worldTrie.Put(key, EncodeAccountState(updated));
+                _lastFoldRewrote.Add(address);
             }
         }
 
