@@ -76,6 +76,11 @@ Open **PowerShell** and run:
 ```powershell
 # Clone the repo
 git clone https://github.com/basalt-foundation/basalt.git $env:USERPROFILE\basalt
+
+# Caldera has its own repository and is built from a checkout beside this one.
+# Set CALDERA_PATH if you keep it somewhere else.
+git clone https://github.com/Basalt-Foundation/Caldera.git $env:USERPROFILE\caldera
+
 cd $env:USERPROFILE\basalt\deploy\testnet
 
 # Run setup (will prompt for your Cloudflare Tunnel token)
@@ -86,8 +91,8 @@ The script will:
 1. Verify Docker is running in Linux container mode
 2. Generate 4 validator key pairs
 3. Prompt for your Cloudflare Tunnel token
-4. Build all Docker images (validators, explorer, website)
-5. Start the 4-validator testnet, website, and cloudflared tunnel
+4. Build all Docker images (validators, explorer, website, Caldera)
+5. Start the 4-validator testnet, website, Caldera, and cloudflared tunnel
 6. Clean up build cache to save disk space
 
 ## Step 4: Verify
@@ -151,6 +156,7 @@ Same steps, using `setup.sh` instead:
 
 ```bash
 git clone https://github.com/basalt-foundation/basalt.git ~/basalt
+git clone https://github.com/Basalt-Foundation/Caldera.git ~/caldera
 cd ~/basalt/deploy/testnet
 chmod +x setup.sh
 ./setup.sh
