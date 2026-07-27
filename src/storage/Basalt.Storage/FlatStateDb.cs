@@ -302,9 +302,18 @@ public sealed class FlatStateDb : IStateDatabase
         //
         // Account cache IS copied — it's tiny (~50 entries for active accounts) and
         // avoids hundreds of RocksDB trie reads during sync block execution.
-        return new FlatStateDb(
-            (TrieStateDb)_trie.Fork(),
-            new Dictionary<Address, AccountState>(_accountCache));
+        // Forking the inner trie computes its root, and computing the root is what folds each contract's
+        // storage root back into its account record. Those records are rewritten inside the trie, so a
+        // copy of this cache taken naively carries the storage roots from before the fold. The fork then
+        // rebuilds a contract's storage trie from a root a transaction behind and loses whatever the
+        // previous transaction in the same block wrote, while still reporting success.
+        //
+        // Dropping the touched contracts is enough: the fork reloads them from the trie it was built on.
+        var accounts = new Dictionary<Address, AccountState>(_accountCache);
+        foreach (var (contract, _) in _dirtyStorageKeys)
+            accounts.Remove(contract);
+
+        return new FlatStateDb((TrieStateDb)_trie.Fork(), accounts);
     }
 
     /// <summary>

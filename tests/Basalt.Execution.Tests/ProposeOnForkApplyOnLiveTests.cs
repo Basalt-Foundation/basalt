@@ -343,4 +343,77 @@ public class ProposeOnForkApplyOnLiveTests
         key[1] = 0x01;
         return new Hash256(key);
     }
+
+
+    /// <summary>
+    /// The path the chain actually took: four registrations built into one block by the proposer.
+    ///
+    /// The proposer builds on a fork of its live state, and every contract call forks that fork again
+    /// and merges back. On the testnet all four reported success and only the last left a trace, while
+    /// the one alone in the previous block survived.
+    /// </summary>
+    [Fact]
+    public void Four_registrations_built_into_one_block_are_all_kept()
+    {
+        var (senderKey, sender) = NewAccount();
+        var proposer = new Address(Enumerable.Repeat((byte)0x77, 20).ToArray());
+
+        var live = LiveState(sender);
+        GenesisContractDeployer.DeployAll(live, _chainParams.ChainId);
+        var parent = Genesis(live);
+
+        var labels = new[] { "alpha", "beta", "gamma", "delta" };
+        var txs = new List<Transaction>();
+        for (ulong i = 0; i < 4; i++)
+            txs.Add(Transaction.Sign(new Transaction
+            {
+                Type = TransactionType.ContractCall,
+                Nonce = i,
+                Sender = sender,
+                To = NameService(),
+                Value = new UInt256(1_000_000_000),
+                GasLimit = 2_000_000,
+                GasPrice = _chainParams.InitialBaseFee * new UInt256(2),
+                Data = RegisterCall(labels[i]),
+                ChainId = _chainParams.ChainId,
+            }, senderKey));
+
+        // Built on a fork, the way a proposer does, and applied to the live state, the way everyone does.
+        var fork = live.Fork();
+        Block block = new BlockBuilder(_chainParams).BuildBlockWithDex(txs, [], fork, parent, proposer);
+        block.Transactions.Should().HaveCount(4, "all four have to make it into the block");
+
+        var executor = new TransactionExecutor(_chainParams);
+        for (int i = 0; i < block.Transactions.Count; i++)
+            executor.Execute(block.Transactions[i], live, block.Header, i).Success.Should().BeTrue();
+
+        var code = live.GetStorage(NameService(), CodeKey())!;
+        foreach (var label in labels)
+        {
+            var buffer = new byte[64];
+            var writer = new Basalt.Codec.BasaltWriter(buffer);
+            writer.WriteString(label);
+            var selector = Basalt.Sdk.Contracts.SelectorHelper.ComputeSelectorBytes("ExpiryOf");
+            var call = new byte[selector.Length + writer.Position];
+            selector.CopyTo(call, 0);
+            buffer.AsSpan(0, writer.Position).CopyTo(call.AsSpan(selector.Length));
+
+            var result = new VM.ManagedContractRuntime().Execute(code, call, new VM.VmExecutionContext
+            {
+                Caller = sender,
+                ContractAddress = NameService(),
+                Value = UInt256.Zero,
+                BlockTimestamp = (ulong)block.Header.Timestamp,
+                BlockNumber = block.Header.Number,
+                BlockProposer = block.Header.Proposer,
+                ChainId = block.Header.ChainId,
+                GasMeter = new VM.GasMeter(5_000_000),
+                StateDb = live,
+                CallDepth = 0,
+            });
+
+            new Basalt.Codec.BasaltReader(result.ReturnData!).ReadInt64()
+                .Should().NotBe(0, $"{label} reported success and must still be registered");
+        }
+    }
 }
