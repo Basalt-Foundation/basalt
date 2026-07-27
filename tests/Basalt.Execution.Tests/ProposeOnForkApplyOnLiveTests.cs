@@ -263,4 +263,84 @@ public class ProposeOnForkApplyOnLiveTests
         replay.ComputeStateRoot().Should().Be(live.ComputeStateRoot(),
             "a node replaying history has to arrive where a node that followed it live did");
     }
+
+
+    /// <summary>
+    /// Two contract calls in one block must both keep their writes.
+    ///
+    /// Each contract call executes on a fork of the state and merges back on success. Two calls in the
+    /// same block that fork from the same base do not see each other, so merging the second can put back
+    /// a version of the contract that never had the first. Both report success and one silently loses
+    /// its writes, which is worse than either failing.
+    /// </summary>
+    [Fact]
+    public void Two_contract_calls_in_one_block_both_keep_their_writes()
+    {
+        var (senderKey, sender) = NewAccount();
+        var proposer = new Address(Enumerable.Repeat((byte)0x77, 20).ToArray());
+
+        var live = LiveState(sender);
+        GenesisContractDeployer.DeployAll(live, _chainParams.ChainId);
+        var parent = Genesis(live);
+
+        Transaction Register(string label, ulong nonce) => Transaction.Sign(new Transaction
+        {
+            Type = TransactionType.ContractCall,
+            Nonce = nonce,
+            Sender = sender,
+            To = NameService(),
+            Value = new UInt256(1_000_000_000),
+            GasLimit = 2_000_000,
+            GasPrice = _chainParams.InitialBaseFee * new UInt256(2),
+            Data = RegisterCall(label),
+            ChainId = _chainParams.ChainId,
+        }, senderKey);
+
+        // Four, because the chain put four registrations in one block and only the last survived.
+        var executor = new TransactionExecutor(_chainParams);
+        var labels = new[] { "first", "second", "third", "fourth" };
+        for (ulong i = 0; i < 4; i++)
+            executor.Execute(Register(labels[i], i), live, parent, (int)i)
+                .Success.Should().BeTrue($"{labels[i]} reported success on the chain too");
+
+        // Both names have to be there. A receipt that says success and leaves no trace is a lie.
+        var code = live.GetStorage(NameService(), CodeKey())!;
+        foreach (var label in labels)
+        {
+            var buffer = new byte[64];
+            var writer = new Basalt.Codec.BasaltWriter(buffer);
+            writer.WriteString(label);
+            var selector = Basalt.Sdk.Contracts.SelectorHelper.ComputeSelectorBytes("ExpiryOf");
+            var call = new byte[selector.Length + writer.Position];
+            selector.CopyTo(call, 0);
+            buffer.AsSpan(0, writer.Position).CopyTo(call.AsSpan(selector.Length));
+
+            var view = new VM.VmExecutionContext
+            {
+                Caller = sender,
+                ContractAddress = NameService(),
+                Value = UInt256.Zero,
+                BlockTimestamp = (ulong)parent.Timestamp,
+                BlockNumber = parent.Number,
+                BlockProposer = parent.Proposer,
+                ChainId = parent.ChainId,
+                GasMeter = new VM.GasMeter(5_000_000),
+                StateDb = live,
+                CallDepth = 0,
+            };
+
+            var result = new VM.ManagedContractRuntime().Execute(code, call, view);
+            result.Success.Should().BeTrue();
+            new Basalt.Codec.BasaltReader(result.ReturnData!).ReadInt64()
+                .Should().NotBe(0, $"{label} reported success and must still be registered");
+        }
+    }
+
+    private static Hash256 CodeKey()
+    {
+        var key = new byte[32];
+        key[0] = 0xFF;
+        key[1] = 0x01;
+        return new Hash256(key);
+    }
 }
