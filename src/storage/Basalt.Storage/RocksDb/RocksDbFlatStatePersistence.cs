@@ -22,7 +22,6 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
     public void Flush(
         IReadOnlyDictionary<Address, AccountState> accounts,
         IReadOnlyDictionary<(Address, Hash256), byte[]> storage,
-        IReadOnlyCollection<Address> deletedAccounts,
         IReadOnlyCollection<(Address, Hash256)> deletedStorage)
     {
         using var batch = _store.CreateWriteBatch();
@@ -31,7 +30,16 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         // may store references until Commit(), so reusing buffers risks overwriting
         // earlier entries in the batch.
 
-        // Write (upsert) live account and storage entries
+        // Clear the account set before writing it, so what is on disk afterwards is exactly what the
+        // cache holds. See IFlatStatePersistence.Flush: a caller that drops entries cannot name what it
+        // is no longer responsible for, so an upsert would keep every superseded record forever.
+        foreach (var (key, _) in _store.Iterate(RocksDbStore.CF.State))
+        {
+            if (key.Length == 1 + Address.Size && key[0] == AccountPrefix)
+                batch.Delete(RocksDbStore.CF.State, key);
+        }
+
+        // Write live account and storage entries
         foreach (var (address, state) in accounts)
         {
             var accountKey = MakeAccountKey(address);
@@ -44,13 +52,6 @@ public sealed class RocksDbFlatStatePersistence : IFlatStatePersistence
         {
             var storageKey = MakeStorageKey(contract, slot);
             batch.Put(RocksDbStore.CF.State, storageKey, value);
-        }
-
-        // Delete entries that were removed from state
-        foreach (var address in deletedAccounts)
-        {
-            var accountKey = MakeAccountKey(address);
-            batch.Delete(RocksDbStore.CF.State, accountKey);
         }
 
         foreach (var (contract, slot) in deletedStorage)

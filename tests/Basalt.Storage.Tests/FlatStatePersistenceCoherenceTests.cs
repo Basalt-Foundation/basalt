@@ -39,9 +39,9 @@ public class FlatStatePersistenceCoherenceTests
     };
 
     /// <summary>
-    /// A trivial persistence layer with the same contract as the RocksDB one: writes are upserts, and
-    /// only what is named as deleted is removed. Whether the store is RocksDB or a dictionary is not
-    /// what the defect turned on.
+    /// A trivial persistence layer holding the same contract as the RocksDB one: the account set is
+    /// replaced, storage is upserted and removed by name. Whether the store is RocksDB or a dictionary
+    /// is not what any of this turns on.
     /// </summary>
     private sealed class DictionaryPersistence : IFlatStatePersistence
     {
@@ -51,12 +51,11 @@ public class FlatStatePersistenceCoherenceTests
         public void Flush(
             IReadOnlyDictionary<Address, AccountState> accounts,
             IReadOnlyDictionary<(Address, Hash256), byte[]> storage,
-            IReadOnlyCollection<Address> deletedAccounts,
             IReadOnlyCollection<(Address, Hash256)> deletedStorage)
         {
+            _accounts.Clear();
             foreach (var (address, state) in accounts) _accounts[address] = state;
             foreach (var (key, value) in storage) _storage[key] = value;
-            foreach (var address in deletedAccounts) _accounts.Remove(address);
             foreach (var key in deletedStorage) _storage.Remove(key);
         }
 
@@ -223,6 +222,51 @@ public class FlatStatePersistenceCoherenceTests
         restarted.ComputeStateRoot().Should().Be(neverStopped.ComputeStateRoot(),
             "a restarted node and one that never stopped hold the same data, so they owe each other the same root");
     }
+
+    /// <summary>
+    /// A flush leaves behind exactly what the cache holds, so a record it has dropped cannot outlive it.
+    ///
+    /// Dropping on load makes reading a superseded record safe, which is a guard rather than a cure: the
+    /// record is still written, still reloaded, and still has to be recognised as wrong every time. This
+    /// is the source. A cache that drops entries cannot name what it is no longer responsible for, so
+    /// only a replacing write keeps the persisted copy to a single moment instead of a union of several.
+    ///
+    /// The shape below is the one the sync path produces on every batch: finishing installs a fresh
+    /// state over the same store, holding nothing, and everything it never touches was left on disk by
+    /// the instance it replaced.
+    /// </summary>
+    [Fact]
+    public void A_flush_leaves_behind_only_what_the_cache_holds()
+    {
+        var store = new InMemoryTrieNodeStore();
+        var persistence = new DictionaryPersistence();
+
+        var before = new FlatStateDb(new TrieStateDb(store), persistence);
+        before.SetAccount(Contract, ContractAccount());
+        before.SetStorage(Contract, Slot(1), [0xAA]);
+        var firstRoot = before.ComputeStateRoot();
+        before.GetAccount(Contract);
+        before.FlushToPersistence();
+
+        // The swap, and a block's worth of work on the state that replaced it.
+        var after = new FlatStateDb(new TrieStateDb(store, firstRoot), persistence);
+        after.SetStorage(Contract, Slot(2), [0xBB]);
+        var secondRoot = after.ComputeStateRoot();
+        after.FlushToPersistence();
+
+        // Nothing validates here. This asks what is actually on disk, which is what a build that trusted
+        // it would read, and what the guard has to keep recognising as wrong for as long as it is there.
+        var (persistedAccounts, _) = persistence.Load();
+        var stale = persistedAccounts.Where(entry =>
+            entry.Item1 == Contract && entry.Item2.StorageRoot != OnTrie(store, secondRoot).StorageRoot);
+
+        stale.Should().BeEmpty(
+            "a flush replaces the account set, so a record the cache dropped is gone rather than left "
+            + "behind for the next start to reload");
+    }
+
+    private static AccountState OnTrie(InMemoryTrieNodeStore store, Hash256 root)
+        => new TrieStateDb(store, root).GetAccount(Contract)!.Value;
 
     /// <summary>
     /// A database that has been told it cannot vouch for its state must not write that state down.

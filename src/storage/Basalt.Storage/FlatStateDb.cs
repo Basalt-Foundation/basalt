@@ -27,15 +27,6 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
     private readonly HashSet<Address> _dirtyAccounts;
     /// <summary>
-    /// Accounts the fold has dropped from the cache since the last flush.
-    ///
-    /// Dropping an entry is how the fold says "the trie now holds something newer than this". The
-    /// persisted copy has to hear the same thing: a flush writes what the cache still holds and deletes
-    /// what was deleted, so a dropped entry is in neither list and its old record survives on disk. The
-    /// next start reloads that record and it wins over the trie on every read.
-    /// </summary>
-    private readonly HashSet<Address> _evictedAccounts;
-    /// <summary>
     /// Storage slots an older build persisted, queued for removal on the next flush. Storage is no
     /// longer written or reloaded, so these are inert, but leaving them would keep a node one restart
     /// away from reading them again under any build that reloads storage.
@@ -73,7 +64,6 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _dirtyAccounts = new HashSet<Address>();
-        _evictedAccounts = new HashSet<Address>();
         _persistence = persistence;
         _logger = logger;
     }
@@ -96,7 +86,6 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _dirtyAccounts = new HashSet<Address>();
-        _evictedAccounts = new HashSet<Address>();
         _persistence = null; // Forks never persist
     }
 
@@ -290,14 +279,10 @@ public sealed class FlatStateDb : IStateDatabase
         // the grace of the order those two calls happen in.
         //
         // Dropping rather than updating keeps one owner for the value: the next read reloads whatever the
-        // trie actually holds. A dropped entry then has to be remembered until the next flush, because
-        // the persisted copy is written from whatever the cache still holds, so an entry that is simply
-        // gone leaves its old record behind on disk for the next start to reload.
+        // trie actually holds. Nothing has to remember the drop, because a flush replaces the persisted
+        // account set rather than merging into it, so an entry that is simply gone here is gone there.
         foreach (var contract in _trie.LastFoldRewrote)
-        {
             _accountCache.Remove(contract);
-            _evictedAccounts.Add(contract);
-        }
 
         return root;
     }
@@ -419,28 +404,17 @@ public sealed class FlatStateDb : IStateDatabase
             return;
         }
 
-        // An account the fold dropped is deleted from the persisted copy unless a later read has put it
-        // back, in which case the entry being written is already the current one.
-        var evicted = new List<Address>(_deletedAccounts);
-        foreach (var address in _evictedAccounts)
-        {
-            if (!_accountCache.ContainsKey(address))
-                evicted.Add(address);
-        }
-
         // Storage is not persisted at all. See LoadFromPersistence for why: a deletion cannot survive to
         // the flush that would apply it, so a persisted slot outlives the chain's decision to remove it.
         // Anything an older build left behind is deleted here, once.
         var storageToDelete = new List<(Address, Hash256)>(_deletedStorage);
         storageToDelete.AddRange(_staleStorageOnDisk);
 
-        _persistence.Flush(
-            _accountCache,
-            EmptyStorage,
-            evicted,
-            storageToDelete);
+        // The account set is replaced rather than merged, so a record this cache has dropped cannot
+        // outlive it. That is the contract, not an optimisation: an entry the fold dropped, or one a
+        // freshly swapped-in cache never held, is exactly what this instance can no longer speak for.
+        _persistence.Flush(_accountCache, EmptyStorage, storageToDelete);
 
-        _evictedAccounts.Clear();
         _staleStorageOnDisk.Clear();
 
         // After flush, compact deletion sets — the persisted store has the deletions
