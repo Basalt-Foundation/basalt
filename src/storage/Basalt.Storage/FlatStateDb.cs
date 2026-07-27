@@ -439,9 +439,14 @@ public sealed class FlatStateDb : IStateDatabase
     /// This is correct for warm restart where runtime state is fresher, but this method
     /// must be called <b>before</b> any runtime modifications to avoid stale reads.</para>
     /// </remarks>
-    public void LoadFromPersistence()
+    /// <returns>
+    /// How many reloaded accounts were dropped for disagreeing with the trie. Anything but zero means
+    /// this node was carrying a persisted cache the trie had moved past, which is worth an operator
+    /// knowing about: it is what a state root divergence looks like before it becomes one.
+    /// </returns>
+    public int LoadFromPersistence()
     {
-        if (_persistence == null) return;
+        if (_persistence == null) return 0;
 
         var (accounts, storage) = _persistence.Load();
 
@@ -488,6 +493,8 @@ public sealed class FlatStateDb : IStateDatabase
                 slots.Add(slot);
             }
         }
+
+        return dropped;
     }
 
     /// <summary>

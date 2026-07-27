@@ -280,7 +280,16 @@ try
 
                 var recoveredTrie = new TrieStateDb(trieNodeStore, latestBlock.Header.StateRoot);
                 var recoveredFlat = new FlatStateDb(recoveredTrie, new RocksDbFlatStatePersistence(rocksDbStore));
-                recoveredFlat.LoadFromPersistence();
+                var droppedOnLoad = recoveredFlat.LoadFromPersistence();
+                if (droppedOnLoad > 0)
+                {
+                    // The persisted flat cache is not truncated, so an entry the trie has moved past
+                    // stays on disk at its old version and is reloaded ahead of the trie. Dropping it is
+                    // the recovery; saying so is how an operator learns the node had been carrying it.
+                    Log.Warning(
+                        "Dropped {Dropped} reloaded accounts that disagreed with the trie. They will be "
+                        + "read from the trie instead.", droppedOnLoad);
+                }
 
                 // N-11: Verify state root consistency after recovery
                 var computedRoot = recoveredFlat.ComputeStateRoot();
