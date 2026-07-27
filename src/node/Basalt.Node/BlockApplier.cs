@@ -201,6 +201,14 @@ public sealed class BlockApplier
                 block.Number, computedStateRoot.ToHexString(), block.Header.StateRoot.ToHexString());
             MetricsEndpoint.RecordStateRootDivergence();
 
+            // The block was executed before it was checked, so those mutations are already on the state
+            // while the chain stays one block behind them. Shutdown flushes the flat cache, which would
+            // write that mismatch to disk and reload it on the next start: the node would then diverge
+            // again from a state no peer shares, with no way back. The trie on disk is still the one the
+            // last accepted block was checked against, so refusing to persist keeps a restart recoverable.
+            var backing = stateDb is StateDbRef reference ? reference.Inner : stateDb;
+            (backing as FlatStateDb)?.MarkInconsistent();
+
             return new BlockApplyResult
             {
                 Success = false,

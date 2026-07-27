@@ -26,8 +26,23 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly HashSet<(Address, Hash256)> _deletedStorage;
     private readonly HashSet<(Address, Hash256)> _dirtyStorageKeys;
     private readonly HashSet<Address> _dirtyAccounts;
+    /// <summary>
+    /// Accounts the fold has dropped from the cache since the last flush.
+    ///
+    /// Dropping an entry is how the fold says "the trie now holds something newer than this". The
+    /// persisted copy has to hear the same thing: a flush writes what the cache still holds and deletes
+    /// what was deleted, so a dropped entry is in neither list and its old record survives on disk. The
+    /// next start reloads that record and it wins over the trie on every read.
+    /// </summary>
+    private readonly HashSet<Address> _evictedAccounts;
     private readonly IFlatStatePersistence? _persistence;
     private readonly ILogger? _logger;
+
+    /// <summary>
+    /// Set when this database has reached a state it cannot vouch for, after which it never persists.
+    /// See <see cref="MarkInconsistent"/>.
+    /// </summary>
+    private bool _inconsistent;
 
     /// <summary>
     /// Warning threshold for cache size. When either cache exceeds this number
@@ -51,6 +66,7 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _dirtyAccounts = new HashSet<Address>();
+        _evictedAccounts = new HashSet<Address>();
         _persistence = persistence;
         _logger = logger;
     }
@@ -73,6 +89,7 @@ public sealed class FlatStateDb : IStateDatabase
         _deletedStorage = new HashSet<(Address, Hash256)>();
         _dirtyStorageKeys = new HashSet<(Address, Hash256)>();
         _dirtyAccounts = new HashSet<Address>();
+        _evictedAccounts = new HashSet<Address>();
         _persistence = null; // Forks never persist
     }
 
@@ -261,10 +278,17 @@ public sealed class FlatStateDb : IStateDatabase
         var root = _trie.ComputeStateRoot();
 
         // Dropping rather than updating keeps one owner for the value: the next read reloads whatever
-        // the trie actually holds. _dirtyStorageKeys is never cleared, so this covers every contract
-        // this database has ever written to, which is a superset of what the fold touched.
+        // the trie actually holds. This covers every contract written since the last time the tracking
+        // sets were cleared, which is a superset of what the fold touched.
+        //
+        // A dropped entry has to be remembered until the next flush. The persisted copy is written from
+        // whatever the cache still holds, so an entry that is simply gone leaves its old record behind on
+        // disk, and the next start reloads it and reads it in preference to the trie.
         foreach (var (contract, _) in _dirtyStorageKeys)
-            _accountCache.Remove(contract);
+        {
+            if (_accountCache.Remove(contract))
+                _evictedAccounts.Add(contract);
+        }
 
         return root;
     }
@@ -378,8 +402,25 @@ public sealed class FlatStateDb : IStateDatabase
     public void FlushToPersistence()
     {
         if (_persistence == null) return;
+        if (_inconsistent)
+        {
+            _logger?.LogWarning(
+                "Not persisting the flat cache: this state was marked inconsistent. The trie on disk is "
+                + "still the one the last accepted block was checked against.");
+            return;
+        }
 
-        _persistence.Flush(_accountCache, _storageCache, _deletedAccounts, _deletedStorage);
+        // An account the fold dropped is deleted from the persisted copy unless a later read has put it
+        // back, in which case the entry being written is already the current one.
+        var evicted = new List<Address>(_deletedAccounts);
+        foreach (var address in _evictedAccounts)
+        {
+            if (!_accountCache.ContainsKey(address))
+                evicted.Add(address);
+        }
+
+        _persistence.Flush(_accountCache, _storageCache, evicted, _deletedStorage);
+        _evictedAccounts.Clear();
 
         // After flush, compact deletion sets — the persisted store has the deletions
         // applied, and the trie's Delete() also removed the keys from the trie structure.
@@ -403,8 +444,36 @@ public sealed class FlatStateDb : IStateDatabase
         if (_persistence == null) return;
 
         var (accounts, storage) = _persistence.Load();
+
+        // A reloaded account that disagrees with the trie is dropped rather than trusted.
+        //
+        // The cache is a cache: the trie is what the state root is computed from, and a reader that gets
+        // one answer while the hash comes from the other produces a root nobody else can reproduce. The
+        // startup consistency check cannot catch this, because it compares ComputeStateRoot against the
+        // block header and ComputeStateRoot reads the trie alone. Dropping costs one trie read per warm
+        // entry, once, and it also heals a copy that went stale under an older build.
+        var dropped = 0;
+        var total = 0;
         foreach (var (addr, state) in accounts)
+        {
+            total++;
+            var onTrie = _trie.GetAccount(addr);
+            if (!onTrie.HasValue || !SameRecord(onTrie.Value, state))
+            {
+                dropped++;
+                continue;
+            }
+
             _accountCache.TryAdd(addr, state);
+        }
+
+        if (dropped > 0)
+        {
+            _logger?.LogWarning(
+                "Dropped {Dropped} of {Total} reloaded accounts that disagreed with the trie; "
+                + "they will be read from the trie instead.", dropped, total);
+        }
+
         foreach (var (key, value) in storage)
         {
             if (_storageCache.TryAdd(key, value))
@@ -420,6 +489,24 @@ public sealed class FlatStateDb : IStateDatabase
             }
         }
     }
+
+    /// <summary>
+    /// Declare that this database has reached a state it cannot vouch for, after which it never persists.
+    ///
+    /// A node that refuses a block has already executed it: the mutations are on the state and the chain
+    /// is one block behind them. Persisting that on the way out makes it permanent, and the node reloads
+    /// into a state no peer shares and can never rejoin. Leaving the flat cache alone keeps the trie on
+    /// disk as the last thing that was actually checked against a header, which is recoverable.
+    /// </summary>
+    public void MarkInconsistent() => _inconsistent = true;
+
+    private static bool SameRecord(AccountState a, AccountState b) =>
+        a.Nonce == b.Nonce
+        && a.Balance == b.Balance
+        && a.StorageRoot == b.StorageRoot
+        && a.CodeHash == b.CodeHash
+        && a.AccountType == b.AccountType
+        && a.ComplianceHash == b.ComplianceHash;
 
     /// <summary>
     /// Hard cap for storage cache entries. When exceeded, the cache is cleared to prevent
