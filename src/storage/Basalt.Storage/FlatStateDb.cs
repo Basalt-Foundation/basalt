@@ -461,13 +461,16 @@ public sealed class FlatStateDb : IStateDatabase
     /// must be called <b>before</b> any runtime modifications to avoid stale reads.</para>
     /// </remarks>
     /// <returns>
-    /// How many reloaded accounts were dropped for disagreeing with the trie. Anything but zero means
-    /// this node was carrying a persisted cache the trie had moved past, which is worth an operator
-    /// knowing about: it is what a state root divergence looks like before it becomes one.
+    /// How many reloaded accounts were dropped for disagreeing with the trie, and how many persisted
+    /// storage slots were ignored. Either being non-zero means this node was carrying a persisted cache
+    /// the trie had moved past, which is worth an operator knowing about: it is what a state root
+    /// divergence looks like before it becomes one. The caller logs it, because the instance built at
+    /// startup recovery has no logger of its own, and that is exactly why the first version of this went
+    /// unseen.
     /// </returns>
-    public int LoadFromPersistence()
+    public (int DroppedAccounts, int IgnoredStorageSlots) LoadFromPersistence()
     {
-        if (_persistence == null) return 0;
+        if (_persistence == null) return (0, 0);
 
         var (accounts, storage) = _persistence.Load();
 
@@ -516,14 +519,7 @@ public sealed class FlatStateDb : IStateDatabase
         foreach (var (key, _) in storage)
             _staleStorageOnDisk.Add(key);
 
-        if (_staleStorageOnDisk.Count > 0)
-        {
-            _logger?.LogInformation(
-                "Ignoring {Count} persisted storage slots and clearing them on the next flush; storage is "
-                + "read from the trie.", _staleStorageOnDisk.Count);
-        }
-
-        return dropped;
+        return (dropped, _staleStorageOnDisk.Count);
     }
 
     /// <summary>
