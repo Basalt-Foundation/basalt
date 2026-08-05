@@ -93,7 +93,10 @@ public sealed class Mempool
         if (_validator != null && _validationStateDb != null)
         {
             var snapshot = _validationStateDb.Fork();
-            var validation = _validator.Validate(tx, snapshot);
+            // Future nonces are queued rather than refused. GetPending only ever serves the contiguous
+            // run from the on-chain nonce, so a held transaction waits for its turn instead of blocking.
+            var validation = _validator.Validate(
+                tx, snapshot, UInt256.Zero, skipSignature: false, allowFutureNonce: true);
             if (!validation.IsSuccess)
                 return false;
         }

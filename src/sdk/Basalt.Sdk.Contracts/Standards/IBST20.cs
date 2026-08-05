@@ -39,7 +39,7 @@ public interface IBST20
 /// Transfer event for BST-20 tokens.
 /// </summary>
 [BasaltEvent]
-public sealed class TransferEvent
+public sealed partial class TransferEvent
 {
     [Indexed] public byte[] From { get; init; } = [];
     [Indexed] public byte[] To { get; init; } = [];
@@ -50,7 +50,7 @@ public sealed class TransferEvent
 /// Approval event for BST-20 tokens.
 /// </summary>
 [BasaltEvent]
-public sealed class ApprovalEvent
+public sealed partial class ApprovalEvent
 {
     [Indexed] public byte[] Owner { get; init; } = [];
     [Indexed] public byte[] Spender { get; init; } = [];

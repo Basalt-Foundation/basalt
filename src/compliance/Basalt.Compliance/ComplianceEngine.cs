@@ -1,5 +1,4 @@
 using Basalt.Core;
-using Basalt.Execution;
 
 namespace Basalt.Compliance;
 
@@ -110,6 +109,23 @@ public sealed class ComplianceEngine : IComplianceVerifier
     /// Reset nullifiers in the underlying ZK verifier (COMPL-07).
     /// Called at block boundaries to bound memory usage.
     /// </summary>
+    /// <summary>
+    /// Snapshots consumed nullifiers, or null when there is nothing that tracks them.
+    ///
+    /// Used to roll them back with a batch that gets refused. They live on the verifier rather than in
+    /// the state fork, so without this a discarded batch keeps its nullifiers and every retry replays
+    /// as a duplicate.
+    /// </summary>
+    public object? SnapshotNullifiers()
+        => (_zkVerifier as ZkComplianceVerifier)?.SnapshotNullifiers();
+
+    /// <summary>Restores a snapshot taken by <see cref="SnapshotNullifiers"/>. Ignores null.</summary>
+    public void RestoreNullifiers(object? snapshot)
+    {
+        if (snapshot is IReadOnlyDictionary<Basalt.Core.Hash256, ulong> typed)
+            (_zkVerifier as ZkComplianceVerifier)?.RestoreNullifiers(typed);
+    }
+
     public void ResetNullifiers()
     {
         (_zkVerifier as ZkComplianceVerifier)?.ResetNullifiers();

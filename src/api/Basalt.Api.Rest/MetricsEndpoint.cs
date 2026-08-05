@@ -28,10 +28,26 @@ public static class MetricsEndpoint
     private static long _lastFinalizationLatencyMs;
     private static long _dexIntentCount;
 
+    // Phase 1.6: trie prune metrics. _nodesScanned is the trie_nodes count at the last sweep — the
+    // series the soak watches to confirm it plateaus rather than growing without bound.
+    private static long _triePruneSweepsTotal;
+    private static long _triePruneDeletedTotal;
+    private static long _triePruneNodesScanned;
+    private static long _triePruneNodesRetained;
+    private static long _triePruneLastHeight;
+
     /// <summary>
     /// Record a produced block for TPS calculation.
     /// MEDIUM-6: All shared fields use Interlocked for thread safety.
     /// </summary>
+    /// <summary>
+    /// A block whose executed state root did not match the root in its header. Should stay at zero: any
+    /// non-zero value means applying nodes and the proposer disagree about state.
+    /// </summary>
+    public static void RecordStateRootDivergence() => Interlocked.Increment(ref _stateRootDivergences);
+
+    private static long _stateRootDivergences;
+
     public static void RecordBlock(int txCount, long timestampMs)
     {
         Interlocked.Add(ref _totalTransactionsProcessed, txCount);
@@ -65,6 +81,16 @@ public static class MetricsEndpoint
 
     /// <summary>M13: Record DEX intent count in mempool.</summary>
     public static void RecordDexIntentCount(int count) => Interlocked.Exchange(ref _dexIntentCount, count);
+
+    /// <summary>Phase 1.6: record the result of a completed trie prune sweep.</summary>
+    public static void RecordTriePrune(long scanned, long deleted, long retained, long height)
+    {
+        Interlocked.Increment(ref _triePruneSweepsTotal);
+        Interlocked.Add(ref _triePruneDeletedTotal, deleted);
+        Interlocked.Exchange(ref _triePruneNodesScanned, scanned);
+        Interlocked.Exchange(ref _triePruneNodesRetained, retained);
+        Interlocked.Exchange(ref _triePruneLastHeight, height);
+    }
 
     /// <summary>
     /// Map the /metrics endpoint.
@@ -143,6 +169,32 @@ public static class MetricsEndpoint
             sb.AppendLine("# HELP basalt_dex_intent_count Number of DEX intents in mempool.");
             sb.AppendLine("# TYPE basalt_dex_intent_count gauge");
             sb.Append("basalt_dex_intent_count ").AppendLine(Interlocked.Read(ref _dexIntentCount).ToString());
+
+            // Phase 1.6: trie prune metrics. Watch basalt_trie_nodes_scanned plateau to confirm the
+            // sweep bounds disk growth; a monotonically rising series means pruning is not keeping up.
+            sb.AppendLine("# HELP basalt_state_root_divergences_total Blocks whose executed state root did not match their header.");
+            sb.AppendLine("# TYPE basalt_state_root_divergences_total counter");
+            sb.Append("basalt_state_root_divergences_total ").AppendLine(Interlocked.Read(ref _stateRootDivergences).ToString());
+
+            sb.AppendLine("# HELP basalt_trie_prune_sweeps_total Completed trie prune sweeps.");
+            sb.AppendLine("# TYPE basalt_trie_prune_sweeps_total counter");
+            sb.Append("basalt_trie_prune_sweeps_total ").AppendLine(Interlocked.Read(ref _triePruneSweepsTotal).ToString());
+
+            sb.AppendLine("# HELP basalt_trie_prune_deleted_total Trie nodes deleted across all sweeps.");
+            sb.AppendLine("# TYPE basalt_trie_prune_deleted_total counter");
+            sb.Append("basalt_trie_prune_deleted_total ").AppendLine(Interlocked.Read(ref _triePruneDeletedTotal).ToString());
+
+            sb.AppendLine("# HELP basalt_trie_nodes_scanned Trie nodes present at the last sweep (disk-size proxy).");
+            sb.AppendLine("# TYPE basalt_trie_nodes_scanned gauge");
+            sb.Append("basalt_trie_nodes_scanned ").AppendLine(Interlocked.Read(ref _triePruneNodesScanned).ToString());
+
+            sb.AppendLine("# HELP basalt_trie_nodes_retained Live trie nodes kept by the last sweep.");
+            sb.AppendLine("# TYPE basalt_trie_nodes_retained gauge");
+            sb.Append("basalt_trie_nodes_retained ").AppendLine(Interlocked.Read(ref _triePruneNodesRetained).ToString());
+
+            sb.AppendLine("# HELP basalt_trie_prune_last_height Block height of the last sweep.");
+            sb.AppendLine("# TYPE basalt_trie_prune_last_height gauge");
+            sb.Append("basalt_trie_prune_last_height ").AppendLine(Interlocked.Read(ref _triePruneLastHeight).ToString());
 
             return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
         }

@@ -56,5 +56,22 @@ jobs:
       - name: Pack Generators.Json
         run: dotnet pack src/generators/Basalt.Generators.Json/Basalt.Generators.Json.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
 
+      # Compliance stack consumed by external verifiers (e.g. Trilith.KeyGate). Execution-free closure:
+      # Core, Codec, Crypto, Confidentiality, Compliance.
+      - name: Pack Core
+        run: dotnet pack src/core/Basalt.Core/Basalt.Core.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
+      - name: Pack Codec
+        run: dotnet pack src/core/Basalt.Codec/Basalt.Codec.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
+      - name: Pack Crypto
+        run: dotnet pack src/core/Basalt.Crypto/Basalt.Crypto.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
+      - name: Pack Confidentiality
+        run: dotnet pack src/confidentiality/Basalt.Confidentiality/Basalt.Confidentiality.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
+      - name: Pack Compliance
+        run: dotnet pack src/compliance/Basalt.Compliance/Basalt.Compliance.csproj -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.VERSION }} -o ./nupkgs
+
       - name: Publish to NuGet
         run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

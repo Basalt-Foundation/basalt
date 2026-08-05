@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Crypto</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Basalt cryptographic primitives: BLAKE3, Ed25519 (NSec), Argon2, and BLS12-381 (blst).</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Basalt.Core/Basalt.Core.csproj" />

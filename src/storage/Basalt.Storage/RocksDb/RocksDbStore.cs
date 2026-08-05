@@ -46,6 +46,15 @@ public sealed class RocksDbStore : IDisposable
             .SetCreateMissingColumnFamilies(true)
             .SetMaxBackgroundCompactions(compactionThreads)
             .SetMaxBackgroundFlushes(1)
+            // Bounds the write-ahead log. RocksDB cannot delete a WAL file while any column family
+            // still holds data written in it, and metadata, block_index, state, staking and default
+            // each take a few bytes per block. None of them ever fills a 16MB buffer, so none ever
+            // flushes, so every WAL file since the node started is pinned. A soak measured 713MB of WAL
+            // against 45MB of real data, growing about 14KB per block and never falling.
+            //
+            // Setting a ceiling is the mechanism for exactly this: once total WAL passes it, RocksDB
+            // flushes whichever column families are holding the oldest files so they can be dropped.
+            .SetMaxTotalWalSize(128UL * 1024 * 1024)
             .IncreaseParallelism(Math.Min(cores, 4));
 
         // M-01: Per-CF options tuned for each access pattern.
@@ -187,6 +196,23 @@ public sealed class RocksDbStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Opens a point-in-time <see cref="SnapshotView"/> of the store. Reads through the returned view
+    /// see a single consistent version of the database regardless of concurrent writes — this is what
+    /// lets a trie prune sweep mark reachability and enumerate candidates over the <b>same</b> view
+    /// (guard: single pinned snapshot for mark + enumerate). Dispose the view to release the snapshot.
+    /// </summary>
+    public SnapshotView CreateSnapshotView() => new(_db, _columnFamilies);
+
+    /// <summary>
+    /// Compacts an entire column family, reclaiming disk space occupied by deletion tombstones and
+    /// obsolete versions. Synchronous and potentially slow (proportional to CF size) — callers MUST run
+    /// this <b>outside</b> any consensus/state lock. Used after a trie prune sweep to actually shrink
+    /// <c>trie_nodes</c> on disk (a bare <see cref="Delete"/> only writes a tombstone).
+    /// </summary>
+    public void CompactColumnFamily(string columnFamily)
+        => _db.CompactRange((byte[]?)null, (byte[]?)null, _columnFamilies[columnFamily]);
+
     public void Dispose()
     {
         _db.Dispose();
@@ -196,13 +222,52 @@ public sealed class RocksDbStore : IDisposable
 }
 
 /// <summary>
+/// A point-in-time, read-only view of a <see cref="RocksDbStore"/> pinned to a RocksDB snapshot.
+/// All reads see the database as of the moment the view was created; concurrent writes are invisible.
+/// Not thread-safe (the underlying iterator/read-options are shared); use from one thread.
+/// </summary>
+public sealed class SnapshotView : IDisposable
+{
+    private readonly RocksDbSharp.RocksDb _db;
+    private readonly Dictionary<string, ColumnFamilyHandle> _columnFamilies;
+    private readonly Snapshot _snapshot;
+    private readonly ReadOptions _readOptions;
+
+    internal SnapshotView(RocksDbSharp.RocksDb db, Dictionary<string, ColumnFamilyHandle> columnFamilies)
+    {
+        _db = db;
+        _columnFamilies = columnFamilies;
+        _snapshot = db.CreateSnapshot();
+        _readOptions = new ReadOptions().SetSnapshot(_snapshot);
+    }
+
+    public byte[]? Get(string columnFamily, ReadOnlySpan<byte> key)
+        => _db.Get(key.ToArray(), _columnFamilies[columnFamily], _readOptions);
+
+    /// <summary>Iterates all keys in a column family as of this snapshot.</summary>
+    public IEnumerable<(byte[] Key, byte[] Value)> Iterate(string columnFamily)
+    {
+        using var iterator = _db.NewIterator(_columnFamilies[columnFamily], _readOptions);
+        iterator.SeekToFirst();
+        while (iterator.Valid())
+        {
+            yield return (iterator.Key(), iterator.Value());
+            iterator.Next();
+        }
+    }
+
+    public void Dispose() => _snapshot.Dispose();
+}
+
+/// <summary>
 /// Scoped write batch for atomic multi-key writes.
 /// </summary>
 /// <remarks>
-/// <para><b>Important (H-03):</b> This type does <b>not</b> auto-commit on <see cref="Dispose"/>.
+/// <para><b>Important (B3/H-03):</b> This type does <b>not</b> auto-commit on <see cref="Dispose"/>.
 /// Callers must explicitly call <see cref="Commit"/> before the scope ends.
-/// If <c>Dispose()</c> is called with pending (uncommitted) operations, a warning is logged
-/// via <see cref="Console.Error"/> to make the silent drop detectable.</para>
+/// If <c>Dispose()</c> is called with pending (uncommitted) operations, it <b>throws</b>
+/// <see cref="InvalidOperationException"/> so the silent data-loss cannot go unnoticed
+/// (the native batch is still disposed first, so there is no resource leak).</para>
 /// </remarks>
 public sealed class WriteBatchScope : IDisposable
 {

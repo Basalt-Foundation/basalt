@@ -77,8 +77,13 @@ public static class Context
 
     /// <summary>
     /// Emit a contract event.
+    ///
+    /// The <see cref="IBasaltEvent"/> constraint is what guarantees the event reaches a receipt with its
+    /// fields. The generator implements it for every type marked <see cref="BasaltEventAttribute"/>, so
+    /// the constraint costs nothing to satisfy and makes an unencodable event a compile error here
+    /// rather than an empty log nobody notices.
     /// </summary>
-    public static void Emit<TEvent>(TEvent evt) where TEvent : class
+    public static void Emit<TEvent>(TEvent evt) where TEvent : class, IBasaltEvent
     {
         EventEmitted?.Invoke(typeof(TEvent).Name, evt);
     }
@@ -86,7 +91,7 @@ public static class Context
     /// <summary>
     /// Event handler for emitted events (set by the runtime).
     /// </summary>
-    public static Action<string, object>? EventEmitted { get; set; }
+    public static Action<string, IBasaltEvent>? EventEmitted { get; set; }
 
     // ---- Native Transfer ----
 
@@ -182,7 +187,13 @@ public static class Context
             TxValue = UInt256.Zero; // Cross-contract calls don't forward value by default
 
             var result = CrossContractCallHandler!(targetAddress, methodName, args);
-            return result is T typed ? typed : default!;
+
+            // The production runtime hands back the callee's encoded return data, since it dispatched
+            // through the generated selector table and never had a typed value to give. The SDK test
+            // host calls the method directly and does, so both shapes are accepted.
+            return result is EncodedCallResult encoded ? encoded.Decode<T>()
+                 : result is T typed ? typed
+                 : default!;
         }
         finally
         {
@@ -212,6 +223,69 @@ public static class Context
     }
 
     /// <summary>
+    /// Delegate for cross-contract calls whose arguments are already encoded. Set by the runtime/test host.
+    /// </summary>
+    public static Func<byte[], string, byte[], object?>? EncodedCrossContractCallHandler { get; set; }
+
+    /// <summary>
+    /// Call another contract with arguments that are already encoded.
+    ///
+    /// This exists for callers that had to store a call before making it, governance being the one that
+    /// matters: a proposal is written now and executed days later, and there is nowhere in contract
+    /// storage to keep a live <c>object?[]</c> in the meantime. Encoded bytes survive the wait, and they
+    /// have the useful side effect that what voters approved is exactly what executes.
+    /// </summary>
+    public static void CallContractEncoded(byte[] targetAddress, string methodName, byte[] encodedArgs)
+    {
+        Require(CallDepth < MaxCallDepth, "Max call depth exceeded");
+
+        var targetKey = Convert.ToHexString(targetAddress);
+        Require(!ReentrancyGuard.Contains(targetKey), "Reentrancy detected");
+        Require(EncodedCrossContractCallHandler != null, "Cross-contract calls not available");
+
+        var previousCaller = Caller;
+        var previousSelf = Self;
+        var previousDepth = CallDepth;
+        var previousTxValue = TxValue;
+        var previousEventEmitted = EventEmitted;
+        var previousNativeTransferHandler = NativeTransferHandler;
+
+        var selfKey = Convert.ToHexString(Self);
+        var previousIsStaticCall = IsStaticCall;
+
+        try
+        {
+            if (ActiveCallers.ContainsKey(targetKey))
+                IsStaticCall = true;
+
+            ActiveCallers[selfKey] = ActiveCallers.GetValueOrDefault(selfKey) + 1;
+            ReentrancyGuard.Add(targetKey);
+            CallDepth++;
+            Caller = Self;
+            Self = targetAddress;
+            TxValue = UInt256.Zero;
+
+            EncodedCrossContractCallHandler!(targetAddress, methodName, encodedArgs);
+        }
+        finally
+        {
+            var count = ActiveCallers.GetValueOrDefault(selfKey);
+            if (count <= 1)
+                ActiveCallers.Remove(selfKey);
+            else
+                ActiveCallers[selfKey] = count - 1;
+            ReentrancyGuard.Remove(targetKey);
+            IsStaticCall = previousIsStaticCall;
+            CallDepth = previousDepth;
+            Caller = previousCaller;
+            Self = previousSelf;
+            TxValue = previousTxValue;
+            EventEmitted = previousEventEmitted;
+            NativeTransferHandler = previousNativeTransferHandler;
+        }
+    }
+
+    /// <summary>
     /// Reset all context state (used between test runs).
     /// </summary>
     public static void Reset()
@@ -231,6 +305,7 @@ public static class Context
         EventEmitted = null;
         NativeTransferHandler = null;
         CrossContractCallHandler = null;
+        EncodedCrossContractCallHandler = null;
     }
 }
 

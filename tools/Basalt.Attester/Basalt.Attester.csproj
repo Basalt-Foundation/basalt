@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>basalt-attester</AssemblyName>
+    <RootNamespace>Basalt.Attester</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DnsClient" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Signs with the chain's own Transaction.Sign rather than reimplementing the payload layout,
+         which is the one place a second implementation would silently drift. -->
+    <ProjectReference Include="../../src/execution/Basalt.Execution/Basalt.Execution.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Core/Basalt.Core.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Crypto/Basalt.Crypto.csproj" />
+    <ProjectReference Include="../../src/core/Basalt.Codec/Basalt.Codec.csproj" />
+    <ProjectReference Include="../../src/sdk/Basalt.Sdk.Wallet/Basalt.Sdk.Wallet.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The call data builder and the TXT parser are the two places a silent mistake would cost a real
+         domain owner their name, so the tests reach them directly rather than through the network. -->
+    <InternalsVisibleTo Include="Basalt.Attester.Tests" />
+  </ItemGroup>
+
+</Project>

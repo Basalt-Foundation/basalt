@@ -46,6 +46,31 @@ public sealed class BlockApplier
     private readonly IStakingPersistence? _stakingPersistence;
     private readonly WebSocketHandler _wsHandler;
     private readonly ILogger _logger;
+    /// <summary>
+    /// Sync-durability hook (H4). Given the just-executed forked state and its new root, persists the
+    /// batch's new trie nodes and returns a fresh disk-backed canonical state at that root. When null
+    /// (in-memory / dev mode) the forked overlay is adopted directly. Without this, synced trie nodes
+    /// stay in memory only, so a node that catches up via sync cannot survive a restart, and its state
+    /// stops persisting (every later consensus write also lands in the in-memory overlay).
+    /// </summary>
+    private readonly Func<IStateDatabase, Hash256, IStateDatabase>? _syncStateCommit;
+
+    /// <summary>
+    /// Present so replay advances the nullifier retention window the way finalization does.
+    ///
+    /// COMPL-07 prunes nullifiers outside the window once per block, and it was called from exactly one
+    /// place, the consensus callback. Replay never called it, so on a replaying node the set grew without
+    /// bound and its window never applied. A nullifier the proposer had legitimately forgotten would read
+    /// as a duplicate, and a transaction that finalized as success would replay as failure, which is a
+    /// state divergence dressed as a compliance decision.
+    /// </summary>
+    private readonly IComplianceVerifier? _complianceVerifier;
+
+    /// <summary>Points compliance lookups at the state being executed rather than at canonical.</summary>
+    private readonly ExecutionStateRef? _executionState;
+
+    /// <summary>Used to roll consumed nullifiers back with a batch that gets refused.</summary>
+    private readonly Basalt.Compliance.ComplianceEngine? _complianceEngine;
 
     /// <summary>
     /// Fired when an epoch transition occurs. The caller (NodeCoordinator) can hook this
@@ -66,7 +91,11 @@ public sealed class BlockApplier
         StakingState? stakingState,
         IStakingPersistence? stakingPersistence,
         WebSocketHandler wsHandler,
-        ILogger logger)
+        ILogger logger,
+        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null,
+        IComplianceVerifier? complianceVerifier = null,
+        ExecutionStateRef? executionState = null,
+        Basalt.Compliance.ComplianceEngine? complianceEngine = null)
     {
         _chainParams = chainParams;
         _chainManager = chainManager;
@@ -80,6 +109,10 @@ public sealed class BlockApplier
         _stakingPersistence = stakingPersistence;
         _wsHandler = wsHandler;
         _logger = logger;
+        _syncStateCommit = syncStateCommit;
+        _complianceVerifier = complianceVerifier;
+        _executionState = executionState;
+        _complianceEngine = complianceEngine;
     }
 
     /// <summary>
@@ -89,6 +122,9 @@ public sealed class BlockApplier
     /// </summary>
     public List<TransactionReceipt>? ExecuteBlock(Block block, IStateDatabase stateDb)
     {
+        // Before the block's transactions, matching the order finalization uses.
+        _complianceVerifier?.ResetNullifiers(block.Number);
+
         List<TransactionReceipt>? receipts = null;
 
         if (block.Transactions.Count > 0)
@@ -100,6 +136,15 @@ public sealed class BlockApplier
                 receipts.Add(receipt);
             }
         }
+
+        // Materialise this block's state before moving to the next.
+        //
+        // Computing the root is also what folds each contract's storage root into its account, and the
+        // batch path used to defer that to the end of the batch while the live path did it per block.
+        // The two then landed on different states from the same blocks, so a node replaying history
+        // refused at its first batch and could never join. Folding here makes both paths agree by
+        // construction rather than by coincidence.
+        stateDb.ComputeStateRoot();
 
         // Run DEX settlement (TWAP carry-forward + limit order matching)
         if (_blockBuilder != null)
@@ -127,6 +172,50 @@ public sealed class BlockApplier
         var receipts = ExecuteBlock(block, stateDb);
         if (receipts != null)
             block.Receipts = receipts;
+
+        // Materialise the post-block state root.
+        //
+        // This is not just a check. ComputeStateRoot is what flushes pending storage-trie changes back
+        // into account states and writes the resulting nodes, including the root itself. Without it the
+        // applying node never creates a node for this block's state root: the header carries the root the
+        // proposer computed, and the applier simply never materialises it. Historical state in the
+        // retention window was therefore not walkable, which is what wedged trie pruning permanently.
+        //
+        // The cost is bounded: TrieStateDb caches the root and returns it directly when nothing has been
+        // written since the last computation, so an empty block pays almost nothing.
+        var computedStateRoot = stateDb.ComputeStateRoot();
+        if (computedStateRoot != block.Header.StateRoot)
+        {
+            // Refused. This used to log and apply the block anyway, on the reasoning that the block was
+            // already BFT-agreed and that refusing would halt production over something never observed.
+            // It was then observed on every block carrying a contract call, and the cause was a stale
+            // account cache rather than anything about the block. With that fixed, the roots agree, and
+            // a node reaching a different state than the header claims has no business serving it.
+            //
+            // Halting is the point. A node that cannot reproduce the state cannot check anyone's work,
+            // and one that continues anyway turns the state root into decoration. The sync path has
+            // always refused; this makes the two paths answer the same anomaly the same way.
+            _logger.LogCritical(
+                "State root divergence at block #{Number}: computed {Computed}, header {Header}. "
+                + "Refusing the block. This node will not advance until the cause is understood.",
+                block.Number, computedStateRoot.ToHexString(), block.Header.StateRoot.ToHexString());
+            MetricsEndpoint.RecordStateRootDivergence();
+
+            // The block was executed before it was checked, so those mutations are already on the state
+            // while the chain stays one block behind them. Shutdown flushes the flat cache, which would
+            // write that mismatch to disk and reload it on the next start: the node would then diverge
+            // again from a state no peer shares, with no way back. The trie on disk is still the one the
+            // last accepted block was checked against, so refusing to persist keeps a restart recoverable.
+            var backing = stateDb is StateDbRef reference ? reference.Inner : stateDb;
+            (backing as FlatStateDb)?.MarkInconsistent();
+
+            return new BlockApplyResult
+            {
+                Success = false,
+                Error = $"State root divergence at block #{block.Number}: computed "
+                        + $"{computedStateRoot.ToHexString()}, header {block.Header.StateRoot.ToHexString()}",
+            };
+        }
 
         // Add to chain
         var result = _chainManager.AddBlock(block);
@@ -231,9 +320,22 @@ public sealed class BlockApplier
         }
 
         var forkedState = stateDbRef.Fork();
+        // Canonical height the fork is based on. Used below to tell a benign consensus/sync race (the
+        // canonical tip advanced into this batch, so the fork re-applies an already-applied prefix) from
+        // a genuine state divergence.
+        var forkBaseHeight = _chainManager.LatestBlockNumber;
         var applied = 0;
 
+        // Compliance resolves verifying keys out of contract storage, and a key registered by an
+        // earlier block in this batch lives on the fork, not on canonical, until phase 3 swaps it.
+        using var _executionScope = _executionState?.Use(forkedState);
+
+        // Nullifiers live on the verifier and not in the fork, so a refused batch would otherwise keep
+        // them consumed and every retry would replay as a duplicate.
+        var nullifierSnapshot = _complianceEngine?.SnapshotNullifiers();
+
         // Phase 1: Execute all blocks on forked state
+        var phase1Complete = true;
         foreach (var (block, raw, bitmap) in blocks)
         {
             try
@@ -245,8 +347,54 @@ public sealed class BlockApplier
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to execute synced block #{Number}", block.Number);
+                phase1Complete = false;
                 break;
             }
+        }
+
+        // A block failed to execute mid-batch: the fork holds only a prefix, so do NOT advance the chain
+        // with a partial batch (the old code applied the prefix to the chain index but skipped the state
+        // swap, splitting chain height from state). This is an execution failure, not a divergence, so it
+        // is already logged at Warning above; just abort the batch.
+        if (!phase1Complete)
+        {
+            _complianceEngine?.RestoreNullifiers(nullifierSnapshot);
+            return 0;
+        }
+
+        // Phase 1.5: State-root gate (soundness). Verify our recomputed state matches the finalized chain
+        // BEFORE advancing the chain. The replay path used the single-arg AddBlock, so ChainManager's
+        // state-root check (which only fires when a computed root is supplied) never ran on sync — any
+        // execution divergence was silently accepted, forking the node off canonical. Checking here makes
+        // the batch atomic: a mismatch aborts with the node still at its previous canonical state, rather
+        // than advancing the chain (Phase 2) without swapping the state (Phase 3).
+        var computedRoot = forkedState.ComputeStateRoot();
+        var expectedRoot = blocks[^1].Block.Header.StateRoot;
+        if (computedRoot != expectedRoot)
+        {
+            if (firstBlock.Number <= forkBaseHeight)
+            {
+                // Benign race: consensus finalized part of this batch while we synced, so re-executing the
+                // already-applied prefix on the fork double-applies it and the root no longer matches.
+                // Self-corrects on the next poll with a clean forward batch. Not a divergence.
+                _logger.LogInformation(
+                    "Sync batch ending #{Height} superseded by consensus (root mismatch from re-applied " +
+                    "prefix); retrying with a forward batch.", blocks[^1].Block.Number);
+            }
+            else
+            {
+                _logger.LogCritical(
+                    "Sync state-root divergence at batch ending #{Height}: expected header root {Expected}, " +
+                    "computed {Computed}. Refusing the batch; node stays at #{Current} (no chain advance).",
+                    blocks[^1].Block.Number, expectedRoot.ToHexString(), computedRoot.ToHexString(),
+                    _chainManager.LatestBlockNumber);
+            }
+
+            // The fork is discarded here, so the nullifiers consumed on it go back too. Both the benign
+            // race and the real divergence retry, and a retry that saw its own proofs as replays would
+            // never succeed.
+            _complianceEngine?.RestoreNullifiers(nullifierSnapshot);
+            return 0;
         }
 
         // Phase 2: Add executed blocks to chain and persist
@@ -305,7 +453,19 @@ public sealed class BlockApplier
             forkedState.ClearDirtyTracking();
             forkedState.CompactDeletedSets();
 
-            stateDbRef.Swap(forkedState);
+            if (_syncStateCommit != null)
+            {
+                // H4: the batch's new trie nodes currently live only in the in-memory fork overlay.
+                // Persist them and adopt a fresh disk-backed canonical state at the new root, so a
+                // synced node survives a restart and does not accumulate an unbounded overlay stack
+                // (which would also stop every subsequent consensus write from persisting).
+                // Reuse the root already computed and verified by the Phase 1.5 gate above.
+                stateDbRef.Swap(_syncStateCommit(forkedState, computedRoot));
+            }
+            else
+            {
+                stateDbRef.Swap(forkedState);
+            }
             _logger.LogInformation("Synced {Count} blocks, now at #{Height}",
                 newlyApplied, _chainManager.LatestBlockNumber);
         }

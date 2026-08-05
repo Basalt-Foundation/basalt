@@ -6,6 +6,10 @@
   <ItemGroup>
     <ProjectReference Include="../../src/sdk/Basalt.Sdk.Contracts/Basalt.Sdk.Contracts.csproj" />
     <ProjectReference Include="../../src/sdk/Basalt.Sdk.Testing/Basalt.Sdk.Testing.csproj" />
+    <!-- So a test can declare a [BasaltEvent] type and get its encoder the same way a contract author
+         does, rather than hand-writing one that could drift from what the generator emits. -->
+    <ProjectReference Include="../../src/generators/Basalt.Generators.Contracts/Basalt.Generators.Contracts.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

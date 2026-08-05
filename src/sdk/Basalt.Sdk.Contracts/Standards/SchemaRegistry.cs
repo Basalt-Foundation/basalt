@@ -117,7 +117,7 @@ public partial class SchemaRegistry
 }
 
 [BasaltEvent]
-public class SchemaRegisteredEvent
+public partial class SchemaRegisteredEvent
 {
     [Indexed] public byte[] SchemaId { get; set; } = null!;
     [Indexed] public byte[] Creator { get; set; } = null!;
@@ -125,7 +125,7 @@ public class SchemaRegisteredEvent
 }
 
 [BasaltEvent]
-public class VerificationKeyUpdatedEvent
+public partial class VerificationKeyUpdatedEvent
 {
     [Indexed] public byte[] SchemaId { get; set; } = null!;
     [Indexed] public byte[] UpdatedBy { get; set; } = null!;

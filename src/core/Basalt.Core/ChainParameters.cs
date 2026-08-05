@@ -1,12 +1,24 @@
 namespace Basalt.Core;
 
 /// <summary>
-/// Immutable chain configuration parameters.
+/// Immutable chain configuration parameters. A record so callers can derive a variant with a single
+/// overridden field via <c>with</c> (e.g. enabling trie pruning from an environment toggle at startup).
 /// </summary>
-public sealed class ChainParameters
+public sealed record ChainParameters
 {
     /// <summary>Chain ID for replay protection.</summary>
     public required uint ChainId { get; init; }
+
+    /// <summary>Well-known chain id of the public incentivized testnet.</summary>
+    public const uint IncentivizedTestnetChainId = 4242;
+
+    /// <summary>
+    /// Whether this is a public network, subject to the stricter startup guards (explicit faucet key, no
+    /// debug CORS, required data dir and validator key). True for mainnet (1), the built-in testnet (2), and
+    /// the public incentivized testnet (4242). Private devnets (e.g. 31337) are exempt. Without this, a
+    /// public testnet on a chain id above 2 would silently run with devnet-relaxed guards.
+    /// </summary>
+    public bool IsPublicNetwork => ChainId is 1 or 2 or IncentivizedTestnetChainId;
 
     /// <summary>Human-readable network name.</summary>
     public required string NetworkName { get; init; }
@@ -158,6 +170,35 @@ public sealed class ChainParameters
     /// <summary>Protocol version.</summary>
     public uint ProtocolVersion { get; init; } = 1;
 
+    // ── State-trie pruning (Phase 1.6) ──
+
+    /// <summary>
+    /// Enables the background trie prune sweep that bounds <c>trie_nodes</c> disk growth. Off by default
+    /// because it is consensus-critical and is validated by the disk-flattening soak before being turned
+    /// on. When off, the node never sweeps and relies on the testnet reset escape hatch.
+    /// </summary>
+    public bool EnableTriePruning { get; init; } = false;
+
+    /// <summary>
+    /// Number of recent canonical blocks whose state roots a prune sweep retains. Must be at least the
+    /// fork rollback depth (1000) so any legal rollback re-roots onto a state whose nodes still exist.
+    /// </summary>
+    public ulong TriePruneWindowSize { get; init; } = 1000;
+
+    /// <summary>Run a prune sweep every this many finalized blocks. Default 1000 (one epoch).</summary>
+    public uint TriePruneIntervalBlocks { get; init; } = 1000;
+
+    /// <summary>
+    /// Fraction of scanned nodes a single sweep may delete before it aborts as implausible (guard 4).
+    ///
+    /// The default is deliberately strict: on a node that has pruned all along, a sweep deleting nearly
+    /// everything means the reachability mark is broken, and refusing to sweep is the only safe answer.
+    /// It has to be raisable because that reading is wrong in one legitimate case: the first sweep on a
+    /// node with a long unpruned history really does delete almost everything, and correctly so. Raise it
+    /// only when you know that is the situation, and put it back afterwards.
+    /// </summary>
+    public double TriePruneMaxDeleteFraction { get; init; } = 0.95;
+
     /// <summary>
     /// Validates that all chain parameters are within acceptable ranges.
     /// Should be called at node startup to catch misconfigurations early.
@@ -174,6 +215,16 @@ public sealed class ChainParameters
             throw new InvalidOperationException("EpochLength must be greater than zero.");
         if (ValidatorSetSize == 0)
             throw new InvalidOperationException("ValidatorSetSize must be greater than zero.");
+        if (EnableTriePruning)
+        {
+            if (TriePruneIntervalBlocks == 0)
+                throw new InvalidOperationException("TriePruneIntervalBlocks must be greater than zero when pruning is enabled.");
+            if (TriePruneMaxDeleteFraction is <= 0 or > 1)
+                throw new InvalidOperationException("TriePruneMaxDeleteFraction must be greater than zero and at most 1.");
+            if (TriePruneWindowSize < 1000)
+                throw new InvalidOperationException(
+                    $"TriePruneWindowSize ({TriePruneWindowSize}) must be at least the fork rollback depth (1000).");
+        }
         // MEDIUM-02: Consensus vote bitmap is ulong (64 bits), so >64 validators silently
         // corrupts quorum detection. Enforce at validation time.
         if (ValidatorSetSize > MaxValidatorSetSize)
@@ -188,9 +239,9 @@ public sealed class ChainParameters
             throw new InvalidOperationException("MaxTransactionsPerBlock must be greater than zero.");
         if (string.IsNullOrEmpty(NetworkName))
             throw new InvalidOperationException("NetworkName must not be empty.");
-        if (ChainId <= 2 && DexAdminAddress == null)
+        if (IsPublicNetwork && DexAdminAddress == null)
             throw new InvalidOperationException(
-                "DexAdminAddress must be set for mainnet/testnet. DEX governance cannot function without an admin.");
+                "DexAdminAddress must be set for a public network. DEX governance cannot function without an admin.");
     }
 
     private static Address MakeDexGovernanceAddress()
@@ -297,6 +348,24 @@ public sealed class ChainParameters
             },
             2 => new ChainParameters
             {
+                ChainId = chainId,
+                NetworkName = networkName,
+                BlockTimeMs = 2000,
+                InitialBaseFee = new UInt256(100_000_000),
+                ValidatorSetSize = 32,
+                MinValidatorStake = UInt256.Parse("10000000000000000000000"),
+                EpochLength = 500,
+                UnbondingPeriod = 43_200,
+                InactivityThresholdPercent = 50,
+                NullifierWindowBlocks = 128,
+                DexAdminAddress = MakeDexGovernanceAddress(),
+                TwapWindowBlocks = 3600,
+                MaxPoolCreationsPerBlock = 20,
+            },
+            IncentivizedTestnetChainId => new ChainParameters
+            {
+                // Public incentivized testnet: testnet-scale parameters, and a DexAdminAddress so it passes
+                // the public-network validation (IsPublicNetwork requires one).
                 ChainId = chainId,
                 NetworkName = networkName,
                 BlockTimeMs = 2000,

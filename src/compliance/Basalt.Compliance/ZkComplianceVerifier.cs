@@ -37,6 +37,30 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     public int NullifierCount { get { lock (_lock) return _usedNullifiers.Count; } }
 
     /// <summary>
+    /// Snapshots the consumed nullifiers so a batch that is discarded does not leave them consumed.
+    ///
+    /// Nullifiers live here and not inside the state fork a sync batch executes on, so a batch refused
+    /// at the state-root gate would roll back its state and keep its nullifiers. The retry would then
+    /// see every proof in that batch as a replay and fail forever. Taking a snapshot before the batch
+    /// and restoring it on failure is what makes the two roll back together.
+    /// </summary>
+    public IReadOnlyDictionary<Hash256, ulong> SnapshotNullifiers()
+    {
+        lock (_lock) return new Dictionary<Hash256, ulong>(_usedNullifiers);
+    }
+
+    /// <summary>Restores a snapshot taken by <see cref="SnapshotNullifiers"/>.</summary>
+    public void RestoreNullifiers(IReadOnlyDictionary<Hash256, ulong> snapshot)
+    {
+        lock (_lock)
+        {
+            _usedNullifiers.Clear();
+            foreach (var (nullifier, block) in snapshot)
+                _usedNullifiers[nullifier] = block;
+        }
+    }
+
+    /// <summary>
     /// Add a nullifier directly for a specific block number (testing only).
     /// </summary>
     public void TrackNullifier(Hash256 nullifier, ulong blockNumber)
@@ -122,11 +146,13 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
     }
 
     /// <summary>
-    /// MED-03: blockTimestamp is accepted for future use. Currently, credential expiry is enforced
-    /// within the Groth16 circuit itself — the proof mathematically guarantees the credential
-    /// has not expired at the time of proving. Out-of-circuit timestamp validation would require
-    /// a standardized public input layout (e.g., fixed index for expiry field), which is
-    /// circuit-dependent and not yet standardized across schema types.
+    /// COMPL-C03: for proofs using the standardized circuit-v1 public-input layout
+    /// (<see cref="CircuitV1Layout"/>), the verifier enforces credential expiry against the block
+    /// timestamp (which the circuit cannot know), issuer tier against the schema's minimum, and that the
+    /// nullifier public input equals the tracked <c>ComplianceProof.Nullifier</c>. These checks are
+    /// meaningful because the circuit binds expiry/tier/issuerRoot to the credential (a prover cannot
+    /// forge them). Proofs whose input count is not the v1 layout are verified by the pairing alone
+    /// (their VK/circuit defines their own semantics).
     /// </summary>
     private ComplianceCheckOutcome VerifySingleProof(
         ComplianceProof proof,
@@ -202,6 +228,57 @@ public sealed class ZkComplianceVerifier : IComplianceVerifier
             return ComplianceCheckOutcome.Fail(
                 BasaltErrorCode.ComplianceProofInvalid,
                 "Groth16 proof verification failed");
+        }
+
+        // 7. COMPL-C03: enforce the credential's expiry, tier, and nullifier binding for the standardized
+        // v2 request-bound public-input layout. The expiry/tier/nullifier indices are identical to v1; v2
+        // simply appends cidField and recipientKeyHash (checked by the consumer that knows their semantics,
+        // e.g. Trilith.KeyGate). Skipped for other layouts (their VK/circuit defines their semantics).
+        if (inputCount == CircuitV2Layout.PublicInputCount)
+        {
+            ulong expirySeconds, issuerTier;
+            try
+            {
+                expirySeconds = CircuitV2Layout.ReadUInt64(publicInputs[CircuitV2Layout.Expiry]);
+                issuerTier = CircuitV2Layout.ReadUInt64(publicInputs[CircuitV2Layout.IssuerTier]);
+            }
+            catch (Exception ex)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid, $"Malformed v2 public inputs: {ex.Message}");
+            }
+
+            // Block timestamps are milliseconds; credential expiry is unix seconds.
+            var nowSeconds = blockTimestamp / 1000;
+            if (nowSeconds > 0 && expirySeconds < (ulong)nowSeconds)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Credential expired: expiry {expirySeconds}s is before block time {nowSeconds}s");
+            }
+
+            if (issuerTier < requirement.MinIssuerTier)
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    $"Issuer tier {issuerTier} is below the required {requirement.MinIssuerTier}");
+            }
+
+            // Bind the tracked nullifier to the one the circuit proved (32-byte big-endian). Otherwise a
+            // prover could carry a fresh ComplianceProof.Nullifier while the circuit reuses an old one,
+            // bypassing replay protection.
+            Span<byte> provenNullifier = stackalloc byte[Hash256.Size];
+            proof.Nullifier.WriteTo(provenNullifier);
+            if (!provenNullifier.SequenceEqual(publicInputs[CircuitV2Layout.Nullifier]))
+            {
+                lock (_lock) { _usedNullifiers.Remove(proof.Nullifier); }
+                return ComplianceCheckOutcome.Fail(
+                    BasaltErrorCode.ComplianceProofInvalid,
+                    "Nullifier public input does not match the proof nullifier");
+            }
         }
 
         // Nullifier already consumed in step 2 — no further action needed

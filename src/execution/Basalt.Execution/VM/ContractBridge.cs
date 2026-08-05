@@ -16,6 +16,18 @@ namespace Basalt.Execution.VM;
 /// </summary>
 public static class ContractBridge
 {
+    /// <summary>Where a contract's code lives in its own storage. Must match ManagedContractRuntime.</summary>
+    private static readonly Hash256 ContractCodeKey = MakeCodeKey();
+
+    private static Hash256 MakeCodeKey()
+    {
+        Span<byte> key = stackalloc byte[32];
+        key.Clear();
+        key[0] = 0xFF;
+        key[1] = 0x01;
+        return new Hash256(key);
+    }
+
     // C-5: Concurrency guard — only one contract execution at a time.
     // Uses a Monitor with timeout to serialize concurrent callers rather than rejecting them,
     // since genesis deployment and test execution may overlap.
@@ -26,7 +38,7 @@ public static class ContractBridge
     /// Returns an IDisposable that restores previous state on dispose.
     /// C-5: Serializes concurrent access to protect static Context/ContractStorage.
     /// </summary>
-    public static IDisposable Setup(VmExecutionContext ctx, HostInterface host)
+    public static IDisposable Setup(VmExecutionContext ctx, HostInterface host, IContractRuntime? runtime = null)
     {
         // C-5: Serialize SDK contract execution (static Context is not thread-safe)
         // B5: Reduced timeout from 30s to 10s (5× block time) — sufficient for genesis;
@@ -50,6 +62,8 @@ public static class ContractBridge
         scope.PreviousIsDeploying = Context.IsDeploying;
         scope.PreviousEventEmitted = Context.EventEmitted;
         scope.PreviousNativeTransferHandler = Context.NativeTransferHandler;
+        scope.PreviousCrossContractCallHandler = Context.CrossContractCallHandler;
+        scope.PreviousEncodedCrossContractCallHandler = Context.EncodedCrossContractCallHandler;
         scope.PreviousProvider = ContractStorage.Provider;
 
         // Wire context from VmExecutionContext
@@ -67,10 +81,14 @@ public static class ContractBridge
         Context.IsDeploying = false; // Default to false; Deploy() sets true after Setup()
 
         // Wire event handler
-        Context.EventEmitted = (eventName, eventData) =>
+        //
+        // The event encodes itself, so the payload that reaches the receipt is the one the contract
+        // declared. This used to log the type name and discard every field, which meant a transfer
+        // recorded that a transfer had happened without saying who received what.
+        Context.EventEmitted = (eventName, evt) =>
         {
             var sig = Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(eventName));
-            host.EmitEvent(sig, [], System.Text.Encoding.UTF8.GetBytes(eventName));
+            host.EmitEvent(sig, evt.ToLogTopics(), evt.ToLogData());
         };
 
         // Wire native transfer
@@ -112,6 +130,65 @@ public static class ContractBridge
             });
         };
 
+        // Wire cross-contract calls
+        //
+        // Without this a contract cannot call another contract at all, and nothing in the SDK test suite
+        // would say so, because the SDK test host installs a handler of its own that invokes the target's
+        // C# method directly. Every composed contract passes its unit tests and reverts on a validator.
+        //
+        // State is deliberately not forked here. The whole transaction already runs on a fork that the
+        // executor merges only if the outermost call succeeded, so a revert anywhere in the chain of
+        // calls discards everything, and a second fork per call would only add a merge that has to be
+        // right rather than isolation that is already there.
+        EncodedCallResult Invoke(byte[] targetAddress, byte[] callData)
+        {
+            ctx.GasMeter.Consume(GasTable.Call);
+
+            var target = new Address(targetAddress);
+            var targetCode = ctx.StateDb.GetStorage(target, ContractCodeKey);
+            if (targetCode is null || targetCode.Length == 0)
+                throw new ContractRevertException(
+                    $"Cross-contract call target has no code: 0x{Convert.ToHexString(targetAddress).ToLowerInvariant()}");
+
+            var nested = new VmExecutionContext
+            {
+                Caller = ctx.ContractAddress,
+                ContractAddress = target,
+                Value = UInt256.Zero, // value is not forwarded, matching Context.CallContract
+                BlockTimestamp = ctx.BlockTimestamp,
+                BlockNumber = ctx.BlockNumber,
+                BlockProposer = ctx.BlockProposer,
+                ChainId = ctx.ChainId,
+                GasMeter = ctx.GasMeter, // one budget for the whole call tree, not one per hop
+                StateDb = ctx.StateDb,
+                CallDepth = ctx.CallDepth + 1,
+            };
+
+            var result = runtime!.Execute(targetCode, callData, nested);
+
+            if (!result.Success)
+                throw new ContractRevertException(result.ErrorMessage ?? "Cross-contract call failed");
+
+            // The callee's events belong to this transaction. Dropping them would make a composed call
+            // look like it did half of what it did to anyone reading receipts.
+            foreach (var log in nested.EmittedLogs)
+                ctx.EmittedLogs.Add(log);
+
+            return new EncodedCallResult(result.ReturnData ?? []);
+        }
+
+        Context.CrossContractCallHandler = runtime is null
+            ? null
+            : (targetAddress, methodName, args)
+                => Invoke(targetAddress, CrossContractArgumentEncoder.Encode(methodName, args));
+
+        // The same call for arguments encoded before the call was made. Governance writes a proposal now
+        // and executes it days later, and an object[] does not survive that wait.
+        Context.EncodedCrossContractCallHandler = runtime is null
+            ? null
+            : (targetAddress, methodName, encodedArgs)
+                => Invoke(targetAddress, CrossContractArgumentEncoder.WithSelector(methodName, encodedArgs));
+
         // Wire storage provider
         ContractStorage.SetProvider(new HostStorageProvider(host));
 
@@ -129,8 +206,10 @@ public static class ContractBridge
         public ulong PreviousGasRemaining;
         public int PreviousCallDepth;
         public bool PreviousIsDeploying;
-        public Action<string, object>? PreviousEventEmitted;
+        public Action<string, IBasaltEvent>? PreviousEventEmitted;
         public Action<byte[], UInt256>? PreviousNativeTransferHandler;
+        public Func<byte[], string, object?[], object?>? PreviousCrossContractCallHandler;
+        public Func<byte[], string, byte[], object?>? PreviousEncodedCrossContractCallHandler;
         public IStorageProvider PreviousProvider = null!;
 
         public void Dispose()
@@ -146,6 +225,8 @@ public static class ContractBridge
             Context.IsDeploying = PreviousIsDeploying;
             Context.EventEmitted = PreviousEventEmitted;
             Context.NativeTransferHandler = PreviousNativeTransferHandler;
+            Context.CrossContractCallHandler = PreviousCrossContractCallHandler;
+            Context.EncodedCrossContractCallHandler = PreviousEncodedCrossContractCallHandler;
             ContractStorage.SetProvider(PreviousProvider);
 
             // C-5: Release the execution lock

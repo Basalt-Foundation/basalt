@@ -35,6 +35,36 @@ services:
       - basalt-testnet
     restart: unless-stopped
 
+  # ─── Caldera DEX (Next.js standalone) ─────────────────────────────
+  #
+  # Lives in its own repository, so the build context points outside this one. Caddy has routed
+  # caldera.basalt.foundation here since the routing commit, with nothing behind it until now: the
+  # hostname answered 502 rather than failing to resolve, which reads as an outage rather than as
+  # something never deployed.
+  #
+  # Both build arguments are NEXT_PUBLIC_, so they are fixed when the image is built and cannot be
+  # changed by restarting the container. The API URL is a container name on purpose: the browser never
+  # uses it, because every REST call goes through the Next rewrite at /api/node, which runs server side.
+  # The WebSocket URL is the public one, because that one the browser does dial itself.
+  caldera:
+    build:
+      context: ${CALDERA_PATH:-../../../caldera}
+      dockerfile: deploy/Dockerfile
+      args:
+        NEXT_PUBLIC_BASALT_WS_URL: wss://testnet.basalt.foundation
+        NEXT_PUBLIC_BASALT_API_URL: http://rpc-0:5000
+    container_name: basalt-caldera
+    networks:
+      - basalt-testnet
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      rpc-0:
+        condition: service_healthy
+
   # ─── Reverse Proxy (routing, CORS, security headers) ───────────────
   caddy:
     image: caddy:2-alpine
@@ -51,6 +81,8 @@ services:
         condition: service_started
       website:
         condition: service_started
+      caldera:
+        condition: service_started
 
   # ─── Validator 0 (Primary RPC endpoint) ────────────────────────────
   validator-0:
@@ -62,6 +94,8 @@ services:
       - BASALT_VALIDATOR_INDEX=0
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_0_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_0_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
+      - BASALT_GENESIS_VALIDATORS=${BASALT_GENESIS_VALIDATORS}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -93,6 +127,8 @@ services:
       - BASALT_VALIDATOR_INDEX=1
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_1_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_1_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
+      - BASALT_GENESIS_VALIDATORS=${BASALT_GENESIS_VALIDATORS}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -118,6 +154,8 @@ services:
       - BASALT_VALIDATOR_INDEX=2
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_2_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_2_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
+      - BASALT_GENESIS_VALIDATORS=${BASALT_GENESIS_VALIDATORS}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -143,6 +181,8 @@ services:
       - BASALT_VALIDATOR_INDEX=3
       - BASALT_VALIDATOR_ADDRESS=${VALIDATOR_3_ADDRESS}
       - BASALT_VALIDATOR_KEY=${VALIDATOR_3_KEY}
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
+      - BASALT_GENESIS_VALIDATORS=${BASALT_GENESIS_VALIDATORS}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000
@@ -167,6 +207,10 @@ services:
     environment:
       - BASALT_MODE=rpc
       - BASALT_SYNC_SOURCE=http://validator-0:5000
+      # Required even here: the public-network guard is in the common startup path, and this node serves
+      # the faucet endpoint that is how testnet users actually get funds.
+      - BASALT_FAUCET_KEY=${BASALT_FAUCET_KEY}
+      - BASALT_GENESIS_VALIDATORS=${BASALT_GENESIS_VALIDATORS}
       - BASALT_NETWORK=basalt-testnet
       - BASALT_CHAIN_ID=4242
       - ASPNETCORE_URLS=http://+:5000

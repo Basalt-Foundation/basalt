@@ -105,7 +105,18 @@ public class GovernanceTests : IDisposable
             _executedCalls.Add((targetHex, method));
             return null;
         };
+
+        // Executable proposals go through the encoded path, since a proposal stores its arguments when
+        // it is written and executes them days later.
+        Context.EncodedCrossContractCallHandler = (targetAddr, method, encodedArgs) =>
+        {
+            _executedCalls.Add((Convert.ToHexString(targetAddr), method));
+            _executedArgs.Add(encodedArgs);
+            return null;
+        };
     }
+
+    private readonly List<byte[]> _executedArgs = new();
 
     /// <summary>
     /// Set stake for a given address in the mock.
@@ -226,7 +237,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec proposal", 10, _targetContract, "DoSomething"));
+            "Exec proposal", 10, _targetContract, "DoSomething", []));
 
         gov.GetProposalType(id).Should().Be("executable");
     }
@@ -238,7 +249,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec type test", 10, _targetContract, "Execute"));
+            "Exec type test", 10, _targetContract, "Execute", []));
 
         gov.GetProposalType(id).Should().Be("executable");
         gov.GetStatus(id).Should().Be("active");
@@ -251,7 +262,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var msg = _host.ExpectRevert(() => gov.CreateExecutableProposal(
-            "Bad proposal", 10, [], "DoSomething"));
+            "Bad proposal", 10, [], "DoSomething", []));
         msg.Should().Contain("target required");
     }
 
@@ -262,7 +273,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
 
         var msg = _host.ExpectRevert(() => gov.CreateExecutableProposal(
-            "Bad proposal", 10, _targetContract, ""));
+            "Bad proposal", 10, _targetContract, "", []));
         msg.Should().Contain("method required");
     }
 
@@ -762,7 +773,7 @@ public class GovernanceTests : IDisposable
         _host.SetCaller(_proposer);
         _host.SetBlockHeight(10);
         var id = _host.Call(() => gov.CreateExecutableProposal(
-            "Exec call", 10, _targetContract, "ActivateFeature"));
+            "Exec call", 10, _targetContract, "ActivateFeature", []));
 
         SetStake(_alice, 10000);
         _host.SetCaller(_alice);
@@ -778,6 +789,35 @@ public class GovernanceTests : IDisposable
 
         _executedCalls.Should().Contain(c =>
             c.TargetHex == Convert.ToHexString(_targetContract) && c.Method == "ActivateFeature");
+    }
+
+    // The arguments have to survive being written into storage now and executed days later. Losing them
+    // is what made every governance-only setter on the name registry unreachable, and it looked exactly
+    // like a proposal that passed and did nothing.
+    [Fact]
+    public void ExecuteProposal_PassesTheArgumentsTheProposalWasWrittenWith()
+    {
+        var gov = CreateGov(quorumBps: 400, timelockDelay: 5);
+        var callArgs = new byte[] { 0x06, 0x67, 0x6F, 0x6F, 0x67, 0x6C, 0x65 }; // "google", length-prefixed
+
+        _host.SetCaller(_proposer);
+        _host.SetBlockHeight(10);
+        var id = _host.Call(() => gov.CreateExecutableProposal(
+            "Reserve google", 10, _targetContract, "ReserveName", callArgs));
+
+        SetStake(_alice, 10000);
+        _host.SetCaller(_alice);
+        _host.SetBlockHeight(15);
+        _host.Call(() => gov.Vote(id, true, DefaultPoolId));
+
+        _host.SetBlockHeight(21);
+        _host.Call(() => gov.QueueProposal(id));
+
+        _executedArgs.Clear();
+        _host.SetBlockHeight(26);
+        _host.Call(() => gov.ExecuteProposal(id));
+
+        _executedArgs.Should().ContainSingle().Which.Should().Equal(callArgs);
     }
 
     [Fact]

@@ -194,7 +194,8 @@ public class ContextTests : IDisposable
     public void Dispose() => _host.Dispose();
 }
 
-public class TestEvent
+[BasaltEvent]
+public partial class TestEvent
 {
     public int Value { get; init; }
 }

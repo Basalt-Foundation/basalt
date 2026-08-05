@@ -34,7 +34,7 @@ public interface IBST721
 /// NFT Transfer event.
 /// </summary>
 [BasaltEvent]
-public sealed class NftTransferEvent
+public sealed partial class NftTransferEvent
 {
     [Indexed] public byte[] From { get; init; } = [];
     [Indexed] public byte[] To { get; init; } = [];
@@ -45,7 +45,7 @@ public sealed class NftTransferEvent
 /// NFT Approval event.
 /// </summary>
 [BasaltEvent]
-public sealed class NftApprovalEvent
+public sealed partial class NftApprovalEvent
 {
     [Indexed] public byte[] Owner { get; init; } = [];
     [Indexed] public byte[] Approved { get; init; } = [];

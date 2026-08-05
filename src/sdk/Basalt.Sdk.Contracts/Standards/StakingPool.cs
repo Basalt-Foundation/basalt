@@ -200,14 +200,14 @@ public partial class StakingPool
 }
 
 [BasaltEvent]
-public class PoolCreatedEvent
+public partial class PoolCreatedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Operator { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class DelegatedEvent
+public partial class DelegatedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;
@@ -215,7 +215,7 @@ public class DelegatedEvent
 }
 
 [BasaltEvent]
-public class UndelegatedEvent
+public partial class UndelegatedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;
@@ -223,7 +223,7 @@ public class UndelegatedEvent
 }
 
 [BasaltEvent]
-public class RewardsClaimedEvent
+public partial class RewardsClaimedEvent
 {
     [Indexed] public ulong PoolId { get; set; }
     [Indexed] public byte[] Delegator { get; set; } = null!;

@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>Basalt.Codec</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Basalt binary codecs and serialization primitives.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Basalt.Core/Basalt.Core.csproj" />

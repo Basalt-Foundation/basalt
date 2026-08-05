@@ -26,4 +26,15 @@
     <Copyright>Copyright (c) 2025-2026 Basalt Foundation</Copyright>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
+
+  <!-- NuGet packaging. Only the durable libraries consumed by external tools (e.g. Trilith.KeyGate) set
+       IsPackable=true; everything else (node, tools, tests) stays unpackable by this default. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <!-- 0.5.0: compliance circuit v2 (request-bound public-input layout, CircuitV2Layout). -->
+    <Version>0.5.0-testnet</Version>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Basalt-Foundation/basalt</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Basalt-Foundation/basalt</PackageProjectUrl>
+  </PropertyGroup>
 </Project>

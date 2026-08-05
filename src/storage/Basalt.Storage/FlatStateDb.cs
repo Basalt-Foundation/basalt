@@ -30,6 +30,12 @@ public sealed class FlatStateDb : IStateDatabase
     private readonly ILogger? _logger;
 
     /// <summary>
+    /// Set when this database has reached a state it cannot vouch for, after which it never persists.
+    /// See <see cref="MarkInconsistent"/>.
+    /// </summary>
+    private bool _inconsistent;
+
+    /// <summary>
     /// Warning threshold for cache size. When either cache exceeds this number
     /// of entries a warning is logged to alert operators about potential memory pressure.
     /// </summary>
@@ -243,9 +249,35 @@ public sealed class FlatStateDb : IStateDatabase
         _trie.DeleteStorage(contract, key);
     }
 
-    public Hash256 ComputeStateRoot()
+    public Hash256 ComputeStateRoot() => FoldStorageRootsIntoAccounts();
+
+    /// <summary>
+    /// Folds each contract's storage root back into its account record and returns the resulting state
+    /// root, dropping any cached account the fold has just superseded.
+    ///
+    /// The fold happens inside the trie, which writes those records itself, so this cache never sees it
+    /// and would keep handing back a storage root from before. Anything rebuilt from it is a
+    /// transaction behind, which cost a block of registrations that reported success and wrote nothing.
+    ///
+    /// Both callers go through here rather than each remembering to invalidate. That is the whole point:
+    /// the first fix did it in ComputeStateRoot only, and Fork had the identical defect and kept it.
+    /// </summary>
+    private Hash256 FoldStorageRootsIntoAccounts()
     {
-        return _trie.ComputeStateRoot();
+        var root = _trie.ComputeStateRoot();
+
+        // Drop exactly the accounts the fold rewrote, which the trie names rather than this class
+        // guessing. Inferring it from the dirty-key set was a standing hazard: that set is cleared per
+        // block by ClearDirtyTracking, so what looked like a safe superset was only ever a superset by
+        // the grace of the order those two calls happen in.
+        //
+        // Dropping rather than updating keeps one owner for the value: the next read reloads whatever the
+        // trie actually holds. Nothing has to remember the drop, because a flush replaces the persisted
+        // account set rather than merging into it, so an entry that is simply gone here is gone there.
+        foreach (var contract in _trie.LastFoldRewrote)
+            _accountCache.Remove(contract);
+
+        return root;
     }
 
     /// <summary>
@@ -290,6 +322,10 @@ public sealed class FlatStateDb : IStateDatabase
         //
         // Account cache IS copied — it's tiny (~50 entries for active accounts) and
         // avoids hundreds of RocksDB trie reads during sync block execution.
+        // Fold first, so the cache this copies no longer holds storage roots the fold has superseded.
+        // Forking the trie would compute the root anyway; doing it here means the copy is taken after.
+        FoldStorageRootsIntoAccounts();
+
         return new FlatStateDb(
             (TrieStateDb)_trie.Fork(),
             new Dictionary<Address, AccountState>(_accountCache));
@@ -353,8 +389,18 @@ public sealed class FlatStateDb : IStateDatabase
     public void FlushToPersistence()
     {
         if (_persistence == null) return;
+        if (_inconsistent)
+        {
+            _logger?.LogWarning(
+                "Not persisting the flat cache: this state was marked inconsistent. The trie on disk is "
+                + "still the one the last accepted block was checked against.");
+            return;
+        }
 
-        _persistence.Flush(_accountCache, _storageCache, _deletedAccounts, _deletedStorage);
+        // The persisted state becomes exactly this cache, with no storage at all. An entry the fold
+        // dropped, or one a freshly swapped-in cache never held, is precisely what this instance can no
+        // longer speak for, so a replacing write is the only kind it can honestly make.
+        _persistence.Flush(_accountCache);
 
         // After flush, compact deletion sets — the persisted store has the deletions
         // applied, and the trie's Delete() also removed the keys from the trie structure.
@@ -373,28 +419,84 @@ public sealed class FlatStateDb : IStateDatabase
     /// This is correct for warm restart where runtime state is fresher, but this method
     /// must be called <b>before</b> any runtime modifications to avoid stale reads.</para>
     /// </remarks>
-    public void LoadFromPersistence()
+    /// <returns>
+    /// How many reloaded accounts were dropped for disagreeing with the trie, and how many persisted
+    /// storage slots were ignored. Either being non-zero means this node was carrying a persisted cache
+    /// the trie had moved past, which is worth an operator knowing about: it is what a state root
+    /// divergence looks like before it becomes one. The caller logs it, because the instance built at
+    /// startup recovery has no logger of its own, and that is exactly why the first version of this went
+    /// unseen.
+    /// </returns>
+    public (int DroppedAccounts, int IgnoredStorageSlots) LoadFromPersistence()
     {
-        if (_persistence == null) return;
+        if (_persistence == null) return (0, 0);
 
         var (accounts, storage) = _persistence.Load();
+
+        // A reloaded account that disagrees with the trie is dropped rather than trusted.
+        //
+        // The cache is a cache: the trie is what the state root is computed from, and a reader that gets
+        // one answer while the hash comes from the other produces a root nobody else can reproduce. The
+        // startup consistency check cannot catch this, because it compares ComputeStateRoot against the
+        // block header and ComputeStateRoot reads the trie alone. Dropping costs one trie read per warm
+        // entry, once, and it also heals a copy that went stale under an older build.
+        var dropped = 0;
+        var total = 0;
         foreach (var (addr, state) in accounts)
-            _accountCache.TryAdd(addr, state);
-        foreach (var (key, value) in storage)
         {
-            if (_storageCache.TryAdd(key, value))
+            total++;
+            var onTrie = _trie.GetAccount(addr);
+            if (!onTrie.HasValue || !SameRecord(onTrie.Value, state))
             {
-                // Maintain per-address index for DeleteAccount support
-                var (contract, slot) = key;
-                if (!_storageSlotsIndex.TryGetValue(contract, out var slots))
-                {
-                    slots = new HashSet<Hash256>();
-                    _storageSlotsIndex[contract] = slots;
-                }
-                slots.Add(slot);
+                dropped++;
+                continue;
             }
+
+            _accountCache.TryAdd(addr, state);
         }
+
+        if (dropped > 0)
+        {
+            _logger?.LogWarning(
+                "Dropped {Dropped} of {Total} reloaded accounts that disagreed with the trie; "
+                + "they will be read from the trie instead.", dropped, total);
+        }
+
+        // Storage is not reloaded, and whatever is on disk is queued for removal on the next flush.
+        //
+        // Validating it the way accounts are validated is not affordable: there can be hundreds of
+        // thousands of slots and each check is a trie read. Trusting it is not an option either, because
+        // a deletion does not survive to the flush that would apply it. DeleteStorage records the slot in
+        // _deletedStorage, the trie forgets it immediately, and CompactDeletedSets runs every block to
+        // keep those sets from growing without bound, so by shutdown there is nothing left to tell the
+        // persisted copy about. Its record stays, and reloading it hands back a value for a slot the trie
+        // says is empty. TWAP prunes storage on every block, so this is not a rare shape.
+        //
+        // What the reload bought was a warm read cache after a restart, which the trie repopulates on
+        // demand anyway. That is a transient cost. Reading a slot the chain deleted is a state root
+        // nobody else computes.
+        var storageOnDisk = storage.Count();
+
+        return (dropped, storageOnDisk);
     }
+
+    /// <summary>
+    /// Declare that this database has reached a state it cannot vouch for, after which it never persists.
+    ///
+    /// A node that refuses a block has already executed it: the mutations are on the state and the chain
+    /// is one block behind them. Persisting that on the way out makes it permanent, and the node reloads
+    /// into a state no peer shares and can never rejoin. Leaving the flat cache alone keeps the trie on
+    /// disk as the last thing that was actually checked against a header, which is recoverable.
+    /// </summary>
+    public void MarkInconsistent() => _inconsistent = true;
+
+    private static bool SameRecord(AccountState a, AccountState b) =>
+        a.Nonce == b.Nonce
+        && a.Balance == b.Balance
+        && a.StorageRoot == b.StorageRoot
+        && a.CodeHash == b.CodeHash
+        && a.AccountType == b.AccountType
+        && a.ComplianceHash == b.ComplianceHash;
 
     /// <summary>
     /// Hard cap for storage cache entries. When exceeded, the cache is cleared to prevent

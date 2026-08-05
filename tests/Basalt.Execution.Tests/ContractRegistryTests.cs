@@ -158,6 +158,16 @@ public class ContractRegistryTests
         registry.IsRegistered(0x0104).Should().BeTrue();  // StakingPool
     }
 
+    [Fact]
+    public void CreateDefault_RegistersTrilithAnchor()
+    {
+        var registry = ContractRegistry.CreateDefault();
+
+        registry.IsRegistered(0x0109).Should().BeTrue();
+        registry.GetName(0x0109).Should().Be("TrilithAnchor");
+        registry.CreateInstance(0x0109, []).Should().NotBeNull();
+    }
+
     // ---- GetName ----
 
     [Fact]

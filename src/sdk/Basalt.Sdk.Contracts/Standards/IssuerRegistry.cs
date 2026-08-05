@@ -303,7 +303,7 @@ public partial class IssuerRegistry
 }
 
 [BasaltEvent]
-public class IssuerRegisteredEvent
+public partial class IssuerRegisteredEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
     public string Name { get; set; } = "";
@@ -311,7 +311,7 @@ public class IssuerRegisteredEvent
 }
 
 [BasaltEvent]
-public class CollateralStakedEvent
+public partial class CollateralStakedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
     public UInt256 Amount { get; set; }
@@ -319,13 +319,13 @@ public class CollateralStakedEvent
 }
 
 [BasaltEvent]
-public class RevocationRootUpdatedEvent
+public partial class RevocationRootUpdatedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class IssuerSlashedEvent
+public partial class IssuerSlashedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
     public string Reason { get; set; } = "";
@@ -333,19 +333,19 @@ public class IssuerSlashedEvent
 }
 
 [BasaltEvent]
-public class IssuerDeactivatedEvent
+public partial class IssuerDeactivatedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class IssuerReactivatedEvent
+public partial class IssuerReactivatedEvent
 {
     [Indexed] public byte[] Issuer { get; set; } = null!;
 }
 
 [BasaltEvent]
-public class AdminTransferredEvent
+public partial class AdminTransferredEvent
 {
     [Indexed] public byte[] OldAdmin { get; set; } = null!;
     [Indexed] public byte[] NewAdmin { get; set; } = null!;

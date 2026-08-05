@@ -63,16 +63,61 @@ try
 
     var chainParams = ChainParameters.FromConfiguration(config.ChainId, config.NetworkName);
 
-    // B4: Refuse BASALT_DEBUG=1 on mainnet/testnet — debug mode enables AllowAnyOrigin CORS
-    var isDebugMode = Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1";
-    if (isDebugMode && chainParams.ChainId <= 2)
+    // Phase 1.6: opt into background trie pruning via env (used by the testnet soak). Off unless set.
+    // BASALT_TRIE_PRUNE_WINDOW / _INTERVAL override the defaults (window must stay >= rollback depth).
+    if (Environment.GetEnvironmentVariable("BASALT_ENABLE_TRIE_PRUNING") == "1")
     {
-        Log.Fatal("BASALT_DEBUG=1 is not allowed on mainnet/testnet. Remove this flag.");
+        var pruneWindow = ulong.TryParse(Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_WINDOW"), out var w)
+            ? w : chainParams.TriePruneWindowSize;
+        var pruneInterval = uint.TryParse(Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_INTERVAL"), out var iv)
+            ? iv : chainParams.TriePruneIntervalBlocks;
+        // Raising this is how an operator says "I know this node has a long unpruned backlog, and a
+        // near-total first sweep is expected", which is the one case where guard 4's reading is wrong.
+        var pruneMaxDelete = double.TryParse(
+            Environment.GetEnvironmentVariable("BASALT_TRIE_PRUNE_MAX_DELETE_FRACTION"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var mdf) ? mdf : chainParams.TriePruneMaxDeleteFraction;
+
+        chainParams = chainParams with
+        {
+            EnableTriePruning = true,
+            TriePruneWindowSize = pruneWindow,
+            TriePruneIntervalBlocks = pruneInterval,
+            TriePruneMaxDeleteFraction = pruneMaxDelete,
+        };
+        // Only a consensus node builds the pruner (NodeCoordinator.SetupBlockProduction), and only a
+        // consensus node runs the sweep loop. Announcing "enabled" on a standalone or RPC node would tell
+        // an operator their archive is reclaiming disk when nothing is, which is the dangerous direction
+        // to be wrong in: the disk fills silently.
+        if (config.IsConsensusMode)
+        {
+            Log.Information("Trie pruning enabled via env: window={Window} blocks, interval={Interval} blocks",
+                pruneWindow, pruneInterval);
+        }
+        else
+        {
+            // A sync node prunes from its own loop (see the RPC setup below), so the only mode left with
+            // no sweeper is a standalone node that never syncs and never produces.
+            if (string.IsNullOrEmpty(config.SyncSource))
+            {
+                Log.Warning(
+                    "BASALT_ENABLE_TRIE_PRUNING is set but this node neither produces nor syncs blocks, so "
+                    + "nothing will prune and trie_nodes will grow without bound.");
+            }
+        }
+    }
+
+    // B4: Refuse BASALT_DEBUG=1 on public networks — debug mode enables AllowAnyOrigin CORS
+    var isDebugMode = Environment.GetEnvironmentVariable("BASALT_DEBUG") == "1";
+    if (isDebugMode && chainParams.IsPublicNetwork)
+    {
+        Log.Fatal("BASALT_DEBUG=1 is not allowed on a public network. Remove this flag.");
         return 1;
     }
 
-    // H7: Mainnet/testnet configuration guards
-    if (chainParams.ChainId <= 2)
+    // H7: Public-network configuration guards (mainnet, built-in testnet, and the incentivized testnet 4242)
+    if (chainParams.IsPublicNetwork)
     {
         if (chainParams.ChainId == 1 && chainParams.NetworkName != "basalt-mainnet")
             throw new InvalidOperationException("ChainId 1 requires network name 'basalt-mainnet'");
@@ -96,10 +141,10 @@ try
     {
         faucetPrivateKey = Convert.FromHexString(faucetKeyHex);
     }
-    else if (chainParams.ChainId <= 2)
+    else if (chainParams.IsPublicNetwork)
     {
-        // B2: Reject startup on mainnet/testnet without explicit faucet key
-        Log.Fatal("BASALT_FAUCET_KEY must be set for mainnet/testnet. Cannot use deterministic dev key.");
+        // B2: Reject startup on a public network without an explicit faucet key
+        Log.Fatal("BASALT_FAUCET_KEY must be set for a public network. Cannot use deterministic dev key.");
         return 1;
     }
     else
@@ -126,13 +171,79 @@ try
     var stakingState = new StakingState();
     stakingStateForShutdown = stakingState;
     Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null;
-    var validatorAddresses = new[]
+    // The genesis validator set. It defaults to the deterministic devnet addresses, whose private keys
+    // are published in the devnet compose, which is fine for a devnet and disqualifying for anything
+    // else: a network staking four addresses that anyone can sign for is not a network anyone should
+    // trust. BASALT_GENESIS_VALIDATORS lets a real deployment stake the keys its operators actually
+    // hold. It must list every validator, in the same order on every node, because leader election
+    // walks this set: a node whose own address is absent proposes blocks that everyone else rejects as
+    // coming from a non-leader, and the chain limps along on view timeouts instead of failing loudly.
+    var genesisValidatorsEnv = Environment.GetEnvironmentVariable("BASALT_GENESIS_VALIDATORS");
+    Address[] validatorAddresses;
+    if (!string.IsNullOrWhiteSpace(genesisValidatorsEnv))
     {
-        Address.FromHexString("0x0000000000000000000000000000000000000100"),
-        Address.FromHexString("0x0000000000000000000000000000000000000101"),
-        Address.FromHexString("0x0000000000000000000000000000000000000102"),
-        Address.FromHexString("0x0000000000000000000000000000000000000103"),
-    };
+        try
+        {
+            validatorAddresses = genesisValidatorsEnv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Address.FromHexString)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "BASALT_GENESIS_VALIDATORS is not a comma-separated list of hex addresses");
+            return 1;
+        }
+
+        if (validatorAddresses.Length == 0)
+        {
+            Log.Fatal("BASALT_GENESIS_VALIDATORS was set but lists no addresses");
+            return 1;
+        }
+
+        if (validatorAddresses.Distinct().Count() != validatorAddresses.Length)
+        {
+            Log.Fatal("BASALT_GENESIS_VALIDATORS contains a duplicate address");
+            return 1;
+        }
+
+        if (chainParams.IsPublicNetwork && config.IsConsensusMode
+            && config.ValidatorAddress is { } ownAddress
+            && !validatorAddresses.Contains(Address.FromHexString(ownAddress)))
+        {
+            // Catch the mismatch at startup rather than letting it show up as a slow chain.
+            Log.Fatal(
+                "This validator's address {Own} is not in BASALT_GENESIS_VALIDATORS. It could never be "
+                + "elected leader and the chain would stall on view timeouts.", ownAddress);
+            return 1;
+        }
+
+        Log.Information("Genesis validator set from environment: {Count} validators", validatorAddresses.Length);
+    }
+    else
+    {
+        if (chainParams.IsPublicNetwork)
+        {
+            Log.Fatal(
+                "A public network must set BASALT_GENESIS_VALIDATORS. The built-in set is the devnet one, "
+                + "whose private keys are public.");
+            return 1;
+        }
+
+        validatorAddresses = new[]
+        {
+            Address.FromHexString("0x0000000000000000000000000000000000000100"),
+            Address.FromHexString("0x0000000000000000000000000000000000000101"),
+            Address.FromHexString("0x0000000000000000000000000000000000000102"),
+            Address.FromHexString("0x0000000000000000000000000000000000000103"),
+        };
+    }
+
+    // Genesis validators need a stake to be counted, so fund whatever set we ended up with.
+    foreach (var validatorAddr in validatorAddresses)
+    {
+        genesisBalances[validatorAddr] = UInt256.Parse("200000000000000000000000");
+    }
     foreach (var validatorAddr in validatorAddresses)
     {
         stakingState.RegisterValidator(validatorAddr, UInt256.Parse("200000000000000000000000"));
@@ -169,7 +280,23 @@ try
 
                 var recoveredTrie = new TrieStateDb(trieNodeStore, latestBlock.Header.StateRoot);
                 var recoveredFlat = new FlatStateDb(recoveredTrie, new RocksDbFlatStatePersistence(rocksDbStore));
-                recoveredFlat.LoadFromPersistence();
+                var (droppedAccounts, ignoredSlots) = recoveredFlat.LoadFromPersistence();
+                if (droppedAccounts > 0)
+                {
+                    // The persisted flat cache is not truncated, so an entry the trie has moved past
+                    // stays on disk at its old version and is reloaded ahead of the trie. Dropping it is
+                    // the recovery. Saying so is how an operator learns the node had been carrying it.
+                    Log.Warning(
+                        "Dropped {Dropped} reloaded accounts that disagreed with the trie. They will be "
+                        + "read from the trie instead.", droppedAccounts);
+                }
+
+                if (ignoredSlots > 0)
+                {
+                    Log.Information(
+                        "Ignoring {Count} storage slots persisted by an older build and clearing them on "
+                        + "the next flush. Storage is read from the trie.", ignoredSlots);
+                }
 
                 // N-11: Verify state root consistency after recovery
                 var computedRoot = recoveredFlat.ComputeStateRoot();
@@ -396,6 +523,45 @@ try
         return Microsoft.AspNetCore.Http.Results.Ok(response);
     });
 
+    // Compliance lives above the mode switch because a replaying node needs it too.
+    //
+    // It used to be built inside the validator case, so an RPC or standalone node had no verifier at
+    // all. That mattered less than it sounds while nothing registered a proof requirement, and it is
+    // the thing COMPL-C01 has to undo: the nullifier retention window is advanced once per block, and
+    // a node that never advances it replays a legitimate transaction as a duplicate.
+        // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
+        var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
+        // Points key lookups at whatever state is executing. Canonical by default, the fork while a sync
+    // batch replays, which is the only way a key registered earlier in the same batch is visible.
+    var executionState = new ExecutionStateRef(stateDbRef);
+
+    var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
+        {
+            // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
+            var storageKey = "scr_vk:" + schemaId.ToHexString();
+            var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
+            var raw = executionState.Current.GetStorage(schemaRegistryAddress, slot);
+            if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
+                return null;
+            var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
+            if (string.IsNullOrEmpty(hexVk))
+                return null;
+            try { return Convert.FromHexString(hexVk); }
+            catch { return null; }
+        });
+        // H9: No MockKycProvider in consensus mode — only governance-approved
+        // providers can issue attestations on mainnet/testnet.
+        // COMPL-C02: bind both registries to the Governance system-contract address (0x1003) so their
+        // admin guards enforce that only Governance can approve KYC providers or edit the sanctions
+        // list. The parameterless ctors leave the guard address null, which DISABLES that access
+        // control (any/null caller passes). No consensus path calls those admin methods today, so this
+        // is defense-in-depth for when a governance handler is wired, with no runtime behavior change.
+        var governanceAddress = Basalt.Execution.GenesisContractDeployer.Addresses.Governance.ToArray();
+        var complianceEngine = new Basalt.Compliance.ComplianceEngine(
+            new Basalt.Compliance.IdentityRegistry(governanceAddress),
+            new Basalt.Compliance.SanctionsList(governanceAddress),
+            zkVerifier);
+
     switch (config.ResolvedMode)
     {
         case NodeMode.Validator:
@@ -406,35 +572,13 @@ try
                 stakingState,
                 app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<SlashingEngine>());
 
-            // ZK compliance verifier — reads VKs from SchemaRegistry contract storage (COMPL-17)
-            var schemaRegistryAddress = Basalt.Execution.GenesisContractDeployer.Addresses.SchemaRegistry;
-            var zkVerifier = new Basalt.Compliance.ZkComplianceVerifier(schemaId =>
-            {
-                // StorageMap key: "scr_vk:{schemaIdHex}", hashed to Hash256 via BLAKE3
-                var storageKey = "scr_vk:" + schemaId.ToHexString();
-                var slot = Basalt.Crypto.Blake3Hasher.Hash(System.Text.Encoding.UTF8.GetBytes(storageKey));
-                var raw = stateDbRef.GetStorage(schemaRegistryAddress, slot);
-                if (raw == null || raw.Length < 2 || raw[0] != 0x07) // 0x07 = TagString
-                    return null;
-                var hexVk = System.Text.Encoding.UTF8.GetString(raw.AsSpan(1));
-                if (string.IsNullOrEmpty(hexVk))
-                    return null;
-                try { return Convert.FromHexString(hexVk); }
-                catch { return null; }
-            });
-            // H9: No MockKycProvider in consensus mode — only governance-approved
-            // providers can issue attestations on mainnet/testnet.
-            var complianceEngine = new Basalt.Compliance.ComplianceEngine(
-                new Basalt.Compliance.IdentityRegistry(),
-                new Basalt.Compliance.SanctionsList(),
-                zkVerifier);
-
             var coordinator = new NodeCoordinator(
                 config, chainParams, chainManager, mempool, stateDbRef, validator, wsHandler,
                 app.Services.GetRequiredService<ILoggerFactory>(),
                 blockStore, receiptStore,
                 stakingState, slashingEngine,
                 complianceEngine,
+                executionState,
                 stakingPersistence,
                 rocksDbStore);
 
@@ -497,8 +641,28 @@ try
             IContractRuntime rpcContractRuntime = config.UseSandbox
                 ? new Basalt.Execution.VM.Sandbox.SandboxedContractRuntime(new Basalt.Execution.VM.Sandbox.SandboxConfiguration())
                 : new ManagedContractRuntime();
-            var rpcTxExecutor = new TransactionExecutor(chainParams, rpcContractRuntime, stakingState);
+            // COMPL-C01: an RPC node runs the same compliance checks as a validator.
+            //
+            // It ran without a verifier, so the two disagreed about which transactions succeed. That was
+            // harmless only while nothing registered a proof requirement, and it is the asymmetry this
+            // whole note was written about. The four prerequisites are in place: the state root is
+            // checked on replay, the nullifier window advances per block, key lookups resolve against
+            // the state being executed, and consumed nullifiers roll back with a refused batch.
+            var rpcTxExecutor = new TransactionExecutor(
+                chainParams, rpcContractRuntime, stakingState, complianceEngine);
             var rpcBlockBuilder = new BlockBuilder(chainParams, rpcTxExecutor, loggerFactory.CreateLogger<BlockBuilder>());
+
+            // H4: after a sync batch, persist the batch's new trie nodes to CF.TrieNodes and adopt a
+            // fresh disk-backed canonical state at the new root — so a synced RPC node survives a restart
+            // (its state-root check would otherwise fail on missing nodes) and does not accumulate an
+            // unbounded in-memory overlay stack.
+            Func<IStateDatabase, Hash256, IStateDatabase> rpcSyncStateCommit = (forked, newRoot) =>
+            {
+                var persistent = new RocksDbTrieNodeStore(rocksDbStore!);
+                if (forked is FlatStateDb fsd)
+                    fsd.InnerTrie.FlushOverlayTo(persistent);
+                return new FlatStateDb(new TrieStateDb(persistent, newRoot), new RocksDbFlatStatePersistence(rocksDbStore!));
+            };
 
             var rpcBlockApplier = new BlockApplier(
                 chainParams, chainManager, mempool, rpcTxExecutor, rpcBlockBuilder,
@@ -507,7 +671,48 @@ try
                 stakingState: stakingState,
                 stakingPersistence: stakingPersistence,
                 wsHandler,
-                loggerFactory.CreateLogger<BlockApplier>());
+                loggerFactory.CreateLogger<BlockApplier>(),
+                syncStateCommit: rpcSyncStateCommit,
+                complianceVerifier: complianceEngine,
+                executionState: executionState,
+                complianceEngine: complianceEngine);
+
+            // Phase 1.6 on a sync-only node. Pruning used to be impossible here: the pruner is built by
+            // NodeCoordinator, which an RPC node never runs, so the feature announced itself and then did
+            // nothing while trie_nodes grew without bound. Archive nodes accumulate the most state and
+            // are exactly the ones that need this.
+            //
+            // The sweep is driven from the sync loop's caught-up branch rather than from a background
+            // task. That loop is the only thing that mutates state here, so running the sweep from it is
+            // serialised against block application with no lock at all, and being caught up means it
+            // delays no sync.
+            Action<ulong>? rpcPruneMaintenance = null;
+            if (chainParams.EnableTriePruning && rocksDbStore != null && blockStore != null)
+            {
+                var rpcPruner = new RocksDbTriePruner(
+                    rocksDbStore,
+                    new TriePrunerOptions { MaxDeleteFraction = chainParams.TriePruneMaxDeleteFraction });
+                var pruneLogger = loggerFactory.CreateLogger("TriePrune");
+                ulong lastSweptTip = 0;
+                rpcPruneMaintenance = tip =>
+                {
+                    if (tip < chainParams.TriePruneWindowSize || tip < lastSweptTip + chainParams.TriePruneIntervalBlocks)
+                        return;
+
+                    var retained = TrieRetention.CollectRetainedRoots(blockStore, chainParams.TriePruneWindowSize);
+                    var stats = rpcPruner.Prune(retained);
+                    lastSweptTip = tip;
+                    MetricsEndpoint.RecordTriePrune(stats.TotalScanned, stats.Deleted, stats.Retained, (long)tip);
+                    pruneLogger.LogInformation(
+                        "Trie prune sweep at #{Tip}: scanned {Scanned}, deleted {Deleted}, retained {Retained}",
+                        tip, stats.TotalScanned, stats.Deleted, stats.Retained);
+                    rpcPruner.Compact();
+                };
+
+                Log.Information(
+                    "Trie pruning ENABLED on this sync node: window={Window} blocks, interval={Interval} blocks",
+                    chainParams.TriePruneWindowSize, chainParams.TriePruneIntervalBlocks);
+            }
 
             var rpcSyncService = new BlockSyncService(
                 config.SyncSource!,
@@ -515,7 +720,8 @@ try
                 chainManager,
                 stateDbRef,
                 chainParams,
-                loggerFactory.CreateLogger<BlockSyncService>());
+                loggerFactory.CreateLogger<BlockSyncService>(),
+                onCaughtUp: rpcPruneMaintenance);
 
             syncStatus = rpcSyncService;
 

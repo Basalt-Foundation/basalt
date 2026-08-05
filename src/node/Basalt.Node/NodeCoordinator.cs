@@ -47,6 +47,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
     // Compliance
     private readonly IComplianceVerifier? _complianceVerifier;
 
+    /// <summary>Shared with the compliance key lookup so a catch-up sync resolves against its fork.</summary>
+    private readonly ExecutionStateRef? _executionState;
+
     // B1: Staking persistence
     private readonly Basalt.Consensus.Staking.IStakingPersistence? _stakingPersistence;
     private WeightedLeaderSelector? _leaderSelector;
@@ -62,6 +65,38 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// share the same instance.
     /// M11: Passes configurable handshake timeout from ChainParameters.
     /// </summary>
+
+    /// <summary>
+    /// Binds a handshaked peer to its slot in the validator set, identified by the address derived from
+    /// the key it just proved it holds.
+    ///
+    /// This used to parse an index out of the peer's hostname ("validator-3"), which works only because
+    /// the devnet's addresses happen to sort into the same order as their hostnames. The canonical index
+    /// is the position in the set sorted by address ascending (EpochManager), so with real keys the two
+    /// orders diverge, every node writes peer identities into the wrong slots, and nodes then disagree
+    /// about who leads which view. The symptom is not an error but a slow chain: repeated view timeouts
+    /// and "proposal from non-leader", with blocks still trickling out.
+    ///
+    /// Using the address also means identity comes from the handshake itself rather than from a name the
+    /// peer chose, so a peer cannot claim someone else's slot by calling itself validator-0.
+    /// </summary>
+    private void BindPeerToValidatorSlot(PeerId peerId, PublicKey peerPublicKey, BlsPublicKey? peerBlsPublicKey, string context)
+    {
+        var peerAddress = Ed25519Signer.DeriveAddress(peerPublicKey);
+        var validator = _validatorSet?.GetByAddress(peerAddress);
+        if (validator is null)
+        {
+            // Not a genesis validator, which is normal for a plain peer.
+            _logger.LogDebug("Peer {PeerId} at {Address} is not in the validator set", peerId, peerAddress.ToHexString());
+            return;
+        }
+
+        _validatorSet!.UpdateValidatorIdentity(validator.Index, peerId, peerPublicKey, peerBlsPublicKey);
+        _logger.LogInformation(
+            "Bound validator {Index} ({Address}) to {PeerId} ({Context})",
+            validator.Index, peerAddress.ToHexString(), peerId, context);
+    }
+
     private HandshakeProtocol CreateHandshake() => new(
         _config.ChainId,
         _privateKey,
@@ -141,6 +176,13 @@ public sealed class NodeCoordinator : IAsyncDisposable
     private const int MaxRollbackDepth = 1000;
     private const int MaxForkRetries = 3;
 
+    // Phase 1.6: state-trie pruning. The lock serializes the background prune sweep against every state
+    // mutation (block apply, sync apply, rollback) so a stale-as-of-snapshot node cannot be resurrected
+    // by a concurrent block and then wrongly deleted (guard 6). The pruner never acquires lock(this), so
+    // there is no lock cycle. Null (and the lock uncontended, hence zero cost) when pruning is disabled.
+    private readonly object _stateMutationLock = new();
+    private RocksDbTriePruner? _triePruner;
+
     // N-17: Thread-safe double-sign detection: keyed by (view, block, proposer).
     // Block number is included because view numbers can collide across blocks:
     // after a view change bumps view to V, and then StartRound(V) reuses the same
@@ -168,6 +210,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         StakingState? stakingState = null,
         SlashingEngine? slashingEngine = null,
         IComplianceVerifier? complianceVerifier = null,
+        ExecutionStateRef? executionState = null,
         Basalt.Consensus.Staking.IStakingPersistence? stakingPersistence = null,
         RocksDbStore? rocksDbStore = null)
     {
@@ -188,6 +231,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         _stakingState = stakingState;
         _slashingEngine = slashingEngine;
         _complianceVerifier = complianceVerifier;
+        _executionState = executionState;
         _stakingPersistence = stakingPersistence;
         _rocksDbStore = rocksDbStore;
     }
@@ -230,6 +274,10 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
         // 9. Start peer reconnection loop
         _ = ReconnectLoop(_cts.Token);
+
+        // 10. Start the trie prune loop (no-op unless pruning is enabled and stores are disk-backed)
+        if (_triePruner != null)
+            _ = RunTriePruneLoop(_cts.Token);
 
         _logger.LogInformation("Node coordinator started. Validator index: {Index}, PeerId: {PeerId}",
             _config.ValidatorIndex, _localPeerId);
@@ -308,60 +356,74 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
     private void SetupValidatorSet()
     {
-        // For devnet: Build validator set from peer configuration
-        // Each validator's PeerId is derived from their public key
-        // In Phase 1, we use the validator index to assign identities
+        // The validator set is derived from who is actually staked at genesis, and indexed by address
+        // ascending, which is the same ordering EpochManager uses when it rebuilds the set each epoch.
+        //
+        // It used to build peer entries from index-derived placeholder addresses (0x…0100 + index) while
+        // giving only itself its real address. That happens to be correct on the devnet, whose validator
+        // addresses were chosen to be exactly those placeholders, and is wrong everywhere else: with real
+        // keys no peer could ever be matched to its slot, so a node resolved 1 of 4 identities, treated
+        // every peer as a non-validator, and the chain crawled on view timeouts.
         var validators = new List<ValidatorInfo>();
 
-        // Add self
-        var selfAddress = Address.FromHexString(_config.ValidatorAddress.Length > 0
-            ? _config.ValidatorAddress
-            : $"0x{_config.ValidatorIndex:X40}");
-        var selfStake = _stakingState?.GetStakeInfo(selfAddress)?.TotalStake ?? (UInt256)100_000;
+        var staked = _stakingState?.GetActiveValidators() ?? [];
+        var addresses = staked.Select(v => v.Address).ToList();
 
-        validators.Add(new ValidatorInfo
+        if (addresses.Count == 0)
         {
-            PeerId = _localPeerId,
-            PublicKey = _publicKey,
-            BlsPublicKey = _localBlsPublicKey,
-            Address = selfAddress,
-            Index = _config.ValidatorIndex,
-            Stake = selfStake,
-        });
+            // No staking state (unit tests, or a node started without genesis staking). Fall back to the
+            // old index-derived shape so those paths keep working.
+            addresses = Enumerable.Range(0, _config.Peers.Length + 1)
+                .Select(i => Address.FromHexString($"0x{i + 0x0100:X40}"))
+                .ToList();
+            _logger.LogWarning("No staked validators found; falling back to placeholder validator addresses");
+        }
 
-        // For a 4-validator devnet, we need all validators in the set.
-        // Other validators' identities will be learned during handshake.
-        // For now, create placeholder entries that will be updated.
-        var totalValidators = _config.Peers.Length + 1;
-        for (int i = 0; i < totalValidators; i++)
+        addresses.Sort((a, b) => a.CompareTo(b));
+
+        var selfAddress = _config.ValidatorAddress.Length > 0
+            ? Address.FromHexString(_config.ValidatorAddress)
+            : Address.FromHexString($"0x{_config.ValidatorIndex:X40}");
+
+        for (int index = 0; index < addresses.Count; index++)
         {
-            if (i == _config.ValidatorIndex)
+            var address = addresses[index];
+            var stake = _stakingState?.GetStakeInfo(address)?.TotalStake ?? (UInt256)100_000;
+
+            if (address.Equals(selfAddress))
+            {
+                validators.Add(new ValidatorInfo
+                {
+                    PeerId = _localPeerId,
+                    PublicKey = _publicKey,
+                    BlsPublicKey = _localBlsPublicKey,
+                    Address = address,
+                    Index = index,
+                    Stake = stake,
+                });
                 continue;
+            }
 
-            // Placeholder — real PeerId will be set after handshake
-            // Use deterministic placeholder based on index
-            // Byte 31 = 1 ensures the key is never all-zeros (invalid for BLS12-381)
+            // Placeholder identity until the handshake reveals the real one. Only the address matters
+            // here: BindPeerToValidatorSlot looks the peer up by the address derived from the key it
+            // proved it holds, so the placeholder keys are never trusted for anything.
+            // Byte 31 = 1 keeps the key valid for BLS12-381 (never all zeros).
             var placeholderKey = new byte[32];
-            placeholderKey[0] = (byte)i;
+            placeholderKey[0] = (byte)index;
             placeholderKey[31] = 1;
             var pk = Ed25519Signer.GetPublicKey(placeholderKey);
-            var addr = $"0x{i + 0x0100:X40}";
-            var peerAddress = Address.FromHexString(addr);
-            var peerStake = _stakingState?.GetStakeInfo(peerAddress)?.TotalStake ?? (UInt256)100_000;
 
             validators.Add(new ValidatorInfo
             {
                 PeerId = PeerId.FromPublicKey(pk),
                 PublicKey = pk,
                 BlsPublicKey = new BlsPublicKey(_blsSigner.GetPublicKey(placeholderKey)),
-                Address = peerAddress,
-                Index = i,
-                Stake = peerStake,
+                Address = address,
+                Index = index,
+                Stake = stake,
             });
         }
 
-        // Sort by index for deterministic leader selection
-        validators.Sort((a, b) => a.Index.CompareTo(b.Index));
         _validatorSet = new ValidatorSet(validators);
 
         _logger.LogInformation("Validator set: {Count} validators, quorum: {Quorum}",
@@ -597,7 +659,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
 
             // Apply block via shared BlockApplier (executes txs, DEX settlement, chain update,
             // mempool pruning, persistence, epoch transitions, WebSocket broadcast, metrics).
-            var applyResult = _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap);
+            var applyResult = RunStateMutation(() => _blockApplier!.ApplyBlock(block, _stateDb, blockData, commitBitmap));
 
             if (applyResult.Success)
             {
@@ -709,11 +771,44 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 poolId, buys, sells, reserves, feeBps,
                 intentMinAmounts, stateDb, dexState, intentTxMap);
 
+        // H4: after a catch-up sync batch, persist the batch's new trie nodes and adopt a fresh
+        // disk-backed canonical state — so a validator that fell behind and re-synced survives a
+        // restart and keeps persisting on the consensus path afterwards. Null in memory-only mode.
+        Func<IStateDatabase, Hash256, IStateDatabase>? syncStateCommit = null;
+        if (_rocksDbStore != null)
+        {
+            var rocks = _rocksDbStore;
+            syncStateCommit = (forked, newRoot) =>
+            {
+                var persistent = new RocksDbTrieNodeStore(rocks);
+                if (forked is FlatStateDb fsd)
+                    fsd.InnerTrie.FlushOverlayTo(persistent);
+                return new FlatStateDb(new TrieStateDb(persistent, newRoot), new RocksDbFlatStatePersistence(rocks));
+            };
+        }
+
         // Create shared BlockApplier for finalization and sync paths
         _blockApplier = new BlockApplier(
             _chainParams, _chainManager, _mempool, _txExecutor, _blockBuilder,
             _blockStore, _receiptStore, _epochManager, _stakingState, _stakingPersistence,
-            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>());
+            _wsHandler, _loggerFactory.CreateLogger<BlockApplier>(),
+            syncStateCommit: syncStateCommit,
+            // A validator replays too, on its own catch-up sync, and that path shares the applier.
+            complianceVerifier: _complianceVerifier,
+            executionState: _executionState,
+            complianceEngine: _complianceVerifier as Basalt.Compliance.ComplianceEngine);
+
+        // Phase 1.6: background trie pruner, off by default. Requires disk-backed stores (null in
+        // memory-only mode). When enabled, RunTriePruneLoop sweeps trie_nodes every interval.
+        if (_chainParams.EnableTriePruning && _rocksDbStore != null && _blockStore != null)
+        {
+            _triePruner = new RocksDbTriePruner(
+                _rocksDbStore,
+                new TriePrunerOptions { MaxDeleteFraction = _chainParams.TriePruneMaxDeleteFraction });
+            _logger.LogInformation(
+                "Trie pruning ENABLED: window={Window} blocks, interval={Interval} blocks",
+                _chainParams.TriePruneWindowSize, _chainParams.TriePruneIntervalBlocks);
+        }
 
         // Hook epoch transitions to rewire consensus-specific components
         _blockApplier.OnEpochTransition += (newSet, blockNumber) =>
@@ -865,7 +960,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
             if (!result.IsSuccess)
             {
                 _logger.LogWarning("Inbound handshake failed: {Error}", result.Error);
-                connection.Dispose();
+                // Mirror of the outbound path. Disposing leaves the transport's entry and, with it, the
+                // per-IP connection count, which only RemoveConnection decrements. Each failed inbound
+                // handshake would otherwise leak one slot, and after three this peer's IP is refused
+                // outright, so its dials get no response and the mesh never forms.
+                _transport!.DisconnectPeer(connection.PeerId);
                 return;
             }
 
@@ -891,12 +990,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
             _episub!.OnPeerConnected(result.PeerId);
 
             // Update validator set with real PeerId (replaces placeholder)
-            // PeerHost comes from the peer's Hello.ListenAddress (Docker hostname, e.g. "validator-1")
-            if (TryParseValidatorIndex(result.PeerHost, out var peerValidatorIndex))
-            {
-                _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
-                _logger.LogInformation("Updated validator {Index} identity (inbound): {PeerId}", peerValidatorIndex, result.PeerId);
-            }
+            BindPeerToValidatorSlot(result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey, "inbound");
 
             _logger.LogInformation("Peer {PeerId} connected (inbound) from {Host}, best block: #{BestBlock}",
                 result.PeerId, result.PeerHost, result.PeerBestBlock);
@@ -916,7 +1010,9 @@ public sealed class NodeCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling inbound connection");
-            connection.Dispose();
+            // Same reason as above: the connection is registered with the transport, so it has to be
+            // removed there rather than merely disposed, or its per-IP slot is leaked.
+            _transport?.DisconnectPeer(connection.PeerId);
         }
     }
 
@@ -1299,9 +1395,15 @@ public sealed class NodeCoordinator : IAsyncDisposable
                     continue;
 
                 var bitmap = idx < payload.CommitBitmaps.Length ? payload.CommitBitmaps[idx] : 0UL;
-                var result = _blockApplier!.ApplyBlock(block, _stateDb, blockBytes, bitmap);
 
-                if (result.Success)
+                // Apply pushed sync blocks through ApplyBatch (fork -> execute -> state-root gate ->
+                // swap), NOT the single-arg ApplyBlock path, so a divergent pushed block is rejected
+                // rather than executed directly onto canonical state (which cannot be rolled back). This
+                // closes the same silent-fork hole the batch sync path had.
+                var single = new List<(Block Block, byte[] Raw, ulong CommitBitmap)> { (block, blockBytes, bitmap) };
+                var applied = RunStateMutation(() => _blockApplier!.ApplyBatch(single, _stateDb));
+
+                if (applied > 0)
                     _logger.LogInformation("Applied block #{Number} from peer", block.Number);
             }
             catch (Exception ex)
@@ -1403,7 +1505,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
         }
 
         // Delegate to BlockApplier for fork-execute-swap
-        var applied = _blockApplier!.ApplyBatch(blocksToApply, _stateDb);
+        var applied = RunStateMutation(() => _blockApplier!.ApplyBatch(blocksToApply, _stateDb));
 
         // Signal the sync loop under lock to prevent stale responses completing wrong TCS
         lock (this)
@@ -1541,7 +1643,11 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 if (!result.IsSuccess)
                 {
                     _logger.LogWarning("Handshake with {Host}:{Port} failed: {Error}", host, port, result.Error);
-                    connection.Dispose();
+                    // Disposing the connection is not enough: the transport registered it under a
+                    // temporary id derived from the endpoint, and that id is the same on every dial to
+                    // this peer. Leaving the entry behind makes the next attempt collide with it, so a
+                    // single failed handshake would lock this peer out permanently.
+                    _transport.DisconnectPeer(connection.PeerId);
                     continue;
                 }
 
@@ -1567,11 +1673,7 @@ public sealed class NodeCoordinator : IAsyncDisposable
                 _episub!.OnPeerConnected(result.PeerId);
 
                 // Update validator set with real PeerId (replaces placeholder)
-                if (TryParseValidatorIndex(host, out var peerValidatorIndex))
-                {
-                    _validatorSet!.UpdateValidatorIdentity(peerValidatorIndex, result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey);
-                    _logger.LogInformation("Updated validator {Index} identity: {PeerId}", peerValidatorIndex, result.PeerId);
-                }
+                BindPeerToValidatorSlot(result.PeerId, result.PeerPublicKey, result.PeerBlsPublicKey, "outbound");
 
                 _logger.LogInformation("Connected to peer {PeerId} at {Host}:{Port}, best block: #{BestBlock}",
                     result.PeerId, host, port, result.PeerBestBlock);
@@ -2120,6 +2222,94 @@ public sealed class NodeCoordinator : IAsyncDisposable
     /// Roll back the chain, block store, and state to the given fork point block.
     /// Returns true if rollback succeeded.
     /// </summary>
+    /// <summary>
+    /// Runs a state mutation (block apply, sync apply, rollback) under the prune-serialization lock when
+    /// pruning is enabled, or directly otherwise. Direct-call when disabled keeps consensus timing
+    /// identical to the default (no-pruning) configuration.
+    /// </summary>
+    private void RunStateMutation(Action mutation)
+    {
+        if (_triePruner == null) { mutation(); return; }
+        lock (_stateMutationLock) mutation();
+    }
+
+    /// <inheritdoc cref="RunStateMutation(Action)"/>
+    private T RunStateMutation<T>(Func<T> mutation)
+    {
+        if (_triePruner == null) return mutation();
+        lock (_stateMutationLock) return mutation();
+    }
+
+    /// <summary>
+    /// Background loop that sweeps stale trie nodes once the tip has advanced a full interval past the
+    /// last sweep. Runs off the consensus thread; the sweep itself holds <see cref="_stateMutationLock"/>
+    /// so it never overlaps a block apply or rollback. Only started when pruning is enabled.
+    /// </summary>
+    private async Task RunTriePruneLoop(CancellationToken ct)
+    {
+        var interval = _chainParams.TriePruneIntervalBlocks;
+        var window = _chainParams.TriePruneWindowSize;
+        // Poll on the order of a few blocks; the interval check below gates the actual work.
+        var pollDelay = TimeSpan.FromMilliseconds(Math.Max(2000, _chainParams.BlockTimeMs * 10));
+        ulong lastSweptTip = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(pollDelay, ct); }
+            catch (OperationCanceledException) { break; }
+
+            if (_blockStore?.GetLatestBlockNumber() is not ulong tip)
+                continue;
+            // Wait for a full window of history and for the tip to advance a full interval since last sweep.
+            if (tip < window || tip < lastSweptTip + interval)
+                continue;
+
+            try
+            {
+                var stats = RunPruneSweep(window);
+                lastSweptTip = tip;
+                MetricsEndpoint.RecordTriePrune(stats.TotalScanned, stats.Deleted, stats.Retained, (long)tip);
+                _logger.LogInformation(
+                    "Trie prune sweep at #{Tip}: scanned {Scanned}, deleted {Deleted}, retained {Retained}",
+                    tip, stats.TotalScanned, stats.Deleted, stats.Retained);
+            }
+            catch (TriePruneAbortedException ex)
+            {
+                // Tripwire fired: the mark looked implausibly small, so nothing was deleted. Advance the
+                // marker so we do not hammer it every poll, and surface it loudly for investigation.
+                lastSweptTip = tip;
+                _logger.LogWarning(ex, "Trie prune tripwire fired at #{Tip}; deleted nothing", tip);
+            }
+            catch (Exception ex)
+            {
+                // Abort-on-missing or any transient failure: delete nothing, retry next interval.
+                _logger.LogError(ex, "Trie prune sweep failed at #{Tip}; will retry next interval", tip);
+            }
+        }
+
+        _logger.LogInformation("Trie prune loop stopped");
+    }
+
+    /// <summary>
+    /// Executes one prune sweep: computes the retained roots and deletes unreachable nodes under the
+    /// serialization lock, then compacts outside the lock (compaction is slow and must not block state
+    /// mutation).
+    /// </summary>
+    private TriePruneStats RunPruneSweep(ulong window)
+    {
+        var pruner = _triePruner!;
+        TriePruneStats stats;
+        lock (_stateMutationLock)
+        {
+            // BlockStore is stable here (all mutators hold the same lock), so the retained set and the
+            // pruner's internal snapshot are mutually consistent.
+            var retained = TrieRetention.CollectRetainedRoots(_blockStore!, window);
+            stats = pruner.Prune(retained);
+        }
+        pruner.Compact();
+        return stats;
+    }
+
     private bool RollbackToForkPoint(ulong forkPointBlockNumber)
     {
         var currentHeight = _chainManager.LatestBlockNumber;
@@ -2149,31 +2339,36 @@ public sealed class NodeCoordinator : IAsyncDisposable
             return false;
         }
 
-        // 2. Roll back BlockStore (delete blocks after fork point)
-        _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
-        _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
-
-        // 3. Roll back ChainManager
-        _chainManager.RollbackTo(forkPointBlock);
-        _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
-
-        // 4. Roll back state — re-root trie to the fork point's state root
-        if (_rocksDbStore != null)
+        // Steps 2-5 mutate canonical state (block store, chain manager, trie root, epoch). Run them under
+        // the prune-serialization lock so a background sweep never overlaps a rollback (guard 6).
+        RunStateMutation(() =>
         {
-            var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
-            var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
-            // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
-            // The trie is the source of truth; cache warms lazily from trie reads.
-            var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
-            _stateDb.Swap(flat);
-            _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
-        }
+            // 2. Roll back BlockStore (delete blocks after fork point)
+            _blockStore.RollbackToBlock(forkPointBlockNumber, currentHeight);
+            _logger.LogInformation("BlockStore rolled back from #{From} to #{To}", currentHeight, forkPointBlockNumber);
 
-        // 5. Re-seed epoch manager from the new chain height
-        if (_epochManager != null)
-        {
-            _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
-        }
+            // 3. Roll back ChainManager
+            _chainManager.RollbackTo(forkPointBlock);
+            _logger.LogInformation("ChainManager rolled back to #{Block}", forkPointBlockNumber);
+
+            // 4. Roll back state — re-root trie to the fork point's state root
+            if (_rocksDbStore != null)
+            {
+                var trieNodeStore = new RocksDbTrieNodeStore(_rocksDbStore);
+                var trie = new TrieStateDb(trieNodeStore, forkBlockData.StateRoot);
+                // Create FlatStateDb with empty cache (no LoadFromPersistence — persistence has stale data).
+                // The trie is the source of truth; cache warms lazily from trie reads.
+                var flat = new FlatStateDb(trie, new RocksDbFlatStatePersistence(_rocksDbStore));
+                _stateDb.Swap(flat);
+                _logger.LogInformation("State rolled back to state root {Root}", forkBlockData.StateRoot.ToHexString()[..18] + "...");
+            }
+
+            // 5. Re-seed epoch manager from the new chain height
+            if (_epochManager != null)
+            {
+                _epochManager.SeedFromChainHeight(forkPointBlockNumber, blockNum => _blockStore.GetCommitBitmap(blockNum));
+            }
+        });
 
         return true;
     }

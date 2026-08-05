@@ -25,6 +25,9 @@ public static class GenesisContractDeployer
         public static readonly Address SchemaRegistry = MakeSystemAddress(0x1006);
         public static readonly Address IssuerRegistry = MakeSystemAddress(0x1007);
         public static readonly Address BridgeETH = MakeSystemAddress(0x1008);
+        // 0x1009 is the DEX system account (DexState.DexAddress) and 0x100A is the DEX governance/admin
+        // address (ChainParameters.MakeDexGovernanceAddress), so the next free system address is 0x100B.
+        public static readonly Address TrilithAnchor = MakeSystemAddress(0x100B);
         public static readonly Address Dex = DexState.DexAddress;
 
         private static Address MakeSystemAddress(ushort id)
@@ -67,10 +70,13 @@ public static class GenesisContractDeployer
         // BridgeETH (0x0107) — EVM bridge (Ethereum/Polygon)
         DeploySystemContract(stateDb, registry, Addresses.BridgeETH, 0x0107, [], chainId, logger);
 
+        // TrilithAnchor (0x0109) — tamper-evident notary for Trilith digests (destruction certificates etc.)
+        DeploySystemContract(stateDb, registry, Addresses.TrilithAnchor, 0x0109, [], chainId, logger);
+
         // DEX system account (0x1009) — protocol-native exchange state
         InitializeDexState(stateDb, logger);
 
-        logger?.LogInformation("Deployed {Count} system contracts and DEX state at genesis", 8);
+        logger?.LogInformation("Deployed {Count} system contracts and DEX state at genesis", 9);
     }
 
     /// <summary>

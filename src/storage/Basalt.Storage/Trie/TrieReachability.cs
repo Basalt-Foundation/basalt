@@ -1,0 +1,111 @@
+using Basalt.Core;
+
+namespace Basalt.Storage.Trie;
+
+/// <summary>
+/// Computes the full set of trie-node hashes reachable from a set of state roots, <b>including every
+/// account's storage sub-trie</b>. This is the mark phase of state-trie pruning.
+/// </summary>
+/// <remarks>
+/// <para><b>Why this exists (H1).</b> <see cref="MerklePatriciaTrie.CollectReachableNodes"/> walks
+/// world-trie structure only (Extension/Branch children) and never decodes an account value, so it
+/// misses every contract-storage node. Storage sub-tries live in the <b>same</b> node store /
+/// <c>CF.TrieNodes</c> keyspace, content-addressed. A prune sweep marked with the world-only walk would
+/// delete every live storage node and corrupt state. Pruning MUST use this storage-aware walk.</para>
+/// <para>Because nodes are content-addressed, a node reachable from <b>any</b> retained root is in the
+/// union and can never be wrongly deleted, provided the union is complete — which is exactly what this
+/// walk guarantees (world spine + every non-empty <c>StorageRoot</c> sub-trie, unioned across roots).</para>
+/// </remarks>
+public static class TrieReachability
+{
+    // Account value layout (TrieStateDb.EncodeAccountState): Nonce(8) Balance(32) StorageRoot(32) ...
+    private const int AccountStorageRootOffset = 40;
+
+    /// <summary>
+    /// Returns every trie-node hash reachable from any root in <paramref name="roots"/>, walking the world
+    /// trie and each account's non-empty storage sub-trie. Zero roots are skipped.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A node referenced by a retained root is missing from <paramref name="store"/>. Under-marking here
+    /// would make a sweep delete live nodes, so this is fatal: the caller MUST abort the sweep and delete
+    /// nothing.
+    /// </exception>
+    public static HashSet<Hash256> CollectReachable(ITrieNodeStore store, IEnumerable<Hash256> roots)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(roots);
+
+        var reachable = new HashSet<Hash256>();
+        // Explicit work stack (root, isWorldTrie, originRoot) to keep depth off the call stack. The origin
+        // is carried purely so a failure can name which retained root led to the missing node, which is
+        // what separates "the tip is broken" from "some historical state was never persisted".
+        var stack = new Stack<(Hash256 Hash, bool IsWorldTrie, Hash256 Origin)>();
+        foreach (var root in roots)
+        {
+            if (root != Hash256.Zero)
+                stack.Push((root, true, root));
+        }
+
+        while (stack.Count > 0)
+        {
+            var (nodeHash, isWorldTrie, origin) = stack.Pop();
+            if (nodeHash == Hash256.Zero || !reachable.Add(nodeHash))
+                continue; // empty or already visited (also breaks any cycle)
+
+            var node = store.Get(nodeHash) ?? throw new MissingTrieNodeException(nodeHash, origin);
+
+            switch (node.NodeType)
+            {
+                case TrieNodeType.Extension:
+                    if (node.ChildHash.HasValue)
+                        stack.Push((node.ChildHash.Value, isWorldTrie, origin));
+                    break;
+
+                case TrieNodeType.Branch:
+                    foreach (var child in node.Children)
+                    {
+                        if (child.HasValue)
+                            stack.Push((child.Value, isWorldTrie, origin));
+                    }
+                    // A branch can itself carry a terminal value (a key that ends at the branch).
+                    if (isWorldTrie)
+                        PushStorageRoot(node.BranchValue, stack, origin);
+                    break;
+
+                case TrieNodeType.Leaf:
+                    if (isWorldTrie)
+                        PushStorageRoot(node.Value, stack, origin);
+                    break;
+            }
+        }
+
+        return reachable;
+    }
+
+    /// <summary>If <paramref name="accountValue"/> is an account carrying a non-empty storage root, queue that sub-trie.</summary>
+    private static void PushStorageRoot(byte[]? accountValue, Stack<(Hash256, bool, Hash256)> stack, Hash256 origin)
+    {
+        if (accountValue == null || accountValue.Length < AccountStorageRootOffset + Hash256.Size)
+            return; // not an account-shaped value; nothing to descend
+
+        var storageRoot = new Hash256(accountValue.AsSpan(AccountStorageRootOffset, Hash256.Size));
+        if (storageRoot != Hash256.Zero)
+            stack.Push((storageRoot, false, origin)); // storage sub-trie: values are raw slots, never accounts
+    }
+}
+
+/// <summary>
+/// A node referenced by a retained root is absent from the store being walked. Carries the hash so a
+/// caller can probe other stores and tell apart the two very different causes: a node that is genuinely
+/// gone (deleted, or never written) from one that exists but is invisible through a pinned snapshot.
+/// </summary>
+public sealed class MissingTrieNodeException(Hash256 hash, Hash256 root) : InvalidOperationException(
+    $"Trie pruning: node {hash.ToHexString()} referenced by retained root {root.ToHexString()} is missing " +
+    "from the store. Aborting sweep (deleting nothing).")
+{
+    /// <summary>The node that could not be read.</summary>
+    public Hash256 Hash { get; } = hash;
+
+    /// <summary>The retained root the walk reached it from.</summary>
+    public Hash256 Root { get; } = root;
+}

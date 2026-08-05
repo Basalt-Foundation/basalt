@@ -119,7 +119,7 @@ public partial class Escrow
 }
 
 [BasaltEvent]
-public class EscrowCreatedEvent
+public partial class EscrowCreatedEvent
 {
     [Indexed] public ulong EscrowId { get; set; }
     [Indexed] public byte[] Depositor { get; set; } = null!;
@@ -129,14 +129,14 @@ public class EscrowCreatedEvent
 }
 
 [BasaltEvent]
-public class EscrowReleasedEvent
+public partial class EscrowReleasedEvent
 {
     [Indexed] public ulong EscrowId { get; set; }
     public UInt256 Amount { get; set; }
 }
 
 [BasaltEvent]
-public class EscrowRefundedEvent
+public partial class EscrowRefundedEvent
 {
     [Indexed] public ulong EscrowId { get; set; }
     public UInt256 Amount { get; set; }
